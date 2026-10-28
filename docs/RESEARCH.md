@@ -2557,3 +2557,40 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   unmapped range. Ordinary RAM reads and exact device slices keep their fast paths.
 - The 2,000-operation eager/deferred differential check now also compares whole
   mapped slices after every operation. All 26 guest tests and strict Clippy pass.
+
+### R-080 2026-10-28 — Experimental deferred Vulkan replay integration
+
+- `USUM_VULKAN_DEFER_READBACK=1` connects immutable GPU readback tickets to guest
+  device memory for non-overlapping RGBA8/D24S8 targets with nonzero depth. Both
+  exact color/depth provider identities must match the current GPU target before
+  reusing it without importing guest bytes. A CPU write removes that proof; old
+  Memory clones still read their original frozen staging snapshots.
+- Stencil bytes are inherited independently of depth readback, and full target
+  overwrites discard superseded tickets. Unsupported target formats retain the
+  synchronous path. Deferred read failures surface as device memory faults rather
+  than stale pixels. Submission validation retains the existing software fallback.
+- Ordinary scalar RAM writes retain a direct fast path. Deferred range checks
+  distinguish actual overlaps from gaps between device buffers, avoiding per-byte
+  reads or whole-region slice materialization for unrelated data in those gaps.
+- All 26 guest, 16 renderer and 68 runtime unit tests pass; strict Clippy passes.
+  Two explicit hardware tests verify frozen guest planes/stencil and byte-identical
+  multi-list replay versus synchronous Vulkan, including a partial guest CPU write
+  between lists. Probe counters report queued/materialized tickets and wait/encode
+  time. The switch remains off by default pending recorded gameplay and timing
+  validation. The 200 FPS objective remains unmet; no new speedup is claimed yet.
+
+### R-081 2026-10-28 — Controller input and analog replay
+
+- The window feature now uses gilrs for standard controller mappings and hot
+  plugging. The first connected pad supplies Xbox-position face buttons, D-pad,
+  bumpers, Start/Select and a proportional left stick with a radial dead zone.
+  Input is neutralized on focus loss; a disconnected controller no longer holds
+  buttons. Keyboard and controller input combine without canceling each other.
+- One atomic live snapshot carries buttons and both signed stick axes coherently.
+  HID receives the actual analog position; recordings preserve it as Cx:y tokens.
+  Older recordings retain their direction-bit stick behavior unchanged.
+- Added tests for radial range/dead-zone behavior, keyboard/controller merging,
+  analog recording round trips, release and invalid coordinate rejection. All
+  71 enabled runtime tests and the 53-test default runtime pass. Linux builds need
+  pkg-config and libudev development files; the dependency audit and CI list them.
+  Physical Xbox-controller gameplay still requires an end-to-end user test.

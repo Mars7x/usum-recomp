@@ -259,7 +259,7 @@ pub struct Kernel {
     pub input: Vec<hid::Step>,
     /// Live input, when a frontend supplies it: the PAD bits (as in the
     /// input script) held now; it takes the script's place.
-    pub live_pad: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>,
+    pub live_pad: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
     /// Live touch, packed by `hid::pack_touch`; takes the script's place.
     pub live_touch: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>,
     /// Live input as HID read it, one step per change: replayed as an
@@ -804,9 +804,9 @@ impl Kernel {
         // HID writes as a device: the process maps this memory read-only
         let put = |mem: &mut Memory, at: u32, v: u32| mem.device_write(at, &v.to_le_bytes()).map_err(fault);
         let ticks = self.now() as u128 * u128::from(TICKS_PER_SECOND) / 1_000_000_000;
-        let pad = match &self.live_pad {
-            Some(live) => live.load(std::sync::atomic::Ordering::Relaxed),
-            None => hid::held(&self.input, self.vblanks),
+        let (pad, circle) = match &self.live_pad {
+            Some(live) => hid::unpack_live(live.load(std::sync::atomic::Ordering::Relaxed)),
+            None => (hid::held(&self.input, self.vblanks), hid::circle_at(&self.input, self.vblanks)),
         };
         let previous = self.pad;
         self.pad = pad;
@@ -827,7 +827,7 @@ impl Kernel {
             if section == 0 {
                 // the circle pad as two s16 (x, y): raw at +0x20, and in
                 // each entry after current, pressed, released
-                let (x, y) = hid::circle_pad(pad);
+                let (x, y) = circle;
                 let stick = u32::from(x as u16) | u32::from(y as u16) << 16;
                 put(mem, at + 0x1C, pad)?;
                 put(mem, at + 0x20, stick)?;
@@ -845,8 +845,9 @@ impl Kernel {
                     None => hid::touched(&self.input, self.vblanks),
                 };
                 if self.live_pad.is_some() {
-                    let step = hid::Step { at: self.vblanks, pad, touch };
-                    if self.recorded.last().is_none_or(|last| (last.pad, last.touch) != (pad, touch)) {
+                    let step =
+                        hid::Step { at: self.vblanks, pad, touch, circle: (circle != hid::circle_pad(pad)).then_some(circle) };
+                    if self.recorded.last().is_none_or(|last| (last.pad, last.touch, last.circle) != (pad, touch, step.circle)) {
                         self.recorded.push(step);
                     }
                 }

@@ -175,6 +175,18 @@ cargo build --release -p play
 | Escape | quit |
 | left mouse button on the bottom screen | touch |
 
+Controllers are detected automatically, including controllers connected after
+launch. The first connected controller is used. Left stick controls the circle
+pad with a radial dead zone and proportional movement; D-pad controls the 3DS
+D-pad. South/East/North/West face buttons map to A/B/X/Y (Xbox A/B/Y/X or
+PlayStation Cross/Circle/Triangle/Square); bumpers map to L/R and Start/Select
+map directly. Keyboard and controller inputs can be used together. Input is
+neutralized while the window is unfocused, and disconnecting releases the pad.
+
+On Linux, building the window feature now needs `pkg-config` and `libudev-dev`
+(Debian/Ubuntu; Fedora uses `pkgconf-pkg-config` and `systemd-devel`). Controller
+access uses the normal desktop session's input-device permissions.
+
 The game runs on the virtual clock, throttled to real time; while the
 renderer is slower than the console it plays in slow motion. Sound goes
 to the session's PulseAudio (or PipeWire) server; while the game runs
@@ -186,7 +198,9 @@ itself: at first start, and when you save in the game.
 
 `play` records your input as you play. When it exits it writes an input
 script to `~/.cache/usum-recomp/recordings/play-<time>.txt`, beside a
-copy of the saves it started from (`.save/`). The probe can replay the
+copy of the saves it started from (`.save/`). Analog stick positions are recorded
+as `C<x>:<y>` tokens (each axis -156..156); old digital recordings remain valid.
+The probe can replay the
 session exactly, to reproduce what you saw:
 `USUM_SAVE_FROM=<recording>.save USUM_INPUT="$(cat <recording>.txt)"`.
 
@@ -231,6 +245,22 @@ The synthetic hardware vertex checks use no game data:
 
 ```bash
 cargo run -p usum-runtime --example vertex-shader-smoke --features vulkan-compare
+```
+
+`USUM_VULKAN_DEFER_READBACK=1` additionally enables experimental immutable
+readback tickets for RGBA8/D24S8 targets with depth buffers. Both exact guest
+plane identities must match before reusing resident GPU contents; CPU writes
+invalidate reuse. Actual CPU readers still receive the frozen result, including
+stencil bytes. Other formats keep synchronous writeback. This path is disabled
+by default pending recorded-gameplay validation. Deferred device failures are
+reported as guest memory faults rather than exposing stale RAM. The probe reports
+queued/materialized tickets and materialization time separately.
+
+Synthetic deferred-readback checks use no game data:
+
+```bash
+cargo run -p usum-render --example deferred-readback
+cargo test -p usum-runtime --features vulkan-compare deferred::tests -- --ignored
 ```
 
 The probe reports target reuse/uploads, capture preparation, final submit/readback,

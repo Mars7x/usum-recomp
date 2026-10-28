@@ -95,6 +95,8 @@ pub struct Pica {
     #[cfg(feature = "vulkan-compare")]
     vulkan_vertex: bool,
     #[cfg(feature = "vulkan-compare")]
+    vulkan_defer_readback: bool,
+    #[cfg(feature = "vulkan-compare")]
     vulkan_vertex_counts: [u64; 4],
     #[cfg(feature = "vulkan-compare")]
     vulkan_vertex_error: Option<String>,
@@ -166,6 +168,8 @@ impl Default for Pica {
             vulkan_skip_software: false,
             #[cfg(feature = "vulkan-compare")]
             vulkan_vertex: false,
+            #[cfg(feature = "vulkan-compare")]
+            vulkan_defer_readback: false,
             #[cfg(feature = "vulkan-compare")]
             vulkan_vertex_counts: [0; 4],
             #[cfg(feature = "vulkan-compare")]
@@ -255,6 +259,11 @@ impl Pica {
     }
 
     #[cfg(feature = "vulkan-compare")]
+    pub fn enable_vulkan_deferred_readback(&mut self) {
+        self.vulkan_defer_readback = true;
+    }
+
+    #[cfg(feature = "vulkan-compare")]
     pub fn enable_vulkan_vertex(&mut self) {
         self.vulkan_vertex = true;
     }
@@ -277,6 +286,11 @@ impl Pica {
     #[cfg(feature = "vulkan-compare")]
     pub fn vulkan_capture_times(&self) -> [std::time::Duration; 3] {
         self.vulkan_live_resources.capture_times()
+    }
+
+    #[cfg(feature = "vulkan-compare")]
+    pub fn vulkan_deferred_stats(&self) -> (u64, u64, std::time::Duration) {
+        self.vulkan_live_resources.deferred_stats()
     }
 
     #[cfg(feature = "vulkan-compare")]

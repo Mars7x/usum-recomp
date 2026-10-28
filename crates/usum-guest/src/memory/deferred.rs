@@ -53,8 +53,18 @@ fn segments(address: u32, len: usize) -> [(u64, u64); 2] {
 }
 
 impl DeferredRanges {
+    #[inline]
     pub(super) fn overlaps(&self, address: u32, len: usize) -> bool {
-        len != 0 && segments(address, len).into_iter().any(|(a, b)| a < self.high && self.low < b && a < b)
+        if len == 0 {
+            return false;
+        }
+        segments(address, len).into_iter().any(|(a, b)| {
+            if a >= b || a >= self.high || self.low >= b {
+                return false;
+            }
+            let i = self.ranges.partition_point(|r| r.end() <= a);
+            self.ranges.get(i).is_some_and(|r| u64::from(r.address) < b)
+        })
     }
 
     pub(super) fn read(&self, address: u32, len: usize) -> Result<Option<&[u8]>, Fault> {

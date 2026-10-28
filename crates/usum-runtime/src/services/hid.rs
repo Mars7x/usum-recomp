@@ -58,6 +58,8 @@ pub fn circle_pad(pad: u32) -> (i16, i16) {
 pub struct Step {
     pub at: u64,
     pub pad: u32,
+    /// Explicit analog position; None preserves the legacy direction-bit input.
+    pub circle: Option<(i16, i16)>,
     pub touch: Option<(u16, u16)>,
 }
 
@@ -71,13 +73,24 @@ pub fn parse_script(text: &str) -> Result<Vec<Step>, String> {
     for item in text.split(',').filter(|i| !i.trim().is_empty()) {
         let (at, buttons) = item.split_once('=').ok_or_else(|| format!("input step {item:?}: expected VBLANK=BUTTONS"))?;
         let at: u64 = at.trim().parse().map_err(|_| format!("input step {item:?}: bad VBlank number"))?;
-        let (mut pad, mut touch) = (0, None);
+        let (mut pad, mut touch, mut circle) = (0, None, None);
         for name in buttons.split('+').map(str::trim).filter(|n| !n.is_empty()) {
             if let Some((x, y)) = name.strip_prefix(['T', 't']).and_then(|xy| xy.split_once(':')) {
                 let (x, y) = (x.parse::<u16>(), y.parse::<u16>());
                 match (x, y) {
                     (Ok(x), Ok(y)) if x < TOUCH_SIZE.0 && y < TOUCH_SIZE.1 => touch = Some((x, y)),
                     _ => return Err(format!("input step {item:?}: touch outside 0..320 x 0..240")),
+                }
+                continue;
+            }
+            if let Some((x, y)) = name.strip_prefix(['C', 'c']).and_then(|xy| xy.split_once(':')) {
+                match (x.parse::<i16>(), y.parse::<i16>()) {
+                    (Ok(x), Ok(y))
+                        if (-CIRCLE_PAD_MAX..=CIRCLE_PAD_MAX).contains(&x) && (-CIRCLE_PAD_MAX..=CIRCLE_PAD_MAX).contains(&y) =>
+                    {
+                        circle = Some((x, y))
+                    }
+                    _ => return Err(format!("input step {item:?}: circle pad outside -156..156")),
                 }
                 continue;
             }
@@ -88,7 +101,7 @@ pub fn parse_script(text: &str) -> Result<Vec<Step>, String> {
         if steps.last().is_some_and(|s| s.at > at) {
             return Err("input steps must be in VBlank order".into());
         }
-        steps.push(Step { at, pad, touch });
+        steps.push(Step { at, pad, touch, circle });
     }
     Ok(steps)
 }
@@ -98,6 +111,9 @@ pub fn format_script(steps: &[Step]) -> String {
     let step = |s: &Step| {
         let mut parts: Vec<String> =
             BUTTONS.iter().filter(|(_, bit)| s.pad & bit != 0).map(|(name, _)| (*name).to_owned()).collect();
+        if let Some((x, y)) = s.circle {
+            parts.push(format!("C{x}:{y}"));
+        }
         if let Some((x, y)) = s.touch {
             parts.push(format!("T{x}:{y}"));
         }
@@ -109,6 +125,19 @@ pub fn format_script(steps: &[Step]) -> String {
 /// The buttons held at VBlank `n`.
 pub fn held(script: &[Step], n: u64) -> u32 {
     script.iter().take_while(|s| s.at <= n).last().map_or(0, |s| s.pad)
+}
+
+/// Analog input at VBlank `n`, with old recordings retaining digital sticks.
+pub fn circle_at(script: &[Step], n: u64) -> (i16, i16) {
+    script.iter().take_while(|s| s.at <= n).last().map_or((0, 0), |s| s.circle.unwrap_or_else(|| circle_pad(s.pad)))
+}
+
+/// One coherent live snapshot: buttons in low bits, signed stick axes above.
+pub fn pack_live(pad: u32, (x, y): (i16, i16)) -> u64 {
+    u64::from(pad) | u64::from(x as u16) << 32 | u64::from(y as u16) << 48
+}
+pub fn unpack_live(value: u64) -> (u32, (i16, i16)) {
+    (value as u32, ((value >> 32) as i16, (value >> 48) as i16))
 }
 
 /// Where the touch screen is touched at VBlank `n`, if it is.
@@ -129,6 +158,22 @@ pub fn unpack_touch(packed: u32) -> Option<(u16, u16)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn analog_recording_round_trips_and_releases() {
+        let steps = parse_script("1=A+C34:-80,2=C-156:156+T3:4,3=").unwrap();
+        assert_eq!(circle_at(&steps, 0), (0, 0));
+        assert_eq!(circle_at(&steps, 1), (34, -80));
+        assert_eq!(circle_at(&steps, 2), (-156, 156));
+        assert_eq!(circle_at(&steps, 3), (0, 0));
+        assert_eq!(parse_script(&format_script(&steps)).unwrap(), steps);
+        for invalid in ["1=C157:0", "1=C-32768:1", "1=C0:99999"] {
+            assert!(parse_script(invalid).is_err());
+        }
+        for circle in [(0, 0), (-156, 156), (34, -80)] {
+            assert_eq!(unpack_live(pack_live(0xF000_0FFF, circle)), (0xF000_0FFF, circle));
+        }
+    }
 
     #[test]
     fn scripts() {

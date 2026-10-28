@@ -74,7 +74,11 @@ shows it in a window with keyboard and mouse (touch) input and sound
    seconds and produces 35.00 game updates/s wall throughput; normal game-clock
    updates remain 29.97/s, well below the 200 FPS objective. All GX list groups
    contain just one list, so reduce cross-submission round trips with explicit
-   deferred-write memory coherence. Residual geometry/depth/
+   deferred-write memory coherence. R-078–R-080 add immutable readback tickets,
+   coherent guest device writes and a disabled-by-default replay switch; synthetic
+   GPU replay matches synchronous results, including CPU partial writes. Next
+   validate captured gameplay and measure actual ticket materialization before
+   promoting this path. Residual geometry/depth/
    coverage differences also remain. Integer-depth
    equality and texture-unit 2 routing are also fixed (R-068/R-069).
    The shaded-vertex → persistent color-target → readback seam

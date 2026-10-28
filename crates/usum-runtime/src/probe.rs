@@ -182,6 +182,10 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
     #[cfg(feature = "vulkan-compare")]
     if std::env::var_os("USUM_VULKAN_ACCELERATE").is_some() {
         kernel.pica.enable_vulkan_acceleration();
+        if std::env::var_os("USUM_VULKAN_DEFER_READBACK").is_some() {
+            kernel.pica.enable_vulkan_deferred_readback();
+            eprintln!("experimental deferred Vulkan readbacks enabled");
+        }
         if !std::env::var("USUM_VULKAN_VERTEX").is_ok_and(|value| value == "0") {
             kernel.pica.enable_vulkan_vertex();
             eprintln!("experimental hardware PICA vertex shaders enabled");
@@ -271,6 +275,13 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
                 if let Some(error) = error {
                     println!("vulkan vertex fallback: {error}");
                 }
+            }
+            let (queued, materialized, elapsed) = kernel.pica.vulkan_deferred_stats();
+            if queued != 0 {
+                println!(
+                    "vulkan deferred {queued} queued, {materialized} materialized; wait/encode {:.3} s",
+                    elapsed.as_secs_f64()
+                );
             }
             let (reused, uploaded) = kernel.pica.vulkan_target_stats();
             println!("vulkan targets {reused} resident reuses, {uploaded} guest uploads");

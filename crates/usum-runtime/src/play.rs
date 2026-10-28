@@ -14,9 +14,11 @@
 //! W: R; Enter: Start; Backspace: Select; Escape: quit. The left mouse
 //! button on the bottom screen touches it.
 
+mod controller;
+
 use std::num::NonZeroU32;
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -167,7 +169,7 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
         }
     };
     let shared = Arc::new(Mutex::new(Shared::default()));
-    let pad = Arc::new(AtomicU32::new(0));
+    let pad = Arc::new(AtomicU64::new(0));
     let touch = Arc::new(AtomicU32::new(0));
     let quit = Arc::new(AtomicBool::new(false));
     let proxy = event_loop.create_proxy();
@@ -213,6 +215,9 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
         shared,
         frames,
         pad,
+        keyboard_pad: 0,
+        controllers: controller::Controllers::new(),
+        focused: true,
         touch,
         cursor: None,
         pressing: false,
@@ -255,7 +260,7 @@ fn run_game(
     entries: &'static [(u32, Code)],
     modules: Modules,
     shared: &Mutex<Shared>,
-    (pad, touch): (Arc<AtomicU32>, Arc<AtomicU32>),
+    (pad, touch): (Arc<AtomicU64>, Arc<AtomicU32>),
     sound: &crate::sound::Queue,
     quit: Arc<AtomicBool>,
     proxy: &EventLoopProxy<()>,
@@ -282,6 +287,10 @@ fn run_game(
     #[cfg(feature = "vulkan-compare")]
     if std::env::var_os("USUM_VULKAN_ACCELERATE").is_some() {
         kernel.pica.enable_vulkan_acceleration();
+        if std::env::var_os("USUM_VULKAN_DEFER_READBACK").is_some() {
+            kernel.pica.enable_vulkan_deferred_readback();
+            eprintln!("experimental deferred Vulkan readbacks enabled");
+        }
         if !std::env::var("USUM_VULKAN_VERTEX").is_ok_and(|value| value == "0") {
             kernel.pica.enable_vulkan_vertex();
             eprintln!("experimental hardware PICA vertex shaders enabled");
@@ -380,7 +389,10 @@ struct App {
     shared: Arc<Mutex<Shared>>,
     /// The screens, as the kernel hands them over at each VBlank.
     frames: Arc<crate::kernel::FrameOut>,
-    pad: Arc<AtomicU32>,
+    pad: Arc<AtomicU64>,
+    keyboard_pad: u32,
+    controllers: controller::Controllers,
+    focused: bool,
     /// The touch screen (`hid::pack_touch`), the cursor's position in the
     /// window, and whether the left button is down.
     touch: Arc<AtomicU32>,
@@ -423,6 +435,11 @@ impl ApplicationHandler for App {
         self.window = Some(window);
     }
 
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.publish_inputs();
+        event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(8)));
+    }
+
     fn user_event(&mut self, event_loop: &ActiveEventLoop, (): ()) {
         if self.quit.load(Ordering::Relaxed) {
             event_loop.exit();
@@ -448,10 +465,21 @@ impl ApplicationHandler for App {
                 }
                 if let Some(bit) = pad_bit(key) {
                     match event.state {
-                        ElementState::Pressed => self.pad.fetch_or(bit, Ordering::Relaxed),
-                        ElementState::Released => self.pad.fetch_and(!bit, Ordering::Relaxed),
+                        ElementState::Pressed if self.focused => self.keyboard_pad |= bit,
+                        ElementState::Released => self.keyboard_pad &= !bit,
+                        _ => {}
                     };
+                    self.publish_inputs();
                 }
+            }
+            WindowEvent::Focused(focused) => {
+                self.focused = focused;
+                if !focused {
+                    self.keyboard_pad = 0;
+                    self.pressing = false;
+                    self.touch.store(0, Ordering::Relaxed);
+                }
+                self.publish_inputs();
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = Some((position.x, position.y));
@@ -477,6 +505,12 @@ impl ApplicationHandler for App {
 }
 
 impl App {
+    fn publish_inputs(&mut self) {
+        let controller = self.controllers.poll();
+        let input = if self.focused { controller::combine(self.keyboard_pad, controller) } else { 0 };
+        self.pad.store(input, Ordering::Relaxed);
+    }
+
     /// Where the canvas lies in the window: (scale, x0, y0).
     fn layout(width: u32, height: u32) -> (u32, u32, u32) {
         let scale = (width / CANVAS.0).min(height / CANVAS.1).max(1);

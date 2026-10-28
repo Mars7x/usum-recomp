@@ -88,7 +88,7 @@ impl Memory {
     }
 
     pub fn write_u8(&mut self, address: u32, value: u8) -> Result<(), Fault> {
-        self.write_range(address, &[value])
+        self.write_bytes(address, [value])
     }
 
     /// Reads `N` bytes starting at `address`, byte by byte when the
@@ -108,6 +108,16 @@ impl Memory {
     }
 
     fn write_bytes<const N: usize>(&mut self, address: u32, bytes: [u8; N]) -> Result<(), Fault> {
+        if !self.deferred.overlaps(address, N) {
+            if let Some((i, o)) = self.find(address) {
+                let r = &mut self.regions[i];
+                if r.perm.write && N <= r.bytes.len() - o {
+                    r.logical.take();
+                    r.bytes[o..o + N].copy_from_slice(&bytes);
+                    return Ok(());
+                }
+            }
+        }
         self.write_range(address, &bytes)
     }
 

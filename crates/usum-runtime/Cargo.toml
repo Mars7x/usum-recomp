@@ -15,11 +15,12 @@ winit = { workspace = true, optional = true }
 softbuffer = { workspace = true, optional = true }
 pulseaudio = { workspace = true, optional = true }
 usum-render = { workspace = true, optional = true }
+gilrs = { version = "0.11", optional = true }
 
 [features]
 # the play window (play.rs); off by default so tests and the probe build
 # without a window system
-window = ["dep:winit", "dep:softbuffer", "dep:pulseaudio"]
+window = ["dep:winit", "dep:softbuffer", "dep:pulseaudio", "dep:gilrs"]
 # Immutable shaded-draw snapshots for the opt-in Vulkan comparison path.
 # The software renderer remains authoritative and this is off by default.
 vulkan-compare = ["dep:usum-render"]

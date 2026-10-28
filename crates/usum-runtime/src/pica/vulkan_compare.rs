@@ -2,6 +2,8 @@
 //! opt-in Vulkan comparison renderer. Building this module cannot change the
 //! software framebuffer; execution and replacement remain separate steps.
 
+mod deferred;
+
 use std::sync::Arc;
 use usum_guest::Memory;
 use usum_render::{
@@ -45,9 +47,10 @@ pub struct CaptureTarget {
 pub(super) struct LiveTarget {
     info: CaptureTarget,
     gpu: Arc<usum_render::ColorTarget>,
-    /// Last successful readback of this GPU allocation. Reuse is allowed
-    /// only when a fresh guest snapshot matches both color and depth exactly.
+    /// Last successful synchronous readback of this GPU allocation. Reuse
+    /// requires matching guest bytes, or both immutable pending-plane identities.
     contents: Option<TargetSnapshot>,
+    pending: Option<Arc<deferred::DeferredTarget>>,
 }
 
 /// One triangle-list draw after PICA vertex and optional geometry shading.
@@ -160,6 +163,7 @@ pub(super) struct LiveResources {
     target_uploads: u64,
     capture_times: [std::time::Duration; 3],
     transfer_times: [std::time::Duration; 2],
+    deferred: Arc<deferred::Stats>,
 }
 
 impl LiveResources {
@@ -174,6 +178,7 @@ impl LiveResources {
         self.target_uploads = 0;
         self.capture_times = [std::time::Duration::ZERO; 3];
         self.transfer_times = [std::time::Duration::ZERO; 2];
+        self.deferred = Arc::default();
     }
 
     pub(super) fn stats(&self) -> (u64, u64, u64, u64) {
@@ -182,6 +187,10 @@ impl LiveResources {
 
     pub(super) fn target_stats(&self) -> (u64, u64) {
         (self.target_reuses, self.target_uploads)
+    }
+
+    pub(super) fn deferred_stats(&self) -> (u64, u64, std::time::Duration) {
+        self.deferred.get()
     }
 
     pub(super) fn capture_times(&self) -> [std::time::Duration; 3] {
@@ -593,7 +602,10 @@ fn capture_buffers(
     let target = if pica.vulkan_live {
         match pica.vulkan_snapshots.iter().find(|snapshot| snapshot.target_info == target_info) {
             Some(snapshot) => Arc::clone(&snapshot.target),
-            None => Arc::new(target_snapshot(pica, mem, target_info)?),
+            None => match deferred::resident_seed(pica, mem, target_info) {
+                Some(seed) => seed,
+                None => Arc::new(target_snapshot(pica, mem, target_info)?),
+            },
         }
     } else {
         Arc::new(target_snapshot(pica, mem, target_info)?)
@@ -800,9 +812,9 @@ fn d24s8_stencil(pica: &Pica, mem: &Memory, target: CaptureTarget) -> Result<Vec
     Ok(stencil)
 }
 
-/// Replays the current command list's captured draws in Vulkan, batching all
-/// draws for each target into one submission, and writes only color back.
-/// Software depth remains authoritative during this experimental live mode.
+/// Replays captured draws in Vulkan, batching each target into one submission.
+/// Color and optionally depth are exposed as checked guest device writes;
+/// experimental deferred writes materialize only when a guest reader needs them.
 pub(crate) fn replay_live(pica: &mut Pica, mem: &mut Memory) -> Result<(usize, usize, FeedbackStats), String> {
     static RENDERER: std::sync::OnceLock<Result<Renderer, String>> = std::sync::OnceLock::new();
     let renderer = RENDERER.get_or_init(Renderer::new).as_ref().map_err(Clone::clone)?;
@@ -880,6 +892,12 @@ pub(crate) fn replay_live(pica: &mut Pica, mem: &mut Memory) -> Result<(usize, u
             .find(|target| target.info == info)
             .ok_or("live target disappeared before readback")?;
         let readback_started = std::time::Instant::now();
+        if deferred::eligible(pica, info) {
+            let ticket = Arc::new(renderer.begin_batch(&target.gpu).submit_readback()?);
+            results.push(LiveResult { info, color: Vec::new(), depth: None, pending: Some(ticket) });
+            pica.vulkan_live_resources.transfer_times[0] += readback_started.elapsed();
+            continue;
+        }
         let (color, depth) = if pica.vulkan_live_depth {
             let (color, depth) = renderer.read_color_and_depth_target(&target.gpu)?;
             (color, Some(depth))
@@ -887,10 +905,14 @@ pub(crate) fn replay_live(pica: &mut Pica, mem: &mut Memory) -> Result<(usize, u
             (renderer.read_color_target(&target.gpu)?, None)
         };
         pica.vulkan_live_resources.transfer_times[0] += readback_started.elapsed();
-        results.push(LiveResult { info, color, depth });
+        results.push(LiveResult { info, color, depth, pending: None });
     }
     let writeback_started = std::time::Instant::now();
     for result in results {
+        if let Some(ticket) = result.pending {
+            deferred::install(pica, mem, result.info, ticket)?;
+            continue;
+        }
         write_color_result(pica, mem, result.info, &result.color)?;
         if let Some(depth) = result.depth.as_deref() {
             write_depth_result(pica, mem, result.info, depth)?;
@@ -913,6 +935,7 @@ struct LiveResult {
     info: CaptureTarget,
     color: Vec<u8>,
     depth: Option<Vec<f32>>,
+    pending: Option<Arc<usum_render::PendingReadback>>,
 }
 
 fn depth_texture_matches(pica: &Pica, texture: &TextureSnapshot, target: CaptureTarget) -> Result<bool, String> {
@@ -950,15 +973,17 @@ fn render_live_segment(
             Some(index) => index,
             None => {
                 let target = Arc::new(renderer.create_color_target(initial.width, initial.height)?);
-                pica.vulkan_live_target_cache.push(LiveTarget { info: target_info, gpu: target, contents: None });
+                pica.vulkan_live_target_cache.push(LiveTarget { info: target_info, gpu: target, contents: None, pending: None });
                 pica.vulkan_live_target_cache.len() - 1
             }
         };
         let cached = &mut pica.vulkan_live_target_cache[target_index];
-        let resident_matches = resident_contents_match(cached.contents.as_ref(), initial);
+        let resident_matches =
+            resident_contents_match(cached.contents.as_ref(), initial) || deferred::matches(cached.pending.as_ref(), initial);
         // Once commands touch the target the previous readback no longer
         // describes it. Only a fully successful readback can restore reuse.
         cached.contents = None;
+        cached.pending = None;
         let target = Arc::clone(&cached.gpu);
         if !initialized {
             if resident_matches {
@@ -979,6 +1004,15 @@ fn render_live_segment(
         }
         if let Some(results) = final_results.as_deref_mut() {
             let readback_started = std::time::Instant::now();
+            if deferred::eligible(pica, target_info) {
+                let ticket = Arc::new(batch.submit_readback()?);
+                results.push(LiveResult { info: target_info, color: Vec::new(), depth: None, pending: Some(ticket) });
+                pica.vulkan_live_resources.transfer_times[0] += readback_started.elapsed();
+                if !initialized {
+                    latest.push(target_info);
+                }
+                continue;
+            }
             let (color, depth) = if pica.vulkan_live_depth {
                 let (color, depth) = batch.finish_and_read_color_and_depth()?;
                 (color, Some(depth))
@@ -987,7 +1021,7 @@ fn render_live_segment(
                 (renderer.read_color_target(&target)?, None)
             };
             pica.vulkan_live_resources.transfer_times[0] += readback_started.elapsed();
-            results.push(LiveResult { info: target_info, color, depth });
+            results.push(LiveResult { info: target_info, color, depth, pending: None });
         } else {
             batch.submit()?;
         }
