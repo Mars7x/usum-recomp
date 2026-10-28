@@ -7,6 +7,11 @@
 
 use crate::Fault;
 
+mod deferred;
+use deferred::DeferredRanges;
+pub use deferred::{DeferredBytes, MemorySpan};
+use std::sync::Arc;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Perm {
     pub read: bool,
@@ -36,6 +41,7 @@ impl Region {
 #[derive(Debug, Clone, Default)]
 pub struct Memory {
     regions: Vec<Region>,
+    deferred: DeferredRanges,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -70,20 +76,18 @@ impl Memory {
 
     pub fn read_u8(&self, address: u32) -> Result<u8, Fault> {
         match self.find(address) {
-            Some((i, o)) if self.regions[i].perm.read => Ok(self.regions[i].bytes[o]),
+            Some((i, o)) if self.regions[i].perm.read => {
+                if let Some(bytes) = self.deferred.read(address, 1)? {
+                    return Ok(bytes[0]);
+                }
+                Ok(self.regions[i].bytes[o])
+            }
             _ => Err(Fault::Unmapped { address, write: false }),
         }
     }
 
     pub fn write_u8(&mut self, address: u32, value: u8) -> Result<(), Fault> {
-        match self.find(address) {
-            Some((i, o)) if self.regions[i].perm.write => {
-                self.regions[i].bytes[o] = value;
-                Ok(())
-            }
-            Some(_) => Err(Fault::ReadOnly { address }),
-            None => Err(Fault::Unmapped { address, write: true }),
-        }
+        self.write_range(address, &[value])
     }
 
     /// Reads `N` bytes starting at `address`, byte by byte when the
@@ -91,7 +95,7 @@ impl Memory {
     fn read_bytes<const N: usize>(&self, address: u32) -> Result<[u8; N], Fault> {
         if let Some((i, o)) = self.find(address) {
             let r = &self.regions[i];
-            if r.perm.read && o + N <= r.bytes.len() {
+            if r.perm.read && o + N <= r.bytes.len() && !self.deferred.overlaps(address, N) {
                 return Ok(r.bytes[o..o + N].try_into().expect("N bytes"));
             }
         }
@@ -103,26 +107,7 @@ impl Memory {
     }
 
     fn write_bytes<const N: usize>(&mut self, address: u32, bytes: [u8; N]) -> Result<(), Fault> {
-        if let Some((i, o)) = self.find(address) {
-            let r = &mut self.regions[i];
-            if r.perm.write && o + N <= r.bytes.len() {
-                r.bytes[o..o + N].copy_from_slice(&bytes);
-                return Ok(());
-            }
-        }
-        // check every byte first, so a faulting access writes nothing
-        for k in 0..N as u32 {
-            let a = address.wrapping_add(k);
-            match self.find(a) {
-                Some((i, _)) if self.regions[i].perm.write => {}
-                Some(_) => return Err(Fault::ReadOnly { address: a }),
-                None => return Err(Fault::Unmapped { address: a, write: true }),
-            }
-        }
-        for (k, byte) in bytes.into_iter().enumerate() {
-            self.write_u8(address.wrapping_add(k as u32), byte)?;
-        }
-        Ok(())
+        self.write_range(address, &bytes)
     }
 
     pub fn read_u16(&self, address: u32) -> Result<u16, Fault> {
@@ -145,7 +130,7 @@ impl Memory {
     /// diagnostics and host services; guest accesses use the checked
     /// accessors.
     pub fn regions(&self) -> impl Iterator<Item = (u32, &[u8], Perm)> {
-        self.regions.iter().map(|r| (r.base, r.bytes.as_slice(), r.perm))
+        self.try_regions().expect("deferred device read failed during memory inspection").into_iter()
     }
 
     /// Moves `len` bytes at `from`, which must lie in one region, to a
@@ -157,6 +142,7 @@ impl Memory {
         if len == 0 || o + len > self.regions[i].bytes.len() {
             return Err(Overlap);
         }
+        self.materialize_all().map_err(|_| Overlap)?;
         let r = self.regions.remove(i);
         let moved = r.bytes[o..o + len].to_vec();
         let mut pieces = Vec::new();
@@ -198,52 +184,54 @@ impl Memory {
     /// Copies `bytes` in (for host services such as file reads). Every
     /// byte is checked first, so a faulting copy writes nothing.
     pub fn write_range(&mut self, address: u32, bytes: &[u8]) -> Result<(), Fault> {
+        self.copy_in(address, bytes, false)
+    }
+
+    /// Writes mapped memory regardless of process write permissions.
+    pub fn device_write(&mut self, address: u32, bytes: &[u8]) -> Result<(), Fault> {
+        self.copy_in(address, bytes, true)
+    }
+
+    fn copy_in(&mut self, address: u32, bytes: &[u8], device: bool) -> Result<(), Fault> {
         if let Some((i, o)) = self.find(address) {
-            let r = &mut self.regions[i];
-            if r.perm.write && o + bytes.len() <= r.bytes.len() {
-                r.bytes[o..o + bytes.len()].copy_from_slice(bytes);
+            let r = &self.regions[i];
+            if (device || r.perm.write) && bytes.len() <= r.bytes.len() - o {
+                self.prepare_overwrite(address, bytes.len())?;
+                self.regions[i].bytes[o..o + bytes.len()].copy_from_slice(bytes);
                 return Ok(());
             }
         }
-        for k in 0..bytes.len() as u32 {
-            let a = address.wrapping_add(k);
-            match self.find(a) {
-                Some((i, _)) if self.regions[i].perm.write => {}
-                Some(_) => return Err(Fault::ReadOnly { address: a }),
-                None => return Err(Fault::Unmapped { address: a, write: true }),
+        // Validate before resolving or removing any deferred data. A failed
+        // write must preserve the entire logical memory value.
+        self.validate_write(address, bytes.len(), device)?;
+        self.prepare_overwrite(address, bytes.len())?;
+        self.copy_raw(address, bytes);
+        Ok(())
+    }
+
+    fn validate_write(&self, address: u32, len: usize, device: bool) -> Result<(), Fault> {
+        let mut k = 0;
+        while k < len {
+            let a = address.wrapping_add(k as u32);
+            let (i, o) = self.find(a).ok_or(Fault::Unmapped { address: a, write: true })?;
+            let r = &self.regions[i];
+            if !device && !r.perm.write {
+                return Err(Fault::ReadOnly { address: a });
             }
-        }
-        for (k, &byte) in bytes.iter().enumerate() {
-            self.write_u8(address.wrapping_add(k as u32), byte)?;
+            k += (r.bytes.len() - o).min(len - k);
         }
         Ok(())
     }
 
-    /// Writes as a device does (the GPU into VRAM): regardless of the
-    /// process's permissions, which are about its own accesses. The range
-    /// must be mapped; nothing is written otherwise.
-    pub fn device_write(&mut self, address: u32, bytes: &[u8]) -> Result<(), Fault> {
-        if let Some((i, o)) = self.find(address) {
-            let r = &mut self.regions[i];
-            if o + bytes.len() <= r.bytes.len() {
-                r.bytes[o..o + bytes.len()].copy_from_slice(bytes);
-                return Ok(());
-            }
-        }
-        for k in 0..bytes.len() as u32 {
-            if self.find(address.wrapping_add(k)).is_none() {
-                return Err(Fault::Unmapped { address: address.wrapping_add(k), write: true });
-            }
-        }
+    fn copy_raw(&mut self, address: u32, bytes: &[u8]) {
         let mut k = 0;
         while k < bytes.len() {
-            let (i, o) = self.find(address.wrapping_add(k as u32)).expect("checked");
+            let (i, o) = self.find(address.wrapping_add(k as u32)).expect("validated device write");
             let r = &mut self.regions[i];
             let n = (r.bytes.len() - o).min(bytes.len() - k);
             r.bytes[o..o + n].copy_from_slice(&bytes[k..k + n]);
             k += n;
         }
-        Ok(())
     }
 
     /// `len` readable bytes at `address` as one slice, if they lie in one
@@ -251,7 +239,13 @@ impl Memory {
     pub fn slice(&self, address: u32, len: u32) -> Option<&[u8]> {
         let (i, o) = self.find(address)?;
         let r = &self.regions[i];
-        (r.perm.read && o + len as usize <= r.bytes.len()).then(|| &r.bytes[o..o + len as usize])
+        if !r.perm.read || o + len as usize > r.bytes.len() {
+            return None;
+        }
+        if self.deferred.overlaps(address, len as usize) {
+            return self.deferred.read(address, len as usize).ok().flatten();
+        }
+        Some(&r.bytes[o..o + len as usize])
     }
 
     /// Copies `len` bytes out (for host services such as `write`).

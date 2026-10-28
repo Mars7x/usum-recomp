@@ -11,9 +11,10 @@ mod vertex;
 pub use vertex::{PicaVertexDraw, VertexProgram};
 
 pub use raster::{
-    AlphaTest, BlendComponent, BlendFactor, BlendOperation, BlendState, ColorMask, ColorTarget, CullMode, DepthCompare,
-    DepthState, FilterMode, FragmentInputs, GpuLighting, LightingLight, LightingState, PicaDrawState, PicaRasterRegisters,
-    RasterBatch, RasterState, RasterVertex, SampledTexture, SamplerState, TevStage, TevState, Viewport, WrapMode,
+    AlphaTest, BlendComponent, BlendFactor, BlendOperation, BlendState, ColorDepthReadback, ColorMask, ColorTarget, CullMode,
+    DepthCompare, DepthState, FilterMode, FragmentInputs, GpuLighting, LightingLight, LightingState, PendingReadback,
+    PicaDrawState, PicaRasterRegisters, RasterBatch, RasterState, RasterVertex, SampledTexture, SamplerState, TevStage, TevState,
+    Viewport, WrapMode,
 };
 
 /// A Vulkan device ready to host translated PICA draw calls.

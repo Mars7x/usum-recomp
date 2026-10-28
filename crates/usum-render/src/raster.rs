@@ -1,3 +1,5 @@
+mod readback;
+pub use readback::{ColorDepthReadback, PendingReadback};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;

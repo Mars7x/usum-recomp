@@ -2529,3 +2529,21 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   batching the existing synchronous GX-queue drain therefore cannot remove the
   readback stalls. Next implement safe deferred device writes/coherence across
   guest submissions, preserving CPU-read visibility and rollback behavior.
+
+### R-078 2026-10-28 — Deferred readback and memory coherence foundations
+
+- Added immutable per-submission color/depth staging tickets. Submitting the
+  ticket checks GPU validation but does not wait for execution or map results;
+  the first reader waits and caches the result. Later target reuse cannot change
+  the frozen snapshot, and concurrent readers share the same materialization.
+- Added deferred device writes to guest Memory, with checked logical reads and
+  exact-range identity lookup. Full overwrites discard tickets without reading;
+  partial writes preserve untouched bytes. Failed writes preserve logical data,
+  clones retain their frozen versions, and remapping resolves pending bytes.
+  No unsafe memory access or change to guest read/write permissions is required.
+- Validation: 26 guest, 16 renderer and 68 runtime unit tests pass; strict Clippy
+  passes. A hardware example on RX 9070 XT matches synchronous color/depth bytes
+  after target reuse/destruction, including padded rows and concurrent readers.
+  A 2,000-operation mixed CPU/device sequence matches eager memory throughout.
+- These are foundations, not yet the gameplay path. They establish the coherence
+  needed to remove per-list stalls; no new gameplay speedup is claimed here.

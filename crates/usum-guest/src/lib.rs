@@ -72,6 +72,10 @@ pub enum Fault {
         address: u32,
         write: bool,
     },
+    /// A host device could not supply its deferred memory result.
+    Device {
+        address: u32,
+    },
     ReadOnly {
         address: u32,
     },
@@ -103,6 +107,7 @@ impl fmt::Display for Fault {
             Fault::Unmapped { address, write } => {
                 write!(f, "{} unmapped address {address:#010x}", if *write { "write to" } else { "read from" })
             }
+            Fault::Device { address } => write!(f, "device read failed at {address:#010x}"),
             Fault::ReadOnly { address } => write!(f, "write to read-only address {address:#010x}"),
             Fault::Unaligned { address } => write!(f, "unaligned access at {address:#010x}"),
             Fault::Unsupported { address, raw } => write!(f, "unsupported instruction {raw:#010x} at {address:#010x}"),
