@@ -275,6 +275,7 @@ impl Renderer {
                 blend: Some(blend),
                 alpha_test: None,
                 tev: TevState::default(),
+                ..RasterState::default()
             },
         )?;
         let blend_image = self.read_color_target(&blend_target)?;

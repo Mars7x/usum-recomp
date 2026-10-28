@@ -377,6 +377,7 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
         kernel.pica.display_transfers,
         kernel.pica.display_transfer_time.as_secs_f64()
     );
+    println!("video conversion {} jobs, {:.3} s", kernel.y2r_conversions, kernel.y2r_time.as_secs_f64());
     let top_frames = kernel.presented.iter().filter(|p| p.screen == 0).count();
     let groups: Vec<_> = kernel
         .gsp_list_groups

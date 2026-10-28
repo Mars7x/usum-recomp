@@ -276,6 +276,8 @@ pub struct Kernel {
     pub uds: Option<uds::Uds>,
     /// The YUV-to-RGB converter's settings (video).
     pub y2r: y2r::Y2r,
+    pub y2r_conversions: u64,
+    pub y2r_time: std::time::Duration,
     /// The state of the random numbers services hand out (SSLC
     /// GenerateRandomData): a fixed seed, so runs repeat exactly; a real
     /// console's numbers differ every time (a choice, R-047).
@@ -1101,7 +1103,11 @@ impl Kernel {
                 }
                 // StartConversion: done at once, then the end event fires
                 Some(y2r::Action::Convert) => {
-                    if let Err(what) = self.y2r.convert(mem) {
+                    let started = std::time::Instant::now();
+                    let converted = self.y2r.convert(mem);
+                    self.y2r_time += started.elapsed();
+                    self.y2r_conversions += 1;
+                    if let Err(what) = converted {
                         return Outcome::Unimplemented(what);
                     }
                     if let Some(event) = self.y2r.event {

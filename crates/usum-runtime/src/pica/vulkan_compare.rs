@@ -607,6 +607,19 @@ fn capture_buffers(
     // the first draw to a framebuffer. Share that immutable seed across all
     // later draws instead of decoding and copying the same buffers each time.
     let phase = std::time::Instant::now();
+    if std::env::var_os("USUM_DEPTH_TRACE").is_some() {
+        thread_local! {static SEEN:std::cell::RefCell<std::collections::HashSet<[u32;5]>>=std::cell::RefCell::new(std::collections::HashSet::new());}
+        let words = [pica.regs[0x4d], pica.regs[0x4e], pica.regs[0x6d], pica.regs[0x107], pica.regs[0x101]];
+        SEEN.with(|seen| {
+            let mut seen = seen.borrow_mut();
+            if seen.len() < 32 && seen.insert(words) {
+                eprintln!(
+                    "depth trace: scale {:08x} offset {:08x} mode {:08x} mask {:08x} blend {:08x}",
+                    words[0], words[1], words[2], words[3], words[4]
+                );
+            }
+        });
+    }
     let target = if pica.vulkan_live {
         match pica.vulkan_snapshots.iter().find(|snapshot| snapshot.target_info == target_info) {
             Some(snapshot) => Arc::clone(&snapshot.target),
@@ -1208,6 +1221,109 @@ fn feedback_supported_in(snapshots: &[DrawSnapshot], pica: &Pica) -> Result<bool
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "requires a Vulkan hardware adapter"]
+    fn negative_zero_and_small_negative_lighting_slopes_do_not_create_bands() {
+        use usum_render::{LightingLight, RasterState, TevStage, TevState, Viewport};
+        let renderer = Renderer::new().unwrap();
+        let render = |slope: u32| {
+            let target = renderer.create_color_target(32, 32).unwrap();
+            let mut luts = vec![[0; 256]; 24];
+            luts[6].fill(3072 | slope);
+            let lighting = renderer
+                .create_lighting(&LightingState {
+                    lights: vec![LightingLight {
+                        id: 0,
+                        specular0: [0.0; 3],
+                        specular1: [1.0; 3],
+                        diffuse: [0.0; 3],
+                        ambient: [0.0; 3],
+                        position: [0.0, 0.0, 1.0],
+                        spot_direction: [0.0; 3],
+                        directional: true,
+                        two_sided: false,
+                        geometric: [false; 2],
+                        attenuation_bias: 0.0,
+                        attenuation_scale: 0.0,
+                    }],
+                    ambient: [0.0; 3],
+                    config0: 0,
+                    config1: !(1 << 22),
+                    abs: 0,
+                    select: 0,
+                    scale: 0,
+                    luts: luts.into(),
+                })
+                .unwrap();
+            let vertices = [
+                RasterVertex::new([-0.9, -0.9, -0.5, 1.0], [1.0; 4])
+                    .with_lighting_vectors([0.0, 0.0, 0.0, 1.0], [-1.0, 0.0, 1.0]),
+                RasterVertex::new([0.9, -0.9, -0.5, 1.0], [1.0; 4]).with_lighting_vectors([0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 1.0]),
+                RasterVertex::new([0.0, 0.9, -0.5, 1.0], [1.0; 4]).with_lighting_vectors([0.0, 0.0, 0.0, 1.0], [0.0, 1.0, 1.0]),
+            ];
+            let mut tev = TevState::default();
+            tev.stages[0] = TevStage::replace(2);
+            let mut batch = renderer.begin_batch(&target);
+            batch
+                .draw_with_inputs(
+                    &vertices,
+                    Viewport::full(&target),
+                    RasterState { tev, ..RasterState::default() },
+                    FragmentInputs { lighting: Some(&lighting), ..FragmentInputs::default() },
+                )
+                .unwrap();
+            batch.finish().unwrap();
+            renderer.read_color_target(&target).unwrap()
+        };
+        let zero = render(0);
+        assert_eq!(&zero[(16 * 32 + 16) * 4..(16 * 32 + 16) * 4 + 4], &[191, 191, 191, 255]);
+        assert_eq!(zero, render(1 << 23), "negative zero must not introduce lighting stripes");
+        let descending = render(1 << 23 | 1 << 12);
+        assert!(
+            zero.iter().zip(descending).all(|(a, b)| a.abs_diff(b) <= 1),
+            "a tiny descending slope must stay smooth across LUT cells"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a Vulkan hardware adapter"]
+    fn programmed_depth_bias_resolves_coplanar_draws_and_w_buffer_maps_depth() {
+        use usum_render::{DepthCompare, DepthState, RasterState, Viewport};
+        let renderer = Renderer::new().unwrap();
+        let target = renderer.create_color_target(16, 16).unwrap();
+        let triangle = |color, w| {
+            [
+                RasterVertex::new([-0.75 * w, -0.75 * w, -0.5 * w, w], color),
+                RasterVertex::new([0.75 * w, -0.75 * w, -0.5 * w, w], color),
+                RasterVertex::new([0.0, 0.75 * w, -0.5 * w, w], color),
+            ]
+        };
+        let state = RasterState {
+            depth: DepthState { compare: DepthCompare::Less, write: true },
+            depth_max: 0xFF_FFFF,
+            ..RasterState::default()
+        };
+        let mut batch = renderer.begin_batch(&target);
+        batch.draw(&triangle([0.0, 0.0, 1.0, 1.0], 1.0), Viewport::full(&target), state).unwrap();
+        batch.draw(&triangle([1.0, 0.0, 0.0, 1.0], 1.0), Viewport::full(&target), state).unwrap();
+        batch.finish().unwrap();
+        let image = renderer.read_color_target(&target).unwrap();
+        assert_eq!(&image[(8 * 16 + 8) * 4..][..4], &[0, 0, 255, 255]);
+        let mut batch = renderer.begin_batch(&target);
+        batch
+            .draw(&triangle([0.0, 1.0, 0.0, 1.0], 1.0), Viewport::full(&target), RasterState { depth_offset: -0.0001, ..state })
+            .unwrap();
+        batch.finish().unwrap();
+        let image = renderer.read_color_target(&target).unwrap();
+        assert_eq!(&image[(8 * 16 + 8) * 4..][..4], &[0, 255, 0, 255]);
+        let target = renderer.create_color_target(16, 16).unwrap();
+        let mut batch = renderer.begin_batch(&target);
+        batch.draw(&triangle([1.0; 4], 2.0), Viewport::full(&target), RasterState { depth_w_buffer: true, ..state }).unwrap();
+        batch.finish().unwrap();
+        let depth = renderer.read_depth_target(&target).unwrap();
+        assert!((depth[8 * 16 + 8] - 1.0).abs() < 1e-6);
+    }
+
     use super::*;
     use usum_guest::Perm;
 

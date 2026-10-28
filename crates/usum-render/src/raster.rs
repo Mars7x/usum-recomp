@@ -652,6 +652,10 @@ pub struct RasterState {
     pub depth: DepthState,
     /// Integer guest depth range; zero keeps native float precision.
     pub depth_max: u32,
+    /// PICA's programmable mapping from signed clip Z/W to stored depth.
+    pub depth_scale: f32,
+    pub depth_offset: f32,
+    pub depth_w_buffer: bool,
     pub color_mask: ColorMask,
     pub blend: Option<BlendState>,
     pub alpha_test: Option<AlphaTest>,
@@ -714,6 +718,9 @@ impl PicaDrawState {
         let mut raster = RasterState::from_pica(PicaRasterRegisters::from_pica_registers(registers)?);
         raster.tev = TevState::from_pica_registers(registers)?;
         raster.depth_max = if register(0x116)? & 3 == 0 { 0xFFFF } else { 0xFF_FFFF };
+        raster.depth_scale = pica_f24(register(0x4d)?);
+        raster.depth_offset = pica_f24(register(0x4e)?);
+        raster.depth_w_buffer = register(0x6d)? & 1 == 0;
         let lighting = LightingState::from_pica_registers_shared(registers, luts)?;
         Ok(Self { viewport, raster, lighting })
     }
@@ -741,6 +748,9 @@ impl RasterState {
             cull: CullMode::from_pica(registers.cull_mode),
             depth: DepthState::from_pica(registers.depth_color_mask, registers.depth_write_permissions),
             depth_max: 0,
+            depth_scale: -1.0,
+            depth_offset: 0.0,
+            depth_w_buffer: false,
             color_mask: ColorMask::from_pica(registers.depth_color_mask, registers.color_write_permissions),
             blend: BlendState::from_pica(registers.color_operation, registers.blend_functions, registers.blend_constant),
             alpha_test: AlphaTest::from_pica(registers.alpha_test),
@@ -755,6 +765,9 @@ impl Default for RasterState {
             cull: CullMode::None,
             depth: DepthState::less_equal_write(),
             depth_max: 0,
+            depth_scale: -1.0,
+            depth_offset: 0.0,
+            depth_w_buffer: false,
             color_mask: ColorMask::ALL,
             blend: None,
             alpha_test: None,
@@ -1275,8 +1288,11 @@ impl Renderer {
                 )
             }
         };
-        let mut fragment_words = [0; 37];
+        let mut fragment_words = [0; 40];
         fragment_words[36] = state.depth_max;
+        fragment_words[37] = state.depth_scale.to_bits();
+        fragment_words[38] = state.depth_offset.to_bits();
+        fragment_words[39] = u32::from(state.depth_w_buffer);
         fragment_words[..4].copy_from_slice(&state.alpha_test.map(AlphaTest::uniform).unwrap_or([0; 4]));
         fragment_words[3] = u32::from(inputs.texture0.is_some())
             | u32::from(inputs.texture1.is_some()) << 1
@@ -2535,7 +2551,8 @@ fn lighting_environment_supports(table: u32) -> bool {
 fn lighting_lut_entry(table: u32, index: u32, delta: f32) -> f32 {
     let raw = lighting_state.words[LIGHT_LUT_BASE + table * 256u + (index & 255u)];
     let value = f32(raw & 4095u) / 4095.0;
-    let difference = f32(bitcast<i32>(((raw >> 12u) & 4095u) << 20u) >> 20) / 2047.0;
+    let magnitude=f32((raw>>12u)&2047u)/2047.0;
+    let difference=select(magnitude,-magnitude,(raw&8388608u)!=0u);
     return value + difference * delta;
 }
 
@@ -2688,10 +2705,12 @@ fn fragment(in: VertexOut) -> FragmentOut {
     }
     var out: FragmentOut;
     out.color = color;
-    out.depth = in.position.z;
+    var mapped_depth=-in.position.z*bitcast<f32>(state.words[37])+bitcast<f32>(state.words[38]);
+    if state.words[39]!=0u {mapped_depth/=in.position.w;}
+    out.depth = clamp(mapped_depth,0.0,1.0);
     if state.words[36] != 0u {
         let maximum = f32(state.words[36]);
-        let integer_depth = floor(clamp(in.position.z, 0.0, 1.0) * maximum);
+        let integer_depth = floor(out.depth * maximum);
         // GPU division can use an approximate reciprocal, which breaks
         // equality against CPU-normalized guest depth. For D24, q/2^24 is
         // exact and q/(2^24-1) rounds to its next representable float for

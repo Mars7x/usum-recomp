@@ -838,6 +838,12 @@ fn coverage(xy: [[f32; 2]; 3]) -> Option<([Edge; 3], i64)> {
     Some(([edge(f[1], f[2]), edge(f[2], f[0]), edge(f[0], f[1])], area.abs()))
 }
 
+#[inline]
+fn map_depth(window_depth: f32, inv_w: f32, scale: f32, offset: f32, w_buffer: bool) -> f32 {
+    let mapped = -window_depth * scale + offset;
+    (if w_buffer { mapped / inv_w } else { mapped }).clamp(0.0, 1.0)
+}
+
 /// A window coordinate in 1/16 pixels (4 fractional bits), kept well
 /// inside i64 for points far outside the screen.
 fn fixed(c: f32) -> i64 {
@@ -928,6 +934,9 @@ fn raster_band(
     let (color_write, depth_write) = (reg(p, 0x113) & 0xF != 0, reg(p, 0x115) & 2 != 0 && depth_mask >> 12 & 1 == 1);
     let depth_test = depth_mask & 1 == 1;
     let has_depth = !band.depth.is_empty();
+    let depth_scale = shader::f24(reg(p, 0x4d));
+    let depth_offset = shader::f24(reg(p, 0x4e));
+    let depth_w_buffer = reg(p, 0x6d) & 1 == 0;
     let unit2_coords = if reg(p, 0x80) >> 13 & 1 == 1 { 1 } else { 2 };
     let max_depth = if t.depth_format == 0 { 0xFFFF } else { 0xFF_FFFF } as f32;
     // a band's memory starts at its first tile: tile rows hold tiles left
@@ -991,7 +1000,9 @@ fn raster_band(
                 }
                 let area = tri.area_fixed as f32;
                 let (w0, w1, w2) = (e[0] as f32 / area, e[1] as f32 / area, e[2] as f32 / area);
-                let depth = (w0 * s[0][2] + w1 * s[1][2] + w2 * s[2][2]).clamp(0.0, 1.0);
+                let window_depth = w0 * s[0][2] + w1 * s[1][2] + w2 * s[2][2];
+                let inv_w = w0 * s[0][3] + w1 * s[1][3] + w2 * s[2][3];
+                let depth = map_depth(window_depth, inv_w, depth_scale, depth_offset, depth_w_buffer);
                 // the buffers are 8x8 tiles; row 0 is the framebuffer's bottom
                 let row = t.height - 1 - y;
                 let pixel = tiled_offset(x, row, t.width) as usize - base_offset;
@@ -1551,6 +1562,19 @@ fn draw_inner(p: &mut Pica, mem: &mut Memory, elements: bool) -> Result<(), Stri
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn programmable_depth_bias_and_w_buffer_are_applied_before_quantization() {
+        assert_eq!(super::map_depth(0.5, 0.5, -1.0, -0.125, false), 0.375);
+        assert_eq!(super::map_depth(0.5, 0.5, -1.0, -0.125, true), 0.75);
+        assert_eq!(super::map_depth(0.25, 1.0, -2.0, 0.125, false), 0.625);
+        assert_eq!(super::map_depth(0.5, 1.0, -1.0, -1.0, false), 0.0);
+        assert_eq!(super::map_depth(0.5, 0.1, -1.0, 0.0, true), 1.0);
+        let bias = super::shader::f24(0xb14000);
+        let unshifted = (super::map_depth(0.5, 1.0, -1.0, 0.0, false) * 16777215.0) as u32;
+        let shifted = (super::map_depth(0.5, 1.0, -1.0, bias, false) * 16777215.0) as u32;
+        assert!(shifted < unshifted, "the observed negative decal offset must win a strict less test");
+    }
+
     use super::*;
 
     #[cfg(feature = "vulkan-compare")]

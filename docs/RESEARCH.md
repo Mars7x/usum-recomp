@@ -2638,3 +2638,26 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   supplied no high-resolution frame at all. All 74 enabled runtime tests and strict
   Clippy pass. `USUM_SCALE_TRACE=1` enables bounded diagnostics and periodic scaled
   PPM captures alongside native probe captures (private game-derived evidence).
+
+### R-084 2026-10-28 — Remove repeating road lighting bands; profile the intro
+
+- Both renderers reproduced the bright bands. Per-draw captures isolated them to
+  the road's lighting, rather than its textures or resolution scaling. PICA lighting
+  LUT differences store an 11-bit magnitude and a separate sign bit; interpreting
+  them as two's complement turned tiny negative slopes, including negative zero,
+  into large sawtooth brightness changes. Correct both CPU and WGSL decoding.
+  Hardware field reference: [Azahar PICA core LUT layout](https://github.com/azahar-emu/azahar/blob/master/src/video_core/pica/pica_core.h).
+- Restore programmable float24 depth scale/offset and Z/W buffer mapping before
+  depth quantization in both renderers. This is a separate correctness fix; depth
+  changes alone did not remove the road bands.
+- CPU tests cover signed magnitudes, interpolation continuity and programmed depth.
+  Vulkan tests cover negative zero/tiny descending slopes, coplanar depth bias and
+  W-buffer depth. A recorded overworld replay now has a smooth road; at its VBlank
+  900 capture, GPU/reference mean channel difference is 0.301/255. All 76 enabled
+  runtime tests, 16 renderer tests and strict Clippy pass.
+- Add Y2R conversion-job timing. In a diagnostic 20-game-second intro run, 1,184
+  conversion jobs took 0.982 seconds out of 57.160 seconds elapsed. Guest execution
+  was the dominant cost, with billions of instructions and frequent movie-module
+  calls into the executable. Profiling/compilation overlapped this diagnostic, so
+  these wall times are not a controlled performance benchmark. Intro playback
+  and scaled gameplay performance remain unresolved; no 200-FPS claim is made.

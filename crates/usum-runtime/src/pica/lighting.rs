@@ -196,12 +196,13 @@ impl Lighting {
     }
 
     /// A table's value at `index` plus `delta` toward the next entry:
-    /// entries are 12-bit values (/4095) and signed 12-bit differences
-    /// (/2047).
+    /// Entries hold a 12-bit value (/4095), an 11-bit slope magnitude
+    /// (/2047), and an independent sign bit. Negative zero remains zero.
     fn entry(&self, table: usize, index: usize, delta: f32) -> f32 {
         let raw = self.luts.get(table).map_or(0, |t| t[index & 0xFF]);
         let value = (raw & 0xFFF) as f32 / 4095.0;
-        let diff = ((((raw >> 12) & 0xFFF) << 20) as i32 >> 20) as f32 / 2047.0;
+        let magnitude = ((raw >> 12) & 0x7FF) as f32 / 2047.0;
+        let diff = if raw & (1 << 23) != 0 { -magnitude } else { magnitude };
         value + diff * delta
     }
 
@@ -372,6 +373,34 @@ mod tests {
         // rotated 180 degrees about x: the normal faces away
         let (primary, _) = lighting.shade([1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
         assert_eq!(&primary[..3], &[0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn negative_lighting_slopes_are_signed_magnitude_and_continuous() {
+        let mut lighting = Lighting {
+            lights: Vec::new(),
+            ambient: [0.0; 3],
+            config0: 0,
+            config1: 0,
+            abs: 0,
+            select: 0,
+            scale: 0,
+            luts: vec![[0; 256]; 24].into(),
+        };
+        for magnitude in [0u32, 1, 8, 1024, 2047] {
+            for negative in [false, true] {
+                std::sync::Arc::make_mut(&mut lighting.luts)[D0][64] = 3072 | magnitude << 12 | u32::from(negative) << 23;
+                for delta in [0.0, 0.25, 0.5, 0.999] {
+                    let sign = if negative { -1.0 } else { 1.0 };
+                    let expected = 3072.0 / 4095.0 + sign * magnitude as f32 / 2047.0 * delta;
+                    assert!((lighting.entry(D0, 64, delta) - expected).abs() < 1e-6);
+                }
+            }
+        }
+        let lut = &mut std::sync::Arc::make_mut(&mut lighting.luts)[D0];
+        lut[64] = 4095 | 8 << 12 | 1 << 23;
+        lut[65] = 4079;
+        assert!((lighting.entry(D0, 64, 0.9999) - lighting.entry(D0, 65, 0.0)).abs() < 2.0 / 4095.0);
     }
 
     #[test]
