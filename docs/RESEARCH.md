@@ -2480,3 +2480,28 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   immutable captured inputs/uniforms and per-program CPU fallback. The complete
   650-second GPU-vertex replay remains pending. Generated game shader source and
   captures stay in memory or private diagnostic locations, outside this repository.
+
+### R-076 2026-10-28 — Specialize GPU outputs and amortize raw input loading
+
+- Hardware vertex pipelines now specialize output assignment for the immutable
+  enabled-register mask, semantic maps and texture-unit-2 routing. The mapping
+  participates in both shader-module and render-pipeline cache keys. This removes
+  the dynamic 16-register/4-component traversal and lets the GPU compiler eliminate
+  unused register outputs. Per-draw float/integer/bool uniforms remain dynamic.
+- Raw input loading uses workers only at 256+ distinct vertices, with at least
+  64 vertices per split. This applies only to the hardware vertex path; CPU
+  reference processing retains its existing scheduling.
+- Local 40-second samples take 46.902 seconds after output specialization and
+  43.527 seconds with coarser loading, versus 48.084 for the initial hardware
+  path. These single samples are provisional performance evidence. All offload,
+  guest execution and triangle counts remain unchanged, with zero CPU vertex runs
+  and zero software fallbacks. All 14 captures retain the same maximum RGB MAE
+  0.00003125/255 versus the CPU reference and no pixels above eight channel levels.
+- Hardware checks now also cover all comparison selectors, conditional calls,
+  forward jumps, nested loops with signed address steps, MADI, special float
+  values, sparse output masks and both UV routes. The mapped indexed raster
+  tests are byte-identical to the CPU-fed path. Unit tests and strict Clippy pass.
+- Probe diagnostics count game framebuffer updates and report their wall/game
+  clock rates. They also count consecutive PICA lists per GX-queue drain, to
+  determine whether batching can reduce final readback waits safely. These are
+  measurements toward the 200 FPS objective, which remains unmet.

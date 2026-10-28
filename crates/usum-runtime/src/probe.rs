@@ -347,6 +347,21 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
         kernel.pica.display_transfers,
         kernel.pica.display_transfer_time.as_secs_f64()
     );
+    let top_frames = kernel.presented.iter().filter(|p| p.screen == 0).count();
+    let groups: Vec<_> = kernel
+        .gsp_list_groups
+        .iter()
+        .enumerate()
+        .filter(|(size, count)| *size != 0 && **count != 0)
+        .map(|(size, count)| format!("{size} lists: {count} groups"))
+        .collect();
+    println!("gx list groups {}", groups.join(", "));
+    let game_seconds = kernel.virtual_clock.unwrap_or(0) as f64 / 1e9;
+    println!(
+        "game frames    {top_frames} top-screen updates, {:.2} updates/s wall throughput, {:.2} updates/s game clock",
+        top_frames as f64 / took.as_secs_f64().max(1e-9),
+        top_frames as f64 / game_seconds.max(1e-9)
+    );
     if std::env::var_os("USUM_QUIET").is_some() {
         println!("ran            {instructions} instructions in {:.3} s", took.as_secs_f64());
         println!("game time      {:.3} s (requested {seconds} s)", kernel.virtual_clock.unwrap_or(0) as f64 / 1e9);

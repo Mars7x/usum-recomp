@@ -1348,9 +1348,9 @@ fn draw_inner(p: &mut Pica, mem: &mut Memory, elements: bool) -> Result<(), Stri
                         _ => (1..slots.len() - 1).map(|t| [0, t, t + 1]).collect(),
                     };
                     let load = |index: &u32| load_vertex(p, layout.as_ref().map_err(Clone::clone)?, mem, *index);
-                    let inputs: Vec<Result<[Vec4; 16], String>> = if distinct.len() >= 64 {
+                    let inputs: Vec<Result<[Vec4; 16], String>> = if distinct.len() >= 256 {
                         use rayon::prelude::*;
-                        distinct.par_iter().map(load).collect()
+                        distinct.par_iter().with_min_len(64).map(load).collect()
                     } else {
                         distinct.iter().map(load).collect()
                     };

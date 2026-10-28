@@ -378,29 +378,45 @@ fn pica_rsq(a:f32)->f32{if(a==0.0){return bitcast<f32>(0x7f800000u);}return 1.0/
 fn pica_i32(a:f32)->i32{if(a!=a){return 0;}if(a>=2147483648.0){return 2147483647;}if(a<= -2147483648.0){return (-2147483647-1);}return i32(a);}
 "#;
 
-pub(crate) const VERTEX_ENTRY: &str = r#"
-@vertex fn pica_vertex(@builtin(vertex_index) index:u32)->VertexOut {
- let registers=pica_run(index);var out:VertexOut;out.color=vec4<f32>(0.0,0.0,0.0,1.0);
- var slot=0u;let total=min(vs_params.words[390u],7u);
- for(var r=0u;r<16u;r++){
-  if((vs_params.words[389u]&(1u<<r))==0u){continue;}if(slot>=total){break;}
-  let mapping=vs_params.words[392u+slot];slot++;
-  for(var c=0u;c<4u;c++){
-   let semantic=(mapping>>(c*8u))&31u;let v=registers[r][c];
-   if(semantic<4u){out.position[semantic]=v;}
-   else if(semantic<8u){out.quaternion[semantic-4u]=v;}
-   else if(semantic<12u){out.color[semantic-8u]=v;}
-   else if(semantic==12u){out.texcoord0.x=v;}else if(semantic==13u){out.texcoord0.y=v;}
-   else if(semantic==14u){out.texcoord1.x=v;}else if(semantic==15u){out.texcoord1.y=v;}
-   else if(semantic>=18u && semantic<=20u){out.view[semantic-18u]=v;}
-   else if(semantic==22u){out.texcoord2.x=v;}else if(semantic==23u){out.texcoord2.y=v;}
-  }
- }
- out.position.z= -out.position.z;
- if(vs_params.words[391u]!=0u){out.texcoord2=out.texcoord1;}
- return out;
+pub(crate) fn vertex_entry(mapping: &[u32; 10]) -> String {
+    let mut text=String::from("@vertex fn pica_vertex(@builtin(vertex_index) index:u32)->VertexOut {\nlet registers=pica_run(index);var out:VertexOut;out.color=vec4<f32>(0.0,0.0,0.0,1.0);\n");
+    let mut slot = 0;
+    for register in 0..16 {
+        if mapping[0] & (1 << register) == 0 {
+            continue;
+        }
+        if slot >= mapping[1].min(7) as usize {
+            break;
+        }
+        let map = mapping[3 + slot];
+        slot += 1;
+        for (component, name) in ['x', 'y', 'z', 'w'].into_iter().enumerate() {
+            let semantic = (map >> (component * 8)) & 31;
+            let target = match semantic {
+                0..=3 => Some(format!("position.{}", ['x', 'y', 'z', 'w'][semantic as usize])),
+                4..=7 => Some(format!("quaternion.{}", ['x', 'y', 'z', 'w'][(semantic - 4) as usize])),
+                8..=11 => Some(format!("color.{}", ['x', 'y', 'z', 'w'][(semantic - 8) as usize])),
+                12 => Some("texcoord0.x".into()),
+                13 => Some("texcoord0.y".into()),
+                14 => Some("texcoord1.x".into()),
+                15 => Some("texcoord1.y".into()),
+                18..=20 => Some(format!("view.{}", ['x', 'y', 'z'][(semantic - 18) as usize])),
+                22 => Some("texcoord2.x".into()),
+                23 => Some("texcoord2.y".into()),
+                _ => None,
+            };
+            if let Some(target) = target {
+                text.push_str(&format!("out.{target}=registers[{register}].{name};\n"));
+            }
+        }
+    }
+    text.push_str("out.position.z= -out.position.z;\n");
+    if mapping[2] != 0 {
+        text.push_str("out.texcoord2=out.texcoord1;\n");
+    }
+    text.push_str("return out;\n}\n");
+    text
 }
-"#;
 
 impl crate::Renderer {
     /// Diagnostic execution of the same translated vertex function in a

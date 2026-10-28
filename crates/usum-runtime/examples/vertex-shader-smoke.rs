@@ -70,11 +70,49 @@ fn main() -> Result<(), String> {
     let mut breaking = unit(&[0x29 << 26 | 2 << 10, 0x13 << 26, 0x20 << 26, 0x22 << 26]);
     breaking.ints[0] = [200, 0, 1, 0];
     compare(&renderer, "BREAK", &breaking, &inputs)?;
-    for opcode in
-        [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x13, 0x18, 0x19, 0x1a, 0x1b]
-    {
+    for comparison in 0..6 {
+        let cmp = ((0x2Eu32 << 26) & !(7 << 24)) | comparison << 24 | 1 << 7;
+        let conditional =
+            unit(&[cmp, 0x28 << 26 | 1 << 25 | 2 << 22 | 3 << 10 | 1, 0x13 << 26, 0x13 << 26 | 1 << 12, 0x22 << 26]);
+        compare(&renderer, &format!("CMP {comparison} / IFC"), &conditional, &inputs)?;
+    }
+    let cmp = 0x2E << 26 | 1 << 7;
+    let conditional_call =
+        unit(&[cmp, 0x25 << 26 | 1 << 25 | 2 << 22 | 4 << 10 | 1, 0x13 << 26 | 2 << 12, 0x22 << 26, 0x13 << 26 | 1 << 21]);
+    compare(&renderer, "conditional CALL", &conditional_call, &inputs)?;
+    let jump = unit(&[cmp, 0x2C << 26 | 1 << 25 | 2 << 22 | 3 << 10, 0x13 << 26, 0x22 << 26]);
+    compare(&renderer, "forward conditional jump", &jump, &inputs)?;
+    let mut nested = unit(&[
+        0x29 << 26 | 3 << 10,
+        0x29 << 26 | 1 << 22 | 2 << 10,
+        0x10 << 21 | 0x20 << 12 | 0x10 << 7 | 3 << 19,
+        0x21 << 26,
+        0x13 << 26 | 0x10 << 12,
+        0x22 << 26,
+    ]);
+    nested.ints[0] = [2, 0, 1, 0];
+    nested.ints[1] = [1, 2, 255, 0];
+    for (i, v) in nested.floats.iter_mut().enumerate() {
+        *v = [i as f32; 4];
+    }
+    compare(&renderer, "nested LOOP and signed address steps", &nested, &inputs)?;
+    let mut madi = unit(&[0x12 << 26 | 1 << 12, 0x30 << 26 | 1 << 22 | 1 << 12 | 0x20 << 5, 0x22 << 26]);
+    madi.floats[2] = [2.0; 4];
+    compare(&renderer, "MADI relative third operand", &madi, &inputs)?;
+    for opcode in [
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x13, 0x18, 0x19, 0x1a,
+        0x1b,
+    ] {
         let program = unit(&[opcode << 26 | 1 << 7, 0x22 << 26]);
         compare(&renderer, &format!("arithmetic {opcode:#x}"), &program, &inputs)?;
+    }
+    let mut special = [[[0.0; 4]; 16]; 2];
+    special[0][0] = [0.0, -0.0, f32::INFINITY, f32::NAN];
+    special[0][1] = [f32::INFINITY, f32::INFINITY, 0.0, 0.0];
+    special[1][0] = [-0.25, 0.0, 1.0, f32::NAN];
+    special[1][1] = [2.0, -0.0, f32::NAN, 1.0];
+    for opcode in [0x08, 0x0c, 0x0d, 0x0e, 0x0f] {
+        compare(&renderer, &format!("special floats {opcode:#x}"), &unit(&[opcode << 26 | 1 << 7, 0x22 << 26]), &special)?;
     }
     let program = unit(&[0x13 << 26, 0x13 << 26 | 1 << 21 | 1 << 12, 0x22 << 26]);
     let compiled = VertexProgram::compile(&program.code, &program.descs, 0)?;
@@ -106,5 +144,59 @@ fn main() -> Result<(), String> {
         return Err("indexed hardware vertex raster differs from CPU-fed raster".into());
     }
     println!("indexed hardware vertex raster: byte-identical");
+    let mapping_program = unit(&[
+        0x13 << 26 | 3 << 21,
+        0x13 << 26 | 7 << 21 | 1 << 12,
+        0x13 << 26 | 12 << 21 | 2 << 12,
+        0x13 << 26 | 14 << 21 | 3 << 12,
+        0x22 << 26,
+    ]);
+    let mapped = VertexProgram::compile(&mapping_program.code, &mapping_program.descs, 0)?;
+    let texture = renderer.create_rgba8_texture(
+        2,
+        2,
+        &[255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255],
+        usum_render::SamplerState::default(),
+    )?;
+    let mut state = RasterState::default();
+    state.tev.stages[0] = usum_render::TevStage::replace(5);
+    let mut words = uniforms(&mapping_program);
+    words[389] = (1 << 3) | (1 << 7) | (1 << 12) | (1 << 14);
+    words[390] = 4;
+    words[392] = 0x03020100;
+    words[393] = 0x0b0a0908;
+    words[394] = 0x0f0e0d0c;
+    words[395] = 0x1f1f1716;
+    let mut raw = raw;
+    for input in &mut raw {
+        input[2] = [0.25, 0.25, 0.75, 0.75];
+        input[3] = [0.25, 0.25, 0.0, 0.0];
+    }
+    for route in [0, 1] {
+        words[391] = route;
+        let expected_vertices =
+            vertices.map(|v| v.with_texcoord1([0.75, 0.75]).with_texcoord2(if route == 0 { [0.25, 0.25] } else { [0.75, 0.75] }));
+        let expected_target = renderer.create_color_target(32, 32)?;
+        renderer.draw_vertices_with_inputs(
+            &expected_target,
+            &expected_vertices,
+            Viewport::full(&expected_target),
+            state,
+            FragmentInputs { texture2: Some(&texture), ..FragmentInputs::default() },
+        )?;
+        let target = renderer.create_color_target(32, 32)?;
+        let mut batch = renderer.begin_batch(&target);
+        batch.draw_pica_vertices(
+            PicaVertexDraw { program: &mapped, inputs: &raw, indices: &[0, 1, 2], uniforms: &words },
+            Viewport::full(&target),
+            state,
+            FragmentInputs { texture2: Some(&texture), ..FragmentInputs::default() },
+        )?;
+        let (actual, _) = batch.finish_and_read_color_and_depth()?;
+        if actual != renderer.read_color_target(&expected_target)? {
+            return Err(format!("sparse output map / UV route {route} differs"));
+        }
+    }
+    println!("sparse output maps and both UV routes: byte-identical");
     Ok(())
 }

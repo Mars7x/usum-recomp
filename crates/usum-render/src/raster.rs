@@ -618,6 +618,7 @@ struct BlendKey {
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct PipelineKey {
     vertex_program: u64,
+    vertex_mapping: [u32; 10],
     cull: CullMode,
     depth: DepthState,
     color_mask: ColorMask,
@@ -630,7 +631,7 @@ pub(super) struct RasterPipelines {
     pipeline_layout: wgpu::PipelineLayout,
     vertex_layout: wgpu::BindGroupLayout,
     vertex_pipeline_layout: wgpu::PipelineLayout,
-    vertex_shaders: Mutex<HashMap<u64, wgpu::ShaderModule>>,
+    vertex_shaders: Mutex<HashMap<(u64, [u32; 10]), wgpu::ShaderModule>>,
     depth_upload_layout: wgpu::BindGroupLayout,
     depth_upload_pipeline: wgpu::RenderPipeline,
     depth_feedback_layout: wgpu::BindGroupLayout,
@@ -1229,12 +1230,12 @@ impl Renderer {
     ) -> Result<(), String> {
         viewport.validate(target)?;
         let blend_constant = state.blend.map(BlendState::host_constant).transpose()?;
-        let (vertex_buffer, index_buffer, vertex_group, count, program) = match source {
+        let (vertex_buffer, index_buffer, vertex_group, count, program, vertex_mapping) = match source {
             VertexSource::Cpu(vertices) => {
                 validate_vertices(vertices.len())?;
                 let buffer =
                     self.upload_draw_buffer("PICA shaded vertices", &vertex_bytes(vertices), wgpu::BufferUsages::VERTEX)?;
-                (Some(buffer), None, None, vertices.len() as u32, None)
+                (Some(buffer), None, None, vertices.len() as u32, None, [0; 10])
             }
             VertexSource::Pica(draw) => {
                 draw.validate()?;
@@ -1262,7 +1263,14 @@ impl Renderer {
                         wgpu::BindGroupEntry { binding: 1, resource: uniform.as_entire_binding() },
                     ],
                 });
-                (None, Some(index), Some(group), draw.indices.len() as u32, Some(draw.program))
+                (
+                    None,
+                    Some(index),
+                    Some(group),
+                    draw.indices.len() as u32,
+                    Some(draw.program),
+                    draw.uniforms[389..399].try_into().expect("output mapping words"),
+                )
             }
         };
         let mut fragment_words = [0; 37];
@@ -1321,6 +1329,7 @@ impl Renderer {
         });
         let key = PipelineKey {
             vertex_program: program.map_or(0, |program| program.id),
+            vertex_mapping,
             cull: state.cull,
             depth: state.depth,
             color_mask: state.color_mask,
@@ -1330,7 +1339,7 @@ impl Renderer {
         let pipeline = pipelines.entry(key).or_insert_with(|| {
             if let Some(program) = program {
                 let mut shaders = self.raster_pipelines.vertex_shaders.lock().expect("vertex shader cache lock");
-                let shader = shaders.entry(program.id).or_insert_with(|| {
+                let shader = shaders.entry((program.id, vertex_mapping)).or_insert_with(|| {
                     self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
                         label: Some("translated PICA vertex program"),
                         source: wgpu::ShaderSource::Wgsl(
@@ -1338,7 +1347,7 @@ impl Renderer {
                                 "{RASTER_SHADER}\n{}\n{}\n{}",
                                 program.source,
                                 crate::vertex::BINDINGS,
-                                crate::vertex::VERTEX_ENTRY
+                                crate::vertex::vertex_entry(&vertex_mapping)
                             )
                             .into(),
                         ),

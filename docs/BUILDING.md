@@ -238,6 +238,10 @@ also reports interval speed and combined CPU vertex loading/shading time during
 a long replay. Compare thread settings with `RAYON_NUM_THREADS=n` using the same
 recording and initial saves; repeat samples in reverse order. Wait for video
 encodes and other heavy background jobs before drawing FPS conclusions.
+The `game frames` report counts top-screen framebuffer updates and gives rates
+against both wall time and the game clock; window redraw counts are a separate
+presentation statistic. Unthrottled probe throughput does not establish an
+uncapped frame rate at normal game speed.
 
 For a replay comparison, run software and Vulkan with the same input recording,
 initial saves, duration and `USUM_FRAMES_EVERY` interval. Copy the probe executable

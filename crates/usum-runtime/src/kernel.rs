@@ -251,6 +251,8 @@ pub struct Kernel {
     pub pica: crate::pica::Pica,
     /// GX commands run so far: ID and parameters.
     pub gx_log: Vec<(u32, Vec<u32>)>,
+    /// Consecutive PICA lists in one synchronous GX-queue drain (15 = 15+).
+    pub gsp_list_groups: [u64; 16],
     /// The BOSS storage entry: extdata ID, size, entry ID, media type.
     pub boss_storage: Option<(u64, u32, u32, u32)>,
     /// The input script (buttons by VBlank) and the buttons held last.
@@ -510,15 +512,25 @@ impl Kernel {
         let queue = base + gsp::command_queue(0);
         let fault = |f: usum_guest::Fault| format!("GX queue: {f}");
         let mut raised = false;
+        let mut pica_group = 0usize;
         loop {
             let header = mem.read_u32(queue).map_err(fault)?;
             let (index, count) = (header & 0xFF, (header >> 8) & 0xFF);
             if count == 0 || index >= gsp::QUEUE_ENTRIES {
+                if pica_group != 0 {
+                    self.gsp_list_groups[pica_group.min(15)] += 1;
+                }
                 return Ok(raised);
             }
             let at = queue + 0x20 + 0x20 * index;
             let c: Vec<u32> = (0..8).map(|k| mem.read_u32(at + 4 * k)).collect::<Result<_, _>>().map_err(fault)?;
             let id = c[0] & 0xFF;
+            if id == gsp::PROCESS_COMMAND_LIST {
+                pica_group += 1;
+            } else if pica_group != 0 {
+                self.gsp_list_groups[pica_group.min(15)] += 1;
+                pica_group = 0;
+            }
             let interrupt = match id {
                 // cache maintenance: nothing to do on coherent host memory
                 gsp::FLUSH_CACHE_REGIONS => None,
