@@ -8,6 +8,8 @@ use usum_guest::{lookup, Code, Cpu, Exit, Fault, Memory};
 
 use crate::kernel::{self, Kernel};
 
+mod dispatch;
+
 /// Instructions per budget refill, and the refills allowed before the
 /// probe calls it a hang.
 const BUDGET: i64 = 1 << 20;
@@ -76,18 +78,18 @@ pub fn run_with(
 ) -> (Outcome, u64) {
     let mut refills = 0u64;
     let mut ran = 0u64;
+    let mut dispatch = dispatch::CodeCache::new(std::env::var("USUM_DISPATCH_CACHE").as_deref() != Ok("0"));
     cpu.budget = BUDGET;
     loop {
         let key = cpu.r[15] | u32::from(cpu.thumb);
-        let code = match lookup(entries, key) {
-            Some(code) => code,
-            None => match module_code(kernel, modules, key) {
-                Some((code, delta)) => {
+        let code = match dispatch.resolve(kernel, modules, entries, key) {
+            Some((code, delta)) => {
+                if let Some(delta) = delta {
                     cpu.module_delta = delta;
-                    code
                 }
-                None => return (Outcome::Fault(Fault::NoTranslation { address: cpu.r[15], thumb: cpu.thumb }), ran),
-            },
+                code
+            }
+            None => return (Outcome::Fault(Fault::NoTranslation { address: cpu.r[15], thumb: cpu.thumb }), ran),
         };
         cpu.depth = 0;
         let before = cpu.budget;

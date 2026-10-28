@@ -136,6 +136,7 @@ The probe runs on a virtual clock, so runs repeat exactly. Its options:
 | `USUM_SPEED=n` | every n VBlanks, the speed against real time and where the wall time went |
 | `USUM_SAVE_FROM=dir` | start from a copy of those saves (to replay a `play` recording) |
 | `USUM_PROFILE=first:last` | count guest calls (target, caller) between those VBlanks; reported as `profile` lines |
+| `USUM_DISPATCH_CACHE=0` | disable the host code-lookup cache for a reference run; enabled by default, with module identity checked on cached module entries |
 | `USUM_WAV=file.wav` | record the mixed sound to a WAV file (32,728 Hz stereo) |
 | `USUM_DSP_TRACE=n` | describe the first n sound buffers decoded, on stderr |
 | `USUM_WATCH=0x1074bc` | report the caller of the last direct call to that address (e.g. the SDK's panic routine) |

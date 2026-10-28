@@ -2661,3 +2661,26 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   calls into the executable. Profiling/compilation overlapped this diagnostic, so
   these wall times are not a controlled performance benchmark. Intro playback
   and scaled gameplay performance remain unresolved; no 200-FPS claim is made.
+
+### R-085 2026-10-28 — Cache host dispatch during movie playback
+
+- MovieLib repeatedly crosses into executable helpers and returns through the host
+  dispatcher. Those transitions repeated executable/module entry searches and
+  translation-identity searches. Cache resolved code by guest address including
+  the instruction-state bit. Each cached module entry still validates its loaded
+  index, base, file size, name and SHA-256; unloading, replacing or relocating a
+  module cannot reuse stale code. Executable entries retain dispatch precedence,
+  and their calls preserve the current module delta as before.
+- `USUM_DISPATCH_CACHE=0` retains uncached lookup for reference runs. The cache
+  changes no guest instructions, budgets, clock rates or video decoding. Lifecycle
+  tests exercise cached hits, ARM/Thumb separation, unload, replacement, relocation,
+  changed identity and bounds, and removal from the loaded-module list.
+- Controlled intro comparison used an initialized save, ten game seconds, no input
+  or guest-call profiling, native Vulkan rendering, and off/on/on/off ordering.
+  Uncached runs took 24.911/24.570 seconds; cached runs 18.851/19.077 seconds.
+  Average elapsed time fell 23.3%, equivalent to 30.5% higher throughput. Every run
+  executed exactly 2,659,171,725 guest instructions, 584 conversion jobs and 586
+  top-screen updates. Both captured screens at VBlank 300 are byte-identical across
+  all four runs. No encoder was active. All 77 enabled runtime tests and strict
+  Clippy pass. Movie playback remains below real time (about 0.53×); this is a
+  measured improvement, not a claim of full-speed playback or 200-FPS gameplay.
