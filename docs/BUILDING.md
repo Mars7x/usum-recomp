@@ -218,12 +218,14 @@ Without `usum-runtime/vulkan-compare`, these environment switches do not enable
 Vulkan. Depth feedback is experimental; omit its switch to retain the guarded
 software fallback for dependent command lists.
 
-Add `USUM_VULKAN_VERTEX=1` alongside acceleration to test the hardware vertex
-stage. It translates supported PICA programs to WGSL and uses indexed GPU draws
+Vulkan acceleration enables hardware vertex shaders by default. Set
+`USUM_VULKAN_VERTEX=0` to use CPU vertex processing as the reference. The hardware
+stage translates supported PICA programs to WGSL and uses indexed GPU draws
 without reading shaded vertices back to the CPU. Geometry shaders and unsupported
 control flow retain CPU processing; GPU validation failures retain the existing
 software fallback. The probe reports offloaded draws/inputs and CPU fallback
-counts. This path is experimental; its full 650-second validation is pending.
+counts. The full 650-second recording is validated with very small rounding
+differences; the renderer remains experimental and broader gameplay is unverified.
 
 The synthetic hardware vertex checks use no game data:
 

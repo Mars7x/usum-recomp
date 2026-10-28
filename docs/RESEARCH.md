@@ -2505,3 +2505,27 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   clock rates. They also count consecutive PICA lists per GX-queue drain, to
   determine whether batching can reduce final readback waits safely. These are
   measurements toward the 200 FPS objective, which remains unmet.
+
+### R-077 2026-10-28 — Full hardware-vertex validation and frame-update metrics
+
+- The complete 650-second recording offloads all 1,537,499 draws and 600,578,761
+  distinct vertex inputs to hardware. CPU vertex/geometry runs, unsupported-program
+  fallback draws and software raster fallbacks are all zero. Guest execution is
+  unchanged: 22,740,054,712 instructions, 38,889 VBlanks, 561,217,399 triangles,
+  402,408 accelerated command lists and 84,699 exact D24S8 feedback reads.
+- All 42 periodic captures are present. Maximum RGB MAE versus R-074 CPU vertex
+  processing is 0.00003473/255; no pixels differ by more than eight channel levels.
+  Hardware vertex shaders are now the frontend default when Vulkan acceleration
+  is requested. `USUM_VULKAN_VERTEX=0` retains the CPU vertex reference path.
+- Elapsed time is 556.597 seconds, versus the earlier R-073 CPU-vertex run's
+  771.221 seconds. This is a local sequential comparison, not an isolated hardware
+  benchmark. Live replay costs 285.996 seconds, with 107.769 in submit/readback and
+  54.504 in CPU writeback. Snapshot capture costs 40.230 seconds for targets and
+  18.166 for textures; display conversion costs 6.547 seconds for 47,323 copies.
+- There are 19,483 top-screen framebuffer updates: 35.00 updates/s wall throughput
+  in the unthrottled probe, but 29.97 updates/s against the game clock. This is
+  not 200 FPS at normal game speed; the performance objective remains active.
+- Every PICA group contains exactly one command list (402,408 groups). Merely
+  batching the existing synchronous GX-queue drain therefore cannot remove the
+  readback stalls. Next implement safe deferred device writes/coherence across
+  guest submissions, preserving CPU-read visibility and rollback behavior.

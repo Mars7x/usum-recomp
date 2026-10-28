@@ -19,8 +19,8 @@ has not been completed.
   with zero software fallbacks. Small rendering differences and performance
   work remain; heavy scenes still run below real time in local tests
   (RESEARCH.md R-071 through R-074).
-- An experimental hardware vertex-shader path is available with
-  `USUM_VULKAN_VERTEX=1` alongside Vulkan acceleration; see BUILDING.md.
+- Vulkan acceleration includes hardware vertex shaders; `USUM_VULKAN_VERTEX=0`
+  retains CPU vertex processing for comparison. See BUILDING.md.
 - Keyboard/touch input, audio, and save handling are implemented. Sound and
   compatibility remain incomplete.
 - Flatpak packaging and gamepad support are planned, not released.

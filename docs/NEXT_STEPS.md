@@ -68,9 +68,13 @@ shows it in a window with keyboard and mouse (touch) input and sound
    (12.79% higher throughput); eight workers have no sufficiently clear advantage
    to change the default. Full-run R-074 timings are excluded because background
    encoding interfered. CPU vertex work remains a major target. Next profile
-   graphics encoding and work outside command lists, move vertex shader execution
-   onto the GPU, and reduce command-list
-   round trips with explicit guest-memory coherence. Residual geometry/depth/
+   graphics encoding and work outside command lists. R-075–R-077 now execute all
+   vertex shaders in the 650-second recording on hardware, with all 42 captures
+   within tiny rounding differences and zero fallbacks. That run takes 556.597
+   seconds and produces 35.00 game updates/s wall throughput; normal game-clock
+   updates remain 29.97/s, well below the 200 FPS objective. All GX list groups
+   contain just one list, so reduce cross-submission round trips with explicit
+   deferred-write memory coherence. Residual geometry/depth/
    coverage differences also remain. Integer-depth
    equality and texture-unit 2 routing are also fixed (R-068/R-069).
    The shaded-vertex → persistent color-target → readback seam
