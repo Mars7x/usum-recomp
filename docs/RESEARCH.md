@@ -2615,3 +2615,26 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   32×32 guest target and verifies variation inside native pixel blocks, proving
   real subpixel rasterization rather than nearest-neighbor enlargement. Native
   guest buffers retain their sizes. Full scaled gameplay validation is pending.
+
+### R-083 2026-10-28 — Fix scaled LCD subregions in real gameplay
+
+- User screenshots disproved the first 6× presentation: the real game still
+  displayed native images despite larger GPU targets. A bounded trace showed
+  zero scaled LCD hits. The game's top and bottom transfers begin 112 and 192
+  rows inside a 256×512 padded render target; matching only the exact target
+  base address rejected both screens.
+- Recognize tile-aligned subregions with the same tiled row stride, validate
+  only the rectangle actually read by the cropped transfer, and carry its origin
+  through full-resolution rotation/downscaling. Bounds, format and native-byte
+  coherence checks still reject incompatible or stale views. The common unscaled
+  LCD conversion avoids averaging/division for every high-resolution pixel.
+- New unit cases cover the actual top/bottom crop origins and rejected stride,
+  alignment and bounds cases. A hardware test follows real 6× rasterization
+  through a padded-buffer crop, LCD transfer, rotation and presentation selection;
+  subpixel edges survive, and a changed guest framebuffer rejects the cached view.
+- Actual recorded gameplay now produces both scaled LCD hits and a visibly sharper
+  2400×1440 overworld capture. At VBlank 481, 55,687 of 96,000 native pixel blocks
+  contain more than eight channel levels of internal detail. The prior presentation
+  supplied no high-resolution frame at all. All 74 enabled runtime tests and strict
+  Clippy pass. `USUM_SCALE_TRACE=1` enables bounded diagnostics and periodic scaled
+  PPM captures alongside native probe captures (private game-derived evidence).

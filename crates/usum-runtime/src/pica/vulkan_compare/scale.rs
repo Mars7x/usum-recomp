@@ -1,6 +1,22 @@
 //! Integer internal rendering scale and full-resolution LCD output.
 use super::*;
 
+fn trace(message: impl FnOnce() -> String) {
+    if std::env::var_os("USUM_SCALE_TRACE").is_none() {
+        return;
+    }
+    thread_local! {static SEEN:std::cell::RefCell<std::collections::HashSet<String>>=std::cell::RefCell::new(std::collections::HashSet::new());}
+    SEEN.with(|seen| {
+        let mut seen = seen.borrow_mut();
+        if seen.len() < 64 {
+            let message = message();
+            if seen.insert(message.clone()) {
+                eprintln!("scale trace: {message}");
+            }
+        }
+    });
+}
+
 #[derive(Clone, Debug)]
 pub(in crate::pica) struct Display {
     address: u32,
@@ -68,6 +84,7 @@ pub(in crate::pica) fn capture_transfer(
 ) -> Result<(), String> {
     pica.scaled_displays.retain(|d| d.address != output_address);
     let scale = pica.vulkan_resolution_scale;
+    trace(|| format!("transfer {input_address:#x} {dims:?} -> {output_address:#x}, flags {flags:#x}, scale {scale}"));
     if scale == 1 || flags & 0x1_002a != 0 || (flags >> 8) & 7 != 0 || !matches!((flags >> 12) & 7, 0 | 1) {
         return Ok(());
     }
@@ -85,32 +102,42 @@ pub(in crate::pica) fn capture_transfer(
     }
     let mut found = None;
     for target in &pica.vulkan_live_target_cache {
-        if pica.pa_to_va(target.info.color_address)? == input_address
-            && (target.info.width, target.info.height) == source_dims
-            && target.info.color_format == 0
-        {
-            found = Some(target);
+        let address = pica.pa_to_va(target.info.color_address)?;
+        if let Some(origin) = transfer_origin(target.info, address, input_address, source_dims, (ow * sx, oh * sy)) {
+            found = Some((target, origin));
             break;
         }
     }
-    let Some(target) = found else {
+    let Some((target, origin)) = found else {
+        trace(|| {
+            format!(
+                "no source target for {input_address:#x} {source_dims:?}; targets {:?}",
+                pica.vulkan_live_target_cache
+                    .iter()
+                    .map(|t| (pica.pa_to_va(t.info.color_address), t.info.width, t.info.height, t.info.color_format))
+                    .collect::<Vec<_>>()
+            )
+        });
         return Ok(());
     };
     let (Some(color), Some(contents)) = (&target.scaled_color, &target.contents) else {
+        trace(|| format!("source {input_address:#x}: missing scaled color or native contents"));
         return Ok(());
     };
     // CPU writes or an aliased target must not leave a stale high-resolution image.
-    for y in 0..source_dims.1 {
-        for x in 0..source_dims.0 {
+    for y in 0..oh * sy {
+        for x in 0..ow * sx {
             let at = tiled_offset(x, y, source_dims.0) as usize * 4;
-            let src = (y * source_dims.0 + x) as usize * 4;
+            let src = ((origin.1 + y) * target.info.width + origin.0 + x) as usize * 4;
             let pixel = &contents.color[src..src + 4];
             if input.get(at..at + 4) != Some(&[pixel[3], pixel[2], pixel[1], pixel[0]]) {
+                trace(|| format!("source {input_address:#x}: native bytes differ at {x},{y}"));
                 return Ok(());
             }
         }
     }
-    let rgb = lcd_rgb(color, source_dims, (ow, oh), scale, (sx, sy), flags & 1 != 0);
+    trace(|| format!("scaled LCD hit {input_address:#x} -> {output_address:#x} {ow}x{oh}"));
+    let rgb = lcd_rgb(color, (target.info.width, target.info.height), (ow, oh), scale, (sx, sy), flags & 1 != 0, origin);
     let (width, height) = (oh * scale, ow * scale);
     if pica.scaled_displays.len() > 16 {
         pica.scaled_displays.clear();
@@ -124,15 +151,49 @@ pub(in crate::pica) fn capture_transfer(
     Ok(())
 }
 
-fn lcd_rgb(color: &[u8], source_dims: (u32, u32), (ow, oh): (u32, u32), scale: u32, (sx, sy): (u32, u32), flip: bool) -> Vec<u8> {
+/// A transfer may start at a tile-aligned subregion of a padded target. The
+/// advertised input height can extend beyond it; only cropped output is read.
+fn transfer_origin(info: CaptureTarget, base: u32, input: u32, source: (u32, u32), used: (u32, u32)) -> Option<(u32, u32)> {
+    if info.color_format != 0 || source.0 != info.width || info.width == 0 || !info.width.is_multiple_of(8) {
+        return None;
+    }
+    let offset = input.checked_sub(base)?;
+    if !offset.is_multiple_of(64 * 4) {
+        return None;
+    }
+    let tile = offset / (64 * 4);
+    let origin = (tile % (info.width / 8) * 8, tile / (info.width / 8) * 8);
+    (origin.0.checked_add(used.0)? <= info.width && origin.1.checked_add(used.1)? <= info.height).then_some(origin)
+}
+
+fn lcd_rgb(
+    color: &[u8],
+    source_dims: (u32, u32),
+    (ow, oh): (u32, u32),
+    scale: u32,
+    (sx, sy): (u32, u32),
+    flip: bool,
+    origin: (u32, u32),
+) -> Vec<u8> {
     let (width, height) = (oh * scale, ow * scale);
     let mut rgb = Vec::with_capacity((width * height * 3) as usize);
     let sw = source_dims.0 * scale;
+    if sx == 1 && sy == 1 {
+        for y in 0..height {
+            let source_x = origin.0 * scale + height - 1 - y;
+            for x in 0..width {
+                let source_y = origin.1 * scale + if flip { width - 1 - x } else { x };
+                let at = (source_y * sw + source_x) as usize * 4;
+                rgb.extend_from_slice(&color[at..at + 3]);
+            }
+        }
+        return rgb;
+    }
     for y in 0..height {
         for x in 0..width {
             let output_row = if flip { width - 1 - x } else { x };
-            let source_x = (height - 1 - y) * sx;
-            let source_y = output_row * sy;
+            let source_x = origin.0 * scale + (height - 1 - y) * sx;
+            let source_y = origin.1 * scale + output_row * sy;
             let mut sum = [0u32; 3];
             for dy in 0..sy {
                 for dx in 0..sx {
@@ -154,6 +215,16 @@ pub(in crate::pica) fn presented(
     columns: u32,
     raw: &crate::probe::RawFrame,
 ) -> Option<crate::probe::ScaledFrame> {
+    trace(|| {
+        format!(
+            "present {:#x} format {} stride {} columns {} cached {}",
+            p.left,
+            p.format,
+            p.stride,
+            columns,
+            pica.scaled_displays.len()
+        )
+    });
     pica.scaled_displays
         .iter()
         .find(|d| {
@@ -169,6 +240,87 @@ pub(in crate::pica) fn presented(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn lcd_views_start_inside_padded_targets_and_read_only_the_crop() {
+        let info =
+            CaptureTarget { color_address: 0, depth_address: 0, width: 256, height: 512, color_format: 0, depth_format: 3 };
+        assert_eq!(transfer_origin(info, 0x1f00_0000, 0x1f01_c000, (256, 512), (240, 400)), Some((0, 112)));
+        assert_eq!(transfer_origin(info, 0x1f00_0000, 0x1f03_0000, (256, 512), (240, 320)), Some((0, 192)));
+        assert_eq!(transfer_origin(info, 0x1f00_0000, 0x1f01_c100, (256, 512), (240, 400)), Some((8, 112)));
+        assert_eq!(transfer_origin(info, 0x1f00_0000, 0x1f01_c000, (256, 512), (240, 401)), None);
+        assert_eq!(transfer_origin(info, 0x1f00_0000, 0x1f01_c004, (256, 512), (240, 400)), None);
+        assert_eq!(transfer_origin(info, 0x1f00_0000, 0x1f01_c000, (128, 512), (120, 400)), None);
+    }
+
+    #[test]
+    #[ignore = "requires a Vulkan hardware adapter"]
+    fn six_x_subregion_survives_transfer_rotation_and_presentation() {
+        let renderer = Renderer::new().unwrap();
+        let mut pica = Pica::default();
+        pica.enable_vulkan_acceleration();
+        pica.set_vulkan_resolution_scale(6).unwrap();
+        let info = CaptureTarget {
+            color_address: 0x2000_0000,
+            depth_address: 0,
+            width: 256,
+            height: 512,
+            color_format: 0,
+            depth_format: 3,
+        };
+        let gpu = Arc::new(renderer.create_color_target(1536, 3072).unwrap());
+        renderer
+            .draw_vertices(
+                &gpu,
+                &[
+                    RasterVertex::new([-0.751, -0.753, -0.5, 1.0], [1.0; 4]),
+                    RasterVertex::new([0.749, -0.751, -0.5, 1.0], [1.0; 4]),
+                    RasterVertex::new([0.003, 0.747, -0.5, 1.0], [1.0; 4]),
+                ],
+            )
+            .unwrap();
+        let (color, depth) = renderer.read_color_and_depth_target(&gpu).unwrap();
+        let result = resolve(LiveResult { info, color, depth: Some(depth), pending: None, scaled_color: None }, 6);
+        let mut tiled = vec![0; 256 * 512 * 4];
+        encode_rgba8_target(&result.color, &mut tiled, 256);
+        pica.vulkan_live_target_cache.push(LiveTarget {
+            info,
+            gpu,
+            contents: Some(TargetSnapshot { width: 256, height: 512, color: result.color, depth: result.depth.unwrap() }),
+            pending: None,
+            scaled_color: result.scaled_color,
+        });
+        let mut memory = Memory::new();
+        memory.map(pica.linear_base, vec![0; 0x20_0000], usum_guest::Perm::RW).unwrap();
+        memory.device_write(pica.linear_base, &tiled).unwrap();
+        let input = memory.read_range(pica.linear_base + 0x1c000, 256 * 512 * 4).unwrap();
+        let output = super::super::super::display_transfer(&input, (256, 512), (240, 400), 0x1004).unwrap();
+        let address = pica.linear_base + 0x10_0000;
+        capture_transfer(
+            &mut pica,
+            memory.regions().next().unwrap().0 + 0x1c000,
+            address,
+            ((256, 512), (240, 400)),
+            0x1004,
+            &input,
+            &output,
+        )
+        .unwrap();
+        let present = crate::kernel::Present { screen: 0, active: 0, left: address, right: 0, stride: 720, format: 0x141 };
+        let mut raw = crate::probe::RawFrame { bytes: output, format: 1, stride: 720, scaled: None };
+        let frame = presented(&pica, &present, 400, &raw).expect("cropped high-resolution frame reaches the window");
+        assert_eq!((frame.width, frame.height), (2400, 1440));
+        let varied = (0..240).any(|y| {
+            (0..400).any(|x| {
+                let at = (y * 6 * 2400 + x * 6) * 3;
+                (0..6)
+                    .any(|dy| (0..6).any(|dx| frame.rgb[((y * 6 + dy) * 2400 + x * 6 + dx) * 3..][..3] != frame.rgb[at..at + 3]))
+            })
+        });
+        assert!(varied, "presented native pixel blocks must retain subpixel raster edges");
+        raw.bytes[0] ^= 1;
+        assert!(presented(&pica, &present, 400, &raw).is_none(), "CPU changes invalidate stale display snapshots");
+    }
+
     #[test]
     fn expanded_seed_and_guest_resolve_keep_native_memory_dimensions() {
         let original = TargetSnapshot { width: 2, height: 1, color: vec![1, 2, 3, 4, 5, 6, 7, 8], depth: vec![0.25, 0.75] };
@@ -213,10 +365,13 @@ mod tests {
                     1 => (2, 1),
                     _ => (2, 2),
                 };
-                assert_eq!(lcd_rgb(&color, source_dims, output_dims, 1, axes, flip), expected);
+                assert_eq!(lcd_rgb(&color, source_dims, output_dims, 1, axes, flip, (0, 0)), expected);
                 if sampling == 0 {
                     let high = expand(&color, sw, sh, 2, 4);
-                    assert_eq!(lcd_rgb(&high, source_dims, output_dims, 2, axes, flip), expand(&expected, 400, 240, 2, 3));
+                    assert_eq!(
+                        lcd_rgb(&high, source_dims, output_dims, 2, axes, flip, (0, 0)),
+                        expand(&expected, 400, 240, 2, 3)
+                    );
                 }
             }
         }

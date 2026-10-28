@@ -765,6 +765,16 @@ fn snapshot(kernel: &mut Kernel, mem: &Memory) {
     let _ = std::fs::create_dir_all(&dir);
     for (screen, name, columns) in [(0, "top", 400), (1, "bottom", 320)] {
         if let Some(p) = kernel.presented.iter().rev().find(|p| p.screen == screen) {
+            #[cfg(feature = "vulkan-compare")]
+            if std::env::var_os("USUM_SCALE_TRACE").is_some() {
+                if let Ok(raw) = framebuffer_raw(mem, p, columns) {
+                    if let Some(frame) = kernel.pica.scaled_frame(p, columns, &raw) {
+                        let mut ppm = format!("P6\n{} {}\n255\n", frame.width, frame.height).into_bytes();
+                        ppm.extend_from_slice(&frame.rgb);
+                        let _ = std::fs::write(dir.join(format!("{:06}-{name}-scaled.ppm", kernel.vblanks)), ppm);
+                    }
+                }
+            }
             if let Ok(ppm) = framebuffer_ppm(mem, p, columns) {
                 let _ = std::fs::write(dir.join(format!("{:06}-{name}.ppm", kernel.vblanks)), ppm);
             }
