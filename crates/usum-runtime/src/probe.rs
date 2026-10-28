@@ -182,6 +182,10 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
     #[cfg(feature = "vulkan-compare")]
     if std::env::var_os("USUM_VULKAN_ACCELERATE").is_some() {
         kernel.pica.enable_vulkan_acceleration();
+        if std::env::var_os("USUM_VULKAN_VERTEX").is_some() {
+            kernel.pica.enable_vulkan_vertex();
+            eprintln!("experimental hardware PICA vertex shaders enabled");
+        }
         eprintln!("guarded Vulkan raster acceleration enabled; dependent or failed lists rerun in software");
         if std::env::var_os("USUM_VULKAN_DEPTH_FEEDBACK").is_some()
             || std::env::var_os("USUM_VULKAN_CPU_DEPTH_FEEDBACK").is_some()
@@ -249,11 +253,31 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
 
     let (outcome, instructions) = run(&mut cpu, &mut mem, &mut kernel, entries, &modules);
     let took = start.elapsed();
+    if matches!(outcome, Outcome::OutOfBudget) {
+        eprintln!(
+            "probe instruction cap reached at {:.3} s of game time (requested {seconds} s); \
+             increase USUM_MAX_REFILLS for a longer replay, or investigate a possible hang",
+            kernel.virtual_clock.unwrap_or(0) as f64 / 1e9
+        );
+    }
     #[cfg(feature = "vulkan-compare")]
     {
         let (lists, draws, targets, time) = kernel.pica.vulkan_live_stats();
         if lists != 0 {
             println!("vulkan live    {draws} draws, {targets} targets, {lists} lists, {:.3} s", time.as_secs_f64());
+            let ([gpu, vertices, geometry, unsupported], error) = kernel.pica.vulkan_vertex_stats();
+            if gpu + geometry + unsupported != 0 {
+                println!("vulkan vertex  {gpu} GPU draws, {vertices} distinct inputs; CPU draws: {geometry} geometry, {unsupported} other");
+                if let Some(error) = error {
+                    println!("vulkan vertex fallback: {error}");
+                }
+            }
+            let (reused, uploaded) = kernel.pica.vulkan_target_stats();
+            println!("vulkan targets {reused} resident reuses, {uploaded} guest uploads");
+            let [targets, textures, vertices] = kernel.pica.vulkan_capture_times().map(|time| time.as_secs_f64());
+            println!("vulkan capture targets {targets:.3} s, textures {textures:.3} s, vertex packing {vertices:.3} s");
+            let [readback, writeback] = kernel.pica.vulkan_transfer_times().map(|time| time.as_secs_f64());
+            println!("vulkan transfer submit/readback {readback:.3} s, CPU writeback {writeback:.3} s");
             let (texture_uses, texture_uploads, lighting_uses, lighting_uploads) = kernel.pica.vulkan_live_resource_stats();
             println!(
                 "vulkan cache   {texture_uploads}/{texture_uses} texture uploads/uses, {lighting_uploads}/{lighting_uses} lighting uploads/uses"
@@ -318,8 +342,19 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
             }
         }
     }
+    println!(
+        "display transfer {} copies, {:.3} s",
+        kernel.pica.display_transfers,
+        kernel.pica.display_transfer_time.as_secs_f64()
+    );
     if std::env::var_os("USUM_QUIET").is_some() {
         println!("ran            {instructions} instructions in {:.3} s", took.as_secs_f64());
+        println!("game time      {:.3} s (requested {seconds} s)", kernel.virtual_clock.unwrap_or(0) as f64 / 1e9);
+        println!(
+            "shaders        {} runs, {} instructions",
+            crate::pica::shader::RUNS.load(std::sync::atomic::Ordering::Relaxed),
+            crate::pica::shader::STEPS.load(std::sync::atomic::Ordering::Relaxed)
+        );
         println!(
             "hardware       {} VBlanks, {} draws, {} triangles, {} fragments",
             kernel.vblanks, kernel.pica.draws, kernel.pica.triangles, kernel.pica.fragments
@@ -452,8 +487,8 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
     println!("shaders        {runs} runs, {steps} instructions ({:.1} per run)", steps as f64 / runs.max(1) as f64);
     let ph = kernel.pica.phases.map(|d| d.as_secs_f64());
     println!(
-        "gpu phases     vertices {:.3} s (indices {:.3}, loading {:.3}, shading {:.3}), buffers out {:.3} s, textures {:.3} s, bands {:.3} s, buffers back {:.3} s",
-        ph[0], ph[5], ph[6], ph[7], ph[1], ph[2], ph[3], ph[4]
+        "gpu phases     vertices {:.3} s (indices {:.3}, fused loading/shading {:.3}), buffers out {:.3} s, textures {:.3} s, bands {:.3} s, buffers back {:.3} s",
+        ph[0], ph[5], ph[7], ph[1], ph[2], ph[3], ph[4]
     );
     if let Some((size, hash)) = &kernel.dsp_firmware {
         println!("dsp firmware   {size} bytes, sha256 {hash} (accepted, not run)");
@@ -636,7 +671,7 @@ pub(crate) fn speed_report(kernel: &Kernel) {
             FRAGS.with(|f| f.set(frags));
             let (shaded, rejected) = (frags.0 - before_frags.0, frags.1 - before_frags.1);
             println!(
-                "speed          VBlanks {vblank}-{}: {:.2}x real time ({wall_s:.2} s: outside command lists {:.2}, in them {lists:.2}: between draws {:.2}, draws outside the phases {:.2}, shading {:.2}, other vertex work {:.2}, textures {:.2}, bands {:.2} (cpu {band_cpu:.2}, {:.1} busy), buffers {:.2}; {shaded} fragments shaded, {rejected} rejected by the alpha test)",
+                "speed          VBlanks {vblank}-{}: {:.2}x real time ({wall_s:.2} s: outside command lists {:.2}, in them {lists:.2}: between draws {:.2}, draws outside the phases {:.2}, vertex processing {:.2}, other vertex work {:.2}, textures {:.2}, bands {:.2} (cpu {band_cpu:.2}, {:.1} busy), buffers {:.2}; {shaded} fragments shaded, {rejected} rejected by the alpha test)",
                 now.0,
                 game_s / wall_s.max(1e-9),
                 wall_s - lists,

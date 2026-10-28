@@ -15,8 +15,12 @@ has not been completed.
 
 - Software graphics are the reference renderer.
 - Vulkan acceleration is opt-in and experimental. An outdoor black-terrain
-  defect has been fixed in a tested scene; later grass scenes and remaining
-  rendering differences still need verification.
+  defect is fixed; a 650-second replay including later grass scenes completes
+  with zero software fallbacks. Small rendering differences and performance
+  work remain; heavy scenes still run below real time in local tests
+  (RESEARCH.md R-071 through R-074).
+- An experimental hardware vertex-shader path is available with
+  `USUM_VULKAN_VERTEX=1` alongside Vulkan acceleration; see BUILDING.md.
 - Keyboard/touch input, audio, and save handling are implemented. Sound and
   compatibility remain incomplete.
 - Flatpak packaging and gamepad support are planned, not released.

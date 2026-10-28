@@ -282,6 +282,10 @@ fn run_game(
     #[cfg(feature = "vulkan-compare")]
     if std::env::var_os("USUM_VULKAN_ACCELERATE").is_some() {
         kernel.pica.enable_vulkan_acceleration();
+        if std::env::var_os("USUM_VULKAN_VERTEX").is_some() {
+            kernel.pica.enable_vulkan_vertex();
+            eprintln!("experimental hardware PICA vertex shaders enabled");
+        }
         eprintln!("guarded Vulkan raster acceleration enabled; dependent or failed lists rerun in software");
         if std::env::var_os("USUM_VULKAN_DEPTH_FEEDBACK").is_some()
             || std::env::var_os("USUM_VULKAN_CPU_DEPTH_FEEDBACK").is_some()

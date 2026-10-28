@@ -66,10 +66,13 @@ pub struct Pica {
     /// Time in command lists in all (draws included).
     pub list_time: std::time::Duration,
     pub raster_time: std::time::Duration,
+    /// Host time spent copying/converting display-transfer framebuffers.
+    pub display_transfer_time: std::time::Duration,
+    pub display_transfers: u64,
     /// Time by phase: vertices (indices, loading, shading), buffers copied
     /// out of guest memory, textures prepared, bands rasterized, buffers
     /// copied back; then the vertex phase's parts: indices and
-    /// deduplication, loading, shading.
+    /// deduplication, reserved (legacy separate loading), fused loading/shading.
     pub phases: [std::time::Duration; 8],
     /// Explicitly budgeted immutable draw captures for Vulkan comparison.
     /// Zero by default; capture never replaces or changes software rendering.
@@ -89,6 +92,12 @@ pub struct Pica {
     vulkan_cpu_depth_feedback: bool,
     #[cfg(feature = "vulkan-compare")]
     vulkan_skip_software: bool,
+    #[cfg(feature = "vulkan-compare")]
+    vulkan_vertex: bool,
+    #[cfg(feature = "vulkan-compare")]
+    vulkan_vertex_counts: [u64; 4],
+    #[cfg(feature = "vulkan-compare")]
+    vulkan_vertex_error: Option<String>,
     #[cfg(feature = "vulkan-compare")]
     vulkan_live_lists: u64,
     #[cfg(feature = "vulkan-compare")]
@@ -136,6 +145,8 @@ impl Default for Pica {
             draw_time: std::time::Duration::ZERO,
             list_time: std::time::Duration::ZERO,
             raster_time: std::time::Duration::ZERO,
+            display_transfer_time: std::time::Duration::ZERO,
+            display_transfers: 0,
             phases: [std::time::Duration::ZERO; 8],
             #[cfg(feature = "vulkan-compare")]
             vulkan_capture_skip: 0,
@@ -153,6 +164,12 @@ impl Default for Pica {
             vulkan_cpu_depth_feedback: false,
             #[cfg(feature = "vulkan-compare")]
             vulkan_skip_software: false,
+            #[cfg(feature = "vulkan-compare")]
+            vulkan_vertex: false,
+            #[cfg(feature = "vulkan-compare")]
+            vulkan_vertex_counts: [0; 4],
+            #[cfg(feature = "vulkan-compare")]
+            vulkan_vertex_error: None,
             #[cfg(feature = "vulkan-compare")]
             vulkan_live_lists: 0,
             #[cfg(feature = "vulkan-compare")]
@@ -238,8 +255,33 @@ impl Pica {
     }
 
     #[cfg(feature = "vulkan-compare")]
+    pub fn enable_vulkan_vertex(&mut self) {
+        self.vulkan_vertex = true;
+    }
+
+    #[cfg(feature = "vulkan-compare")]
+    pub fn vulkan_vertex_stats(&self) -> ([u64; 4], Option<&str>) {
+        (self.vulkan_vertex_counts, self.vulkan_vertex_error.as_deref())
+    }
+
+    #[cfg(feature = "vulkan-compare")]
     pub fn vulkan_live_stats(&self) -> (u64, u64, u64, std::time::Duration) {
         (self.vulkan_live_lists, self.vulkan_live_draws, self.vulkan_live_targets, self.vulkan_live_time)
+    }
+
+    #[cfg(feature = "vulkan-compare")]
+    pub fn vulkan_target_stats(&self) -> (u64, u64) {
+        self.vulkan_live_resources.target_stats()
+    }
+
+    #[cfg(feature = "vulkan-compare")]
+    pub fn vulkan_capture_times(&self) -> [std::time::Duration; 3] {
+        self.vulkan_live_resources.capture_times()
+    }
+
+    #[cfg(feature = "vulkan-compare")]
+    pub fn vulkan_transfer_times(&self) -> [std::time::Duration; 2] {
+        self.vulkan_live_resources.transfer_times()
     }
 
     #[cfg(feature = "vulkan-compare")]
@@ -382,16 +424,28 @@ impl Pica {
     }
 
     #[cfg(feature = "vulkan-compare")]
-    fn run_accelerated(&mut self, mem: &mut Memory, address: u32, size: u32) -> Result<bool, String> {
-        self.enable_vulkan_capture(usize::MAX);
-        // The software texture cache can be large but is not mutated while
-        // rasterization is skipped. Keep its ownership outside the checkpoint
-        // so a dependency fallback does not clone it on every command list.
+    fn acceleration_checkpoint(&mut self) -> Self {
+        // These caches are host resources, not guest register state. Cloning
+        // hundreds of texture/lighting entries on every command list adds
+        // allocations and Arc traffic even for lists with no draws. Keep them
+        // outside rollback; each live target is validated against guest memory
+        // on its first use in a list, including after a software fallback.
         let texture_cache = std::mem::take(&mut self.texture_cache);
+        let live_targets = std::mem::take(&mut self.vulkan_live_target_cache);
+        let live_resources = std::mem::take(&mut self.vulkan_live_resources);
         let checkpoint = self.clone();
         self.texture_cache = texture_cache;
-        self.vulkan_skip_software = true;
+        self.vulkan_live_target_cache = live_targets;
+        self.vulkan_live_resources = live_resources;
+        checkpoint
+    }
+
+    #[cfg(feature = "vulkan-compare")]
+    fn run_accelerated(&mut self, mem: &mut Memory, address: u32, size: u32) -> Result<bool, String> {
+        self.enable_vulkan_capture(usize::MAX);
         let started = std::time::Instant::now();
+        let checkpoint = self.acceleration_checkpoint();
+        self.vulkan_skip_software = true;
         let result = self.run_list(mem, address, size);
         self.vulkan_skip_software = false;
         if result.is_err() {
@@ -452,6 +506,8 @@ impl Pica {
     ) -> Result<bool, String> {
         let ((address, size), (disable, feedback)) = (command, fallback);
         checkpoint.texture_cache = std::mem::take(&mut self.texture_cache);
+        checkpoint.vulkan_live_target_cache = std::mem::take(&mut self.vulkan_live_target_cache);
+        checkpoint.vulkan_live_resources = std::mem::take(&mut self.vulkan_live_resources);
         *self = checkpoint;
         self.vulkan_skip_software = false;
         self.vulkan_capture_remaining = 0;
@@ -644,6 +700,23 @@ pub fn display_transfer(
     let (fin, fout) = ((flags >> 8) & 7, (flags >> 12) & 7);
     let (bin, bout) =
         bytes_per_pixel(fin).zip(bytes_per_pixel(fout)).ok_or_else(|| format!("DisplayTransfer formats {fin}, {fout}"))?;
+    // Common LCD presentation: tiled ABGR8 -> linear BGR8, without a
+    // downscale. Copy the three stored color bytes directly; the general
+    // path below still handles filtering, tiled output and other formats.
+    if !tiled && sx == 1 && sy == 1 && fin == 0 && fout == 1 {
+        let mut out = vec![0; (out_w * out_h) as usize * 3];
+        if out_w == 0 {
+            return Ok(out);
+        }
+        for (y, destination) in out.chunks_exact_mut(out_w as usize * 3).enumerate() {
+            let row = if flags & 1 != 0 { out_h - 1 - y as u32 } else { y as u32 };
+            for (x, pixel) in destination.as_chunks_mut::<3>().0.iter_mut().enumerate() {
+                let at = tiled_offset(x as u32, row, in_w) as usize * 4;
+                pixel.copy_from_slice(input.get(at + 1..at + 4).ok_or("DisplayTransfer reads past its input")?);
+            }
+        }
+        return Ok(out);
+    }
     let read = |x: u32, y: u32| -> Result<[u8; 4], String> {
         let at = tiled_offset(x, y, in_w) as usize * bin;
         Ok(decode_pixel(fin, input.get(at..at + bin).ok_or("DisplayTransfer reads past its input")?))
@@ -670,6 +743,31 @@ pub fn display_transfer(
 mod tests {
     use super::*;
     use usum_guest::memory::Perm;
+
+    #[test]
+    fn direct_display_conversion_matches_generic_cropping_and_flip() {
+        for (width, height) in [(8, 8), (16, 24), (256, 512)] {
+            let input: Vec<u8> = (0..width * height * 4).map(|i| (i * 73 + i / 19) as u8).collect();
+            for output in [(width, height), (width - 3, height - 2), (0, height), (width, 0)] {
+                for flip in [0, 1] {
+                    let flags = flip | 4;
+                    // RGBA8 output uses the generic implementation. Convert its
+                    // pixels to RGB8 as an independent oracle for the fast path.
+                    let generic = display_transfer(&input, (width, height), output, flags).unwrap();
+                    let expected: Vec<u8> = generic
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .flat_map(|pixel| encode_pixel(1, decode_pixel(0, pixel)).to_vec())
+                        .collect();
+                    let direct = display_transfer(&input, (width, height), output, flags | 1 << 12).unwrap();
+                    assert_eq!(direct, expected);
+                }
+            }
+            let short = &input[..input.len() - 1];
+            assert!(display_transfer(short, (width, height), (width, height), 1 << 12).is_err());
+        }
+    }
 
     #[test]
     fn pixel_formats_round_trip_where_exact() {

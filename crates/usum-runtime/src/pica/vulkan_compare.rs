@@ -45,6 +45,9 @@ pub struct CaptureTarget {
 pub(super) struct LiveTarget {
     info: CaptureTarget,
     gpu: Arc<usum_render::ColorTarget>,
+    /// Last successful readback of this GPU allocation. Reuse is allowed
+    /// only when a fresh guest snapshot matches both color and depth exactly.
+    contents: Option<TargetSnapshot>,
 }
 
 /// One triangle-list draw after PICA vertex and optional geometry shading.
@@ -59,6 +62,26 @@ pub struct DrawSnapshot {
     pub target: Arc<TargetSnapshot>,
     pub textures: [Option<TextureSnapshot>; 3],
     pub software_result: Option<TargetSnapshot>,
+    pub gpu_vertex: Option<VertexSnapshot>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct VertexSnapshot {
+    pub program: Arc<usum_render::VertexProgram>,
+    pub inputs: Vec<[[f32; 4]; 16]>,
+    pub indices: Vec<u32>,
+    pub uniforms: Vec<u32>,
+}
+
+impl VertexSnapshot {
+    fn draw(&self) -> usum_render::PicaVertexDraw<'_> {
+        usum_render::PicaVertexDraw {
+            program: &self.program,
+            inputs: &self.inputs,
+            indices: &self.indices,
+            uniforms: &self.uniforms,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,6 +156,10 @@ pub(super) struct LiveResources {
     texture_uploads: u64,
     lighting_uses: u64,
     lighting_uploads: u64,
+    target_reuses: u64,
+    target_uploads: u64,
+    capture_times: [std::time::Duration; 3],
+    transfer_times: [std::time::Duration; 2],
 }
 
 impl LiveResources {
@@ -143,10 +170,26 @@ impl LiveResources {
         self.texture_uploads = 0;
         self.lighting_uses = 0;
         self.lighting_uploads = 0;
+        self.target_reuses = 0;
+        self.target_uploads = 0;
+        self.capture_times = [std::time::Duration::ZERO; 3];
+        self.transfer_times = [std::time::Duration::ZERO; 2];
     }
 
     pub(super) fn stats(&self) -> (u64, u64, u64, u64) {
         (self.texture_uses, self.texture_uploads, self.lighting_uses, self.lighting_uploads)
+    }
+
+    pub(super) fn target_stats(&self) -> (u64, u64) {
+        (self.target_reuses, self.target_uploads)
+    }
+
+    pub(super) fn capture_times(&self) -> [std::time::Duration; 3] {
+        self.capture_times
+    }
+
+    pub(super) fn transfer_times(&self) -> [std::time::Duration; 2] {
+        self.transfer_times
     }
 
     fn begin_draw(&mut self) {
@@ -242,7 +285,16 @@ impl DrawSnapshot {
         if vertices.is_empty() {
             return Err("a Vulkan draw snapshot needs at least one triangle".into());
         }
-        Ok(Self { draw_number: pica.draws, target_info, state, vertices, target, textures, software_result: None })
+        Ok(Self {
+            draw_number: pica.draws,
+            target_info,
+            state,
+            vertices,
+            target,
+            textures,
+            software_result: None,
+            gpu_vertex: None,
+        })
     }
 
     /// Executes the captured draw in isolation and returns top-to-bottom RGBA8.
@@ -278,7 +330,13 @@ impl DrawSnapshot {
             texture2: textures[2].as_ref(),
             lighting: lighting.as_ref(),
         };
-        renderer.draw_vertices_with_inputs(&target, &self.vertices, self.state.viewport, self.state.raster, inputs)?;
+        if let Some(vertex) = &self.gpu_vertex {
+            let mut batch = renderer.begin_batch(&target);
+            batch.draw_pica_vertices(vertex.draw(), self.state.viewport, self.state.raster, inputs)?;
+            batch.finish()?;
+        } else {
+            renderer.draw_vertices_with_inputs(&target, &self.vertices, self.state.viewport, self.state.raster, inputs)?;
+        }
         renderer.read_color_and_depth_target(&target)
     }
 
@@ -304,17 +362,17 @@ impl DrawSnapshot {
             }
         }
         let lighting_index = self.state.lighting.as_ref().map(|state| resources.lighting(renderer, state)).transpose()?;
-        batch.draw_with_inputs(
-            &self.vertices,
-            self.state.viewport,
-            self.state.raster,
-            FragmentInputs {
-                texture0: feedback_inputs[0].or_else(|| texture_indices[0].map(|index| resources.textures[index].gpu.as_ref())),
-                texture1: feedback_inputs[1].or_else(|| texture_indices[1].map(|index| resources.textures[index].gpu.as_ref())),
-                texture2: feedback_inputs[2].or_else(|| texture_indices[2].map(|index| resources.textures[index].gpu.as_ref())),
-                lighting: lighting_index.map(|index| resources.lighting[index].gpu.as_ref()),
-            },
-        )
+        let inputs = FragmentInputs {
+            texture0: feedback_inputs[0].or_else(|| texture_indices[0].map(|index| resources.textures[index].gpu.as_ref())),
+            texture1: feedback_inputs[1].or_else(|| texture_indices[1].map(|index| resources.textures[index].gpu.as_ref())),
+            texture2: feedback_inputs[2].or_else(|| texture_indices[2].map(|index| resources.textures[index].gpu.as_ref())),
+            lighting: lighting_index.map(|index| resources.lighting[index].gpu.as_ref()),
+        };
+        if let Some(vertex) = &self.gpu_vertex {
+            batch.draw_pica_vertices(vertex.draw(), self.state.viewport, self.state.raster, inputs)
+        } else {
+            batch.draw_with_inputs(&self.vertices, self.state.viewport, self.state.raster, inputs)
+        }
     }
 
     /// Saves private, game-derived evidence for one isolated draw. This is
@@ -429,11 +487,16 @@ fn target_snapshot(pica: &Pica, mem: &Memory, target: CaptureTarget) -> Result<T
     let color_raw = mem
         .slice(color_at, pixels.checked_mul(color_bpp).ok_or("color framebuffer is too large")?)
         .ok_or("color framebuffer not mapped")?;
-    let mut color = Vec::with_capacity(pixels as usize * 4);
-    for row in 0..height {
-        for x in 0..width {
-            let at = tiled_offset(x, row, width) as usize * color_bpp as usize;
-            color.extend_from_slice(&decode_pixel(color_format, &color_raw[at..at + color_bpp as usize]));
+    let mut color = vec![0; pixels as usize * 4];
+    if color_format == 0 {
+        decode_rgba8_target(color_raw, &mut color, width);
+    } else {
+        for row in 0..height {
+            for x in 0..width {
+                let at = tiled_offset(x, row, width) as usize * color_bpp as usize;
+                let out = ((row * width + x) * 4) as usize;
+                color[out..out + 4].copy_from_slice(&decode_pixel(color_format, &color_raw[at..at + color_bpp as usize]));
+            }
         }
     }
 
@@ -448,19 +511,51 @@ fn target_snapshot(pica: &Pica, mem: &Memory, target: CaptureTarget) -> Result<T
         let depth_raw = mem
             .slice(depth_at, pixels.checked_mul(depth_bpp).ok_or("depth framebuffer is too large")?)
             .ok_or("depth framebuffer not mapped")?;
-        let value_bytes = depth_bpp.min(3) as usize;
-        let maximum = if depth_format == 0 { 0xFFFF } else { 0xFF_FFFF } as f32;
-        for row in 0..height {
-            for x in 0..width {
-                let pixel = tiled_offset(x, row, width) as usize;
-                let at = pixel * depth_bpp as usize;
-                let mut bytes = [0u8; 4];
-                bytes[..value_bytes].copy_from_slice(&depth_raw[at..at + value_bytes]);
-                depth[(row * width + x) as usize] = u32::from_le_bytes(bytes) as f32 / maximum;
+        if depth_format == 3 {
+            decode_d24s8_target(depth_raw, &mut depth, width);
+        } else {
+            let value_bytes = depth_bpp.min(3) as usize;
+            let maximum = if depth_format == 0 { 0xFFFF } else { 0xFF_FFFF } as f32;
+            for row in 0..height {
+                for x in 0..width {
+                    let pixel = tiled_offset(x, row, width) as usize;
+                    let at = pixel * depth_bpp as usize;
+                    let mut bytes = [0u8; 4];
+                    bytes[..value_bytes].copy_from_slice(&depth_raw[at..at + value_bytes]);
+                    depth[(row * width + x) as usize] = u32::from_le_bytes(bytes) as f32 / maximum;
+                }
             }
         }
     }
     Ok(TargetSnapshot { width, height, color, depth })
+}
+
+// The common framebuffer formats have fixed four-byte input pixels. Keeping
+// their loads and stores fixed-size avoids per-pixel variable slice copies,
+// format dispatch and Vec growth checks in every command-list snapshot.
+fn decode_rgba8_target(raw: &[u8], output: &mut [u8], width: u32) {
+    if width == 0 {
+        return;
+    }
+    for (row, destination) in output.chunks_exact_mut(width as usize * 4).enumerate() {
+        for (x, pixel) in destination.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let at = tiled_offset(x as u32, row as u32, width) as usize * 4;
+            pixel.copy_from_slice(&[raw[at + 3], raw[at + 2], raw[at + 1], raw[at]]);
+        }
+    }
+}
+
+fn decode_d24s8_target(raw: &[u8], output: &mut [f32], width: u32) {
+    if width == 0 {
+        return;
+    }
+    for (row, destination) in output.chunks_exact_mut(width as usize).enumerate() {
+        for (x, pixel) in destination.iter_mut().enumerate() {
+            let at = tiled_offset(x as u32, row as u32, width) as usize * 4;
+            let value = u32::from_le_bytes(raw[at..at + 4].try_into().expect("D24S8 pixel")) & 0xFF_FFFF;
+            *pixel = value as f32 / 0xFF_FFFF as f32;
+        }
+    }
 }
 
 pub(crate) fn capture_if_enabled(
@@ -477,9 +572,24 @@ pub(crate) fn capture_if_enabled(
         pica.vulkan_capture_skip -= 1;
         return Ok(None);
     }
+    let (target, textures) = capture_buffers(pica, mem, target_info)?;
+    let phase = std::time::Instant::now();
+    let snapshot = DrawSnapshot::from_shaded_vertices_shared(pica, shaded, triangles, target_info, target, textures)?;
+    pica.vulkan_live_resources.capture_times[2] += phase.elapsed();
+    pica.vulkan_capture_remaining -= 1;
+    pica.vulkan_snapshots.push(snapshot);
+    Ok(Some(pica.vulkan_snapshots.len() - 1))
+}
+
+fn capture_buffers(
+    pica: &mut Pica,
+    mem: &Memory,
+    target_info: CaptureTarget,
+) -> Result<(Arc<TargetSnapshot>, [Option<TextureSnapshot>; 3]), String> {
     // A live command-list replay only needs the target contents from before
     // the first draw to a framebuffer. Share that immutable seed across all
     // later draws instead of decoding and copying the same buffers each time.
+    let phase = std::time::Instant::now();
     let target = if pica.vulkan_live {
         match pica.vulkan_snapshots.iter().find(|snapshot| snapshot.target_info == target_info) {
             Some(snapshot) => Arc::clone(&snapshot.target),
@@ -488,6 +598,8 @@ pub(crate) fn capture_if_enabled(
     } else {
         Arc::new(target_snapshot(pica, mem, target_info)?)
     };
+    pica.vulkan_live_resources.capture_times[0] += phase.elapsed();
+    let phase = std::time::Instant::now();
     let textures = std::array::from_fn(|unit| {
         super::texture::decoded_snapshot(pica, mem, unit).map(|snapshot| TextureSnapshot {
             address: snapshot.address,
@@ -500,10 +612,40 @@ pub(crate) fn capture_if_enabled(
             border: snapshot.border,
         })
     });
-    let snapshot = DrawSnapshot::from_shaded_vertices_shared(pica, shaded, triangles, target_info, target, textures)?;
-    pica.vulkan_capture_remaining -= 1;
-    pica.vulkan_snapshots.push(snapshot);
-    Ok(Some(pica.vulkan_snapshots.len() - 1))
+    pica.vulkan_live_resources.capture_times[1] += phase.elapsed();
+    Ok((target, textures))
+}
+
+pub(super) fn capture_gpu_vertices(
+    pica: &mut Pica,
+    mem: &Memory,
+    target_info: CaptureTarget,
+    program: Arc<usum_render::VertexProgram>,
+    inputs: Vec<[[f32; 4]; 16]>,
+    indices: Vec<u32>,
+) -> Result<(), String> {
+    let (target, textures) = capture_buffers(pica, mem, target_info)?;
+    let state = PicaDrawState::from_pica_registers_shared(&pica.regs, Arc::clone(&pica.light_luts), target.width, target.height)?;
+    let mut uniforms: Vec<u32> = pica.vs.floats.iter().flatten().map(|v| v.to_bits()).collect();
+    if uniforms.len() != 384 {
+        return Err("invalid vertex float-uniform memory".into());
+    }
+    uniforms.extend(pica.vs.ints.map(u32::from_le_bytes));
+    uniforms.extend([u32::from(pica.vs.bools), u32::from(pica.vs.output_mask), pica.regs[0x4F] & 7, (pica.regs[0x80] >> 13) & 1]);
+    uniforms.extend_from_slice(&pica.regs[0x50..0x57]);
+    pica.vulkan_vertex_counts[0] += 1;
+    pica.vulkan_vertex_counts[1] += inputs.len() as u64;
+    pica.vulkan_snapshots.push(DrawSnapshot {
+        draw_number: pica.draws,
+        target_info,
+        state,
+        vertices: Vec::new(),
+        target,
+        textures,
+        software_result: None,
+        gpu_vertex: Some(VertexSnapshot { program, inputs, indices, uniforms }),
+    });
+    Ok(())
 }
 
 pub(crate) fn complete_capture(
@@ -531,12 +673,16 @@ fn write_color_result(pica: &Pica, mem: &mut Memory, target: CaptureTarget, colo
     }
     let bytes_per_pixel = bytes_per_pixel(target.color_format).ok_or("unsupported Vulkan live color format")?;
     let mut tiled = vec![0; pixels as usize * bytes_per_pixel];
-    for row in 0..target.height {
-        for x in 0..target.width {
-            let source = (row * target.width + x) as usize * 4;
-            let encoded = encode_pixel(target.color_format, color[source..source + 4].try_into().expect("RGBA pixel"));
-            let destination = tiled_offset(x, row, target.width) as usize * bytes_per_pixel;
-            tiled[destination..destination + bytes_per_pixel].copy_from_slice(&encoded);
+    if target.color_format == 0 {
+        encode_rgba8_target(color, &mut tiled, target.width);
+    } else {
+        for row in 0..target.height {
+            for x in 0..target.width {
+                let source = (row * target.width + x) as usize * 4;
+                let encoded = encode_pixel(target.color_format, color[source..source + 4].try_into().expect("RGBA pixel"));
+                let destination = tiled_offset(x, row, target.width) as usize * bytes_per_pixel;
+                tiled[destination..destination + bytes_per_pixel].copy_from_slice(&encoded);
+            }
         }
     }
     let address = pica.pa_to_va(target.color_address)?;
@@ -561,17 +707,50 @@ fn write_depth_result(pica: &Pica, mem: &mut Memory, target: CaptureTarget, dept
         .slice(address, pixels.checked_mul(bytes_per_pixel).ok_or("depth framebuffer is too large")?)
         .ok_or("depth framebuffer not mapped")?
         .to_vec();
-    let maximum = if target.depth_format == 0 { 0xFFFF } else { 0xFF_FFFF } as f32;
-    let value_bytes = bytes_per_pixel.min(3) as usize;
-    for row in 0..target.height {
-        for x in 0..target.width {
-            let source = (row * target.width + x) as usize;
-            let value = (depth[source].clamp(0.0, 1.0) * maximum) as u32;
-            let destination = tiled_offset(x, row, target.width) as usize * bytes_per_pixel as usize;
-            tiled[destination..destination + value_bytes].copy_from_slice(&value.to_le_bytes()[..value_bytes]);
+    if target.depth_format == 3 {
+        encode_d24s8_target(depth, &mut tiled, target.width);
+    } else {
+        let maximum = if target.depth_format == 0 { 0xFFFF } else { 0xFF_FFFF } as f32;
+        let value_bytes = bytes_per_pixel.min(3) as usize;
+        for row in 0..target.height {
+            for x in 0..target.width {
+                let source = (row * target.width + x) as usize;
+                let value = (depth[source].clamp(0.0, 1.0) * maximum) as u32;
+                let destination = tiled_offset(x, row, target.width) as usize * bytes_per_pixel as usize;
+                tiled[destination..destination + value_bytes].copy_from_slice(&value.to_le_bytes()[..value_bytes]);
+            }
         }
     }
     mem.device_write(address, &tiled).map_err(|fault| format!("Vulkan live depth buffer: {fault}"))
+}
+
+fn encode_rgba8_target(color: &[u8], tiled: &mut [u8], width: u32) {
+    if width == 0 {
+        return;
+    }
+    for (row, source) in color.chunks_exact(width as usize * 4).enumerate() {
+        for (x, &[r, g, b, a]) in source.as_chunks::<4>().0.iter().enumerate() {
+            let at = tiled_offset(x as u32, row as u32, width) as usize * 4;
+            tiled[at..at + 4].copy_from_slice(&[a, b, g, r]);
+        }
+    }
+}
+
+fn encode_d24s8_target(depth: &[f32], tiled: &mut [u8], width: u32) {
+    if width == 0 {
+        return;
+    }
+    for (row, source) in depth.chunks_exact(width as usize).enumerate() {
+        for (x, value) in source.iter().enumerate() {
+            let value = (value.clamp(0.0, 1.0) * 0xFF_FFFF as f32) as u32;
+            let at = tiled_offset(x as u32, row as u32, width) as usize * 4;
+            let [lo, mid, hi, _] = value.to_le_bytes();
+            // The high byte is guest stencil, not part of normalized depth.
+            tiled[at] = lo;
+            tiled[at + 1] = mid;
+            tiled[at + 2] = hi;
+        }
+    }
 }
 
 /// Reinterprets a rendered D24S8 target exactly as PICA texture format RGBA8.
@@ -700,20 +879,33 @@ pub(crate) fn replay_live(pica: &mut Pica, mem: &mut Memory) -> Result<(usize, u
             .iter()
             .find(|target| target.info == info)
             .ok_or("live target disappeared before readback")?;
+        let readback_started = std::time::Instant::now();
         let (color, depth) = if pica.vulkan_live_depth {
             let (color, depth) = renderer.read_color_and_depth_target(&target.gpu)?;
             (color, Some(depth))
         } else {
             (renderer.read_color_target(&target.gpu)?, None)
         };
+        pica.vulkan_live_resources.transfer_times[0] += readback_started.elapsed();
         results.push(LiveResult { info, color, depth });
     }
+    let writeback_started = std::time::Instant::now();
     for result in results {
         write_color_result(pica, mem, result.info, &result.color)?;
+        if let Some(depth) = result.depth.as_deref() {
+            write_depth_result(pica, mem, result.info, depth)?;
+        }
         if let Some(depth) = result.depth {
-            write_depth_result(pica, mem, result.info, &depth)?;
+            let target = pica
+                .vulkan_live_target_cache
+                .iter_mut()
+                .find(|target| target.info == result.info)
+                .ok_or("live target disappeared after readback")?;
+            target.contents =
+                Some(TargetSnapshot { width: result.info.width, height: result.info.height, color: result.color, depth });
         }
     }
+    pica.vulkan_live_resources.transfer_times[1] += writeback_started.elapsed();
     Ok((draws, targets, feedback))
 }
 
@@ -758,14 +950,26 @@ fn render_live_segment(
             Some(index) => index,
             None => {
                 let target = Arc::new(renderer.create_color_target(initial.width, initial.height)?);
-                pica.vulkan_live_target_cache.push(LiveTarget { info: target_info, gpu: target });
+                pica.vulkan_live_target_cache.push(LiveTarget { info: target_info, gpu: target, contents: None });
                 pica.vulkan_live_target_cache.len() - 1
             }
         };
-        let target = Arc::clone(&pica.vulkan_live_target_cache[target_index].gpu);
+        let cached = &mut pica.vulkan_live_target_cache[target_index];
+        let resident_matches = resident_contents_match(cached.contents.as_ref(), initial);
+        // Once commands touch the target the previous readback no longer
+        // describes it. Only a fully successful readback can restore reuse.
+        cached.contents = None;
+        let target = Arc::clone(&cached.gpu);
+        if !initialized {
+            if resident_matches {
+                pica.vulkan_live_resources.target_reuses += 1;
+            } else {
+                pica.vulkan_live_resources.target_uploads += 1;
+            }
+        }
         // A target already written in this list stays resident across feedback
         // barriers. Only the first segment imports the guest snapshot.
-        let mut batch = if initialized {
+        let mut batch = if initialized || resident_matches {
             renderer.begin_batch(&target)
         } else {
             renderer.begin_batch_from_snapshot(&target, &initial.color, &initial.depth)?
@@ -774,6 +978,7 @@ fn render_live_segment(
             draw.record_live(renderer, &mut batch, &mut pica.vulkan_live_resources, feedback)?;
         }
         if let Some(results) = final_results.as_deref_mut() {
+            let readback_started = std::time::Instant::now();
             let (color, depth) = if pica.vulkan_live_depth {
                 let (color, depth) = batch.finish_and_read_color_and_depth()?;
                 (color, Some(depth))
@@ -781,6 +986,7 @@ fn render_live_segment(
                 batch.finish()?;
                 (renderer.read_color_target(&target)?, None)
             };
+            pica.vulkan_live_resources.transfer_times[0] += readback_started.elapsed();
             results.push(LiveResult { info: target_info, color, depth });
         } else {
             batch.submit()?;
@@ -790,6 +996,10 @@ fn render_live_segment(
         }
     }
     Ok(targets)
+}
+
+fn resident_contents_match(resident: Option<&TargetSnapshot>, guest: &TargetSnapshot) -> bool {
+    resident.is_some_and(|resident| resident == guest)
 }
 
 #[derive(Clone, Copy)]
@@ -924,6 +1134,120 @@ fn feedback_supported_in(snapshots: &[DrawSnapshot], pica: &Pica) -> Result<bool
 mod tests {
     use super::*;
     use usum_guest::Perm;
+
+    #[test]
+    fn fixed_format_writeback_matches_generic_encoding_and_preserves_stencil() {
+        for (width, height) in [(8, 8), (16, 24), (256, 512)] {
+            let pixels = (width * height) as usize;
+            let color: Vec<u8> = (0..pixels * 4).map(|i| (i * 73 + i / 19) as u8).collect();
+            let depth: Vec<f32> = (0..pixels)
+                .map(|i| match i % 17 {
+                    0 => f32::NAN,
+                    1 => f32::INFINITY,
+                    2 => f32::NEG_INFINITY,
+                    3 => -0.25,
+                    4 => 1.25,
+                    _ => ((i * 7919) & 0xFF_FFFF) as f32 / 0xFF_FFFF as f32,
+                })
+                .collect();
+            let mut expected_color = vec![0; pixels * 4];
+            let mut expected_depth: Vec<u8> = (0..pixels * 4).map(|i| (i * 31) as u8).collect();
+            let mut actual_color = expected_color.clone();
+            let mut actual_depth = expected_depth.clone();
+            for row in 0..height {
+                for x in 0..width {
+                    let source = (row * width + x) as usize;
+                    let at = tiled_offset(x, row, width) as usize * 4;
+                    let rgba = color[source * 4..source * 4 + 4].try_into().unwrap();
+                    expected_color[at..at + 4].copy_from_slice(&encode_pixel(0, rgba));
+                    let value = (depth[source].clamp(0.0, 1.0) * 0xFF_FFFF as f32) as u32;
+                    expected_depth[at..at + 3].copy_from_slice(&value.to_le_bytes()[..3]);
+                }
+            }
+            encode_rgba8_target(&color, &mut actual_color, width);
+            encode_d24s8_target(&depth, &mut actual_depth, width);
+            assert_eq!(actual_color, expected_color);
+            assert_eq!(actual_depth, expected_depth);
+        }
+    }
+
+    #[test]
+    fn fixed_format_snapshots_match_generic_decode_across_tiles() {
+        for (width, height) in [(8, 8), (16, 24), (256, 512)] {
+            let raw: Vec<u8> = (0..width * height * 4).map(|i| (i * 73 + i / 19) as u8).collect();
+            let mut color = vec![0; raw.len()];
+            let mut depth = vec![0.0; (width * height) as usize];
+            decode_rgba8_target(&raw, &mut color, width);
+            decode_d24s8_target(&raw, &mut depth, width);
+            for row in 0..height {
+                for x in 0..width {
+                    let source = tiled_offset(x, row, width) as usize * 4;
+                    let destination = (row * width + x) as usize;
+                    assert_eq!(&color[destination * 4..destination * 4 + 4], &decode_pixel(0, &raw[source..source + 4]));
+                    let mut bytes = [0; 4];
+                    bytes[..3].copy_from_slice(&raw[source..source + 3]);
+                    let expected = u32::from_le_bytes(bytes) as f32 / 0xFF_FFFF as f32;
+                    assert_eq!(depth[destination].to_bits(), expected.to_bits());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn resident_reuse_requires_exact_color_depth_and_dimensions() {
+        let resident = TargetSnapshot { width: 2, height: 1, color: vec![19; 8], depth: vec![0.25, 0.75] };
+        assert!(resident_contents_match(Some(&resident), &resident));
+        assert!(!resident_contents_match(None, &resident));
+        let mut guest = resident.clone();
+        guest.color[7] ^= 1;
+        assert!(!resident_contents_match(Some(&resident), &guest));
+        guest = resident.clone();
+        guest.depth[0] = f32::from_bits(guest.depth[0].to_bits() + 1);
+        assert!(!resident_contents_match(Some(&resident), &guest));
+        guest = resident.clone();
+        guest.width = 1;
+        guest.height = 2;
+        assert!(!resident_contents_match(Some(&resident), &guest));
+        guest = resident.clone();
+        guest.depth[0] = f32::NAN;
+        assert!(!resident_contents_match(Some(&guest), &guest));
+    }
+
+    #[test]
+    fn acceleration_rollback_preserves_host_resources_and_restores_registers() {
+        let mut pica = Pica::default();
+        pica.enable_vulkan_acceleration();
+        pica.vulkan_live_resources.texture_uses = 17;
+        pica.vulkan_live_resources.textures.reserve(512);
+        pica.regs[0x117] = 0x1234;
+        let checkpoint = pica.acceleration_checkpoint();
+        assert_eq!(checkpoint.vulkan_live_resources.textures.capacity(), 0);
+        assert_eq!(checkpoint.vulkan_live_resources.texture_uses, 0);
+        assert!(pica.vulkan_live_resources.textures.capacity() >= 512);
+        pica.regs[0x117] = 0x5678;
+        pica.vulkan_live_resources.texture_uses += 1;
+        let mut memory = Memory::new();
+        // An empty software list exercises rollback without needing a GPU.
+        pica.rerun_accelerated_list(
+            &mut memory,
+            (0, 0),
+            checkpoint,
+            std::time::Instant::now(),
+            (false, FeedbackStats::default()),
+        )
+        .unwrap();
+        assert_eq!(pica.regs[0x117], 0x1234);
+        assert_eq!(pica.vulkan_live_resources.texture_uses, 18);
+        assert!(pica.vulkan_live_resources.textures.capacity() >= 512);
+        assert_eq!(pica.vulkan_acceleration_fallbacks, 1);
+        assert!(pica.vulkan_accelerate);
+
+        let checkpoint = pica.acceleration_checkpoint();
+        pica.rerun_accelerated_list(&mut memory, (0, 0), checkpoint, std::time::Instant::now(), (true, FeedbackStats::default()))
+            .unwrap();
+        assert!(!pica.vulkan_accelerate);
+        assert_eq!(pica.vulkan_live_resources.texture_uses, 0);
+    }
 
     #[test]
     fn snapshot_owns_triangle_order_and_complete_state() {

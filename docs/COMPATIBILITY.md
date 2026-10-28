@@ -5,7 +5,7 @@ playability. No complete playthrough or broad hardware compatibility is claimed.
 
 | Profile | Import / analysis | Runtime evidence |
 |---|---|---|
-| `ultra-sun-usa-cart` | Recognized; executable and CRO translation implemented | Boots; intro, bedroom movement, and early outdoor software-rendered gameplay tested. Vulkan is experimental; one outdoor terrain defect is fixed, with broader validation pending. |
+| `ultra-sun-usa-cart` | Recognized; executable and CRO translation implemented | Boots; intro, bedroom movement, and early outdoor gameplay tested. Experimental Vulkan completes a 650-second recorded sequence with zero software fallbacks and close software-reference images (R-071); rendering differences and performance work remain. |
 | `ultra-moon-usa-cart` | Recognized and analyzed | Equivalent gameplay validation has not been completed. |
 
 Evidence for each profile, measured from locally supplied dumps (R-002,

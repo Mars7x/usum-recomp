@@ -218,6 +218,50 @@ Without `usum-runtime/vulkan-compare`, these environment switches do not enable
 Vulkan. Depth feedback is experimental; omit its switch to retain the guarded
 software fallback for dependent command lists.
 
+Add `USUM_VULKAN_VERTEX=1` alongside acceleration to test the hardware vertex
+stage. It translates supported PICA programs to WGSL and uses indexed GPU draws
+without reading shaded vertices back to the CPU. Geometry shaders and unsupported
+control flow retain CPU processing; GPU validation failures retain the existing
+software fallback. The probe reports offloaded draws/inputs and CPU fallback
+counts. This path is experimental; its full 650-second validation is pending.
+
+The synthetic hardware vertex checks use no game data:
+
+```bash
+cargo run -p usum-runtime --example vertex-shader-smoke --features vulkan-compare
+```
+
+The probe reports target reuse/uploads, capture preparation, final submit/readback,
+and CPU guest-buffer writeback times. Submit/readback includes mapping and host
+copies, so it is not a measurement of GPU execution alone. `USUM_SPEED=1800`
+also reports interval speed and combined CPU vertex loading/shading time during
+a long replay. Compare thread settings with `RAYON_NUM_THREADS=n` using the same
+recording and initial saves; repeat samples in reverse order. Wait for video
+encodes and other heavy background jobs before drawing FPS conclusions.
+
+For a replay comparison, run software and Vulkan with the same input recording,
+initial saves, duration and `USUM_FRAMES_EVERY` interval. Copy the probe executable
+into a separate private directory for each run: captures are written into
+`probe-frames` beside the executable, so reusing it would overwrite the reference.
+For long runs, also raise `USUM_MAX_REFILLS`: the 650-second recording needs
+more than the default 16,384 refills; `USUM_MAX_REFILLS=65536` is sufficient.
+Check the final stop reason and game time, since a successful process exit alone
+does not mean the requested duration was reached.
+From the source checkout, compare the resulting directories:
+
+```bash
+python3 tools/compare-probe-frames.py /private/software/probe-frames /private/vulkan/probe-frames
+```
+
+The JSON report contains RGB mean absolute error (0–255), maximum channel error,
+and pixel counts with any channel error greater than eight (adjustable with
+`--threshold`). It matches exact filenames and reports missing frames; missing
+or malformed captures cause a nonzero exit status. Pixel differences alone do
+not imply an automatic pass or failure. Use `--pattern '??????-*.ppm'` to compare
+only periodic frames (quiet runs omit the final `top.ppm` and `bottom.ppm`).
+Keep captures private and inspect the
+important scenes alongside these measurements.
+
 For a failing isolated draw, add `USUM_VULKAN_CAPTURE_DIR=/tmp/usum-capture`
 to a probe run with `USUM_VULKAN_CAPTURE` and `USUM_VULKAN_SKIP`. Each
 `draw-N` directory contains the decoded state, 21 little-endian f32 values

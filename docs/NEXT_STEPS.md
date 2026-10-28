@@ -50,9 +50,28 @@ shows it in a window with keyboard and mouse (touch) input and sound
    reference. The first live outdoor black-terrain defect is fixed: TEV buffer
    writes must become visible after the current stage reads them (R-070).
    The island shot at VBlank 10,801 now has RGB MAE 0.5004/255 versus software,
-   down from 9.0499; the bottom screen is exact. Next rerun the later grass
-   close-ups (23,401 and 27,001) and the complete 650-second recording, then
-   investigate residual geometry/depth/coverage differences. Integer-depth
+   down from 9.0499; the bottom screen is exact. The later grass close-ups
+   (23,401 and 27,001) and complete 650-second recording now pass comparison
+   with small residual differences (R-071): 402,408 accelerated lists, zero
+   fallbacks, and identical execution counts to software. All 42 periodic
+   frames are checked. R-072 subsequently reduces the 182-second replay from
+   208.445 to 170.404 seconds through fixed-format snapshot decoding and validated
+   resident-target reuse, with identical outdoor captures. R-073 adds fixed-format
+   writeback and completes full validation: 771.221 seconds versus 1,010.486 before
+   these optimizations, all 42 frames byte-identical and zero fallbacks. This is
+   still 0.843x real time, with dense grass intervals at 0.57–0.59x. The report
+   separates submit/readback (77.144 seconds) from CPU writeback (54.374 seconds).
+   R-074 batches shader statistics, fuses vertex loading/shading and accelerates
+   unscaled display conversion. It again validates all 42 frames byte-identical
+   and preserves the full 600,578,761 shader-run count. A recent-session benchmark
+   repeated in reverse order averages 54.161 -> 48.0175 seconds at 16 workers
+   (12.79% higher throughput); eight workers have no sufficiently clear advantage
+   to change the default. Full-run R-074 timings are excluded because background
+   encoding interfered. CPU vertex work remains a major target. Next profile
+   graphics encoding and work outside command lists, move vertex shader execution
+   onto the GPU, and reduce command-list
+   round trips with explicit guest-memory coherence. Residual geometry/depth/
+   coverage differences also remain. Integer-depth
    equality and texture-unit 2 routing are also fixed (R-068/R-069).
    The shaded-vertex → persistent color-target → readback seam
    now includes register-driven raster state, decoded textures, the six TEV

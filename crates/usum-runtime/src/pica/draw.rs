@@ -171,6 +171,40 @@ fn load_vertex(p: &Pica, layout: &Layout, mem: &Memory, index: u32) -> Result<[V
     Ok(inputs)
 }
 
+/// Load and shade in one indexed worker pass. Inputs stay on the worker's
+/// stack; ordinary draws retain only mapped vertices, while geometry draws
+/// can request the raw registers too. Collection keeps first-error order.
+fn process_vertices<T: Send>(
+    p: &Pica,
+    mem: &Memory,
+    layout: &Result<Layout, String>,
+    indices: &[u32],
+    map: impl Fn([Vec4; 16]) -> T + Sync,
+) -> Result<Vec<T>, String> {
+    let process = |index: &u32| {
+        let input = layout.as_ref().map_err(Clone::clone).and_then(|layout| load_vertex(p, layout, mem, *index));
+        match input {
+            Ok(input) => {
+                let (out, steps) = shader::run_measured(&p.vs, &input);
+                (out.map(&map), Some(steps))
+            }
+            Err(error) => (Err(error), None),
+        }
+    };
+    let processed: Vec<_> = if indices.len() >= 16 {
+        use rayon::prelude::*;
+        indices.par_iter().map(process).collect()
+    } else {
+        indices.iter().map(process).collect()
+    };
+    let (runs, steps) = processed
+        .iter()
+        .filter_map(|(_, steps)| *steps)
+        .fold((0, 0), |(runs, total), steps| (runs + 1, total + u64::from(steps)));
+    shader::record_runs(runs, steps);
+    processed.into_iter().map(|(result, _)| result).collect()
+}
+
 /// The geometry shader over the vertex shader's outputs. Its input buffer
 /// holds each vertex's *enabled* output registers in order; one run takes
 /// as many vertices as its input count covers. That grouping is a
@@ -1289,31 +1323,73 @@ fn draw_inner(p: &mut Pica, mem: &mut Memory, elements: bool) -> Result<(), Stri
         slots.push(*slot as usize);
     }
     p.phases[5] += phase.elapsed();
-    let loading = std::time::Instant::now();
+    let processing = std::time::Instant::now();
     let layout = layout(p);
-    let load = |index: &u32| load_vertex(p, layout.as_ref().map_err(Clone::clone)?, mem, *index);
-    let inputs: Vec<Result<[Vec4; 16], String>> = if distinct.len() >= 64 {
-        use rayon::prelude::*;
-        distinct.par_iter().map(load).collect()
+    #[cfg(feature = "vulkan-compare")]
+    if p.vulkan_vertex && p.vulkan_skip_software {
+        if geometry {
+            p.vulkan_vertex_counts[2] += 1;
+        } else {
+            let mode = match (reg(p, 0x25E) >> 8) & 3 {
+                3 if reg(p, 0x229) >> 8 & 1 != 0 => 0,
+                value => value,
+            };
+            let program = p.vs.gpu_program().and_then(|program| {
+                program.validate_uniforms(&p.vs.ints.map(u32::from_le_bytes))?;
+                Ok(program)
+            });
+            match program {
+                Ok(program) if mode <= 2 && slots.len() >= 3 => {
+                    let triangles: Vec<[usize; 3]> = match mode {
+                        0 => (0..slots.len() / 3).map(|t| [3 * t, 3 * t + 1, 3 * t + 2]).collect(),
+                        1 => {
+                            (0..slots.len() - 2).map(|t| if t % 2 == 0 { [t, t + 1, t + 2] } else { [t + 1, t, t + 2] }).collect()
+                        }
+                        _ => (1..slots.len() - 1).map(|t| [0, t, t + 1]).collect(),
+                    };
+                    let load = |index: &u32| load_vertex(p, layout.as_ref().map_err(Clone::clone)?, mem, *index);
+                    let inputs: Vec<Result<[Vec4; 16], String>> = if distinct.len() >= 64 {
+                        use rayon::prelude::*;
+                        distinct.par_iter().map(load).collect()
+                    } else {
+                        distinct.iter().map(load).collect()
+                    };
+                    let inputs = inputs.into_iter().collect::<Result<Vec<_>, _>>()?;
+                    let indices = triangles.iter().flatten().map(|&index| slots[index] as u32).collect();
+                    let dim = reg(p, 0x11E);
+                    let target = super::vulkan_compare::CaptureTarget {
+                        color_address: (reg(p, 0x11D) & 0x0FFF_FFFF) << 3,
+                        depth_address: (reg(p, 0x11C) & 0x0FFF_FFFF) << 3,
+                        width: dim & 0x7FF,
+                        height: ((dim >> 12) & 0x3FF) + 1,
+                        color_format: color_buffer_format((reg(p, 0x117) >> 16) & 7)?,
+                        depth_format: reg(p, 0x116) & 3,
+                    };
+                    super::vulkan_compare::capture_gpu_vertices(p, mem, target, program, inputs, indices)?;
+                    p.triangles += triangles.len() as u64;
+                    p.phases[7] += processing.elapsed();
+                    p.phases[0] += phase.elapsed();
+                    return Ok(());
+                }
+                result => {
+                    p.vulkan_vertex_counts[3] += 1;
+                    if let Err(error) = result {
+                        if p.vulkan_vertex_error.is_none() {
+                            p.vulkan_vertex_error = Some(error);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let (mut vertices, raw): (Vec<Vertex>, Vec<[Vec4; 16]>) = if geometry {
+        let shaded = process_vertices(p, mem, &layout, &distinct, |out| (map_outputs(p, p.vs.output_mask, &out), out))?;
+        (slots.iter().map(|&k| shaded[k].0).collect(), slots.iter().map(|&k| shaded[k].1).collect())
     } else {
-        distinct.iter().map(load).collect()
+        let shaded = process_vertices(p, mem, &layout, &distinct, |out| map_outputs(p, p.vs.output_mask, &out))?;
+        (slots.iter().map(|&k| shaded[k]).collect(), Vec::new())
     };
-    p.phases[6] += loading.elapsed();
-    let shading = std::time::Instant::now();
-    let shade = |input: &Result<[Vec4; 16], String>| -> Result<(Vertex, [Vec4; 16]), String> {
-        let out = shader::run(&p.vs, input.as_ref().map_err(Clone::clone)?)?;
-        Ok((map_outputs(p, p.vs.output_mask, &out), out))
-    };
-    let shaded: Vec<Result<(Vertex, [Vec4; 16]), String>> = if inputs.len() >= 16 {
-        use rayon::prelude::*;
-        inputs.par_iter().map(shade).collect()
-    } else {
-        inputs.iter().map(shade).collect()
-    };
-    let shaded: Vec<(Vertex, [Vec4; 16])> = shaded.into_iter().collect::<Result<_, _>>()?;
-    let mut vertices: Vec<Vertex> = slots.iter().map(|&k| shaded[k].0).collect();
-    let raw: Vec<[Vec4; 16]> = if geometry { slots.iter().map(|&k| shaded[k].1).collect() } else { Vec::new() };
-    p.phases[7] += shading.elapsed();
+    p.phases[7] += processing.elapsed();
     p.phases[0] += phase.elapsed();
     let dim = reg(p, 0x11E);
     let target = Target {
@@ -1476,6 +1552,93 @@ fn draw_inner(p: &mut Pica, mem: &mut Memory, elements: bool) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "vulkan-compare")]
+    #[test]
+    fn hardware_vertices_capture_immutable_inputs_and_fall_back_per_program() {
+        let mut p = Pica::default();
+        p.enable_vulkan_acceleration();
+        p.enable_vulkan_vertex();
+        p.enable_vulkan_capture(usize::MAX);
+        p.vulkan_skip_software = true;
+        p.regs[0x200] = 0x20000000 >> 3;
+        p.regs[0x201] = 15;
+        p.regs[0x205] = 1 << 28 | 16 << 16;
+        p.regs[0x228] = 3;
+        p.regs[0x11D] = 0x20001000 >> 3;
+        p.regs[0x11E] = 8 | 7 << 12;
+        p.regs[0x41] = 0x410000;
+        p.regs[0x43] = 0x410000;
+        p.regs[0x4F] = 1;
+        p.regs[0x50] = 0x03020100;
+        p.vs.output_mask = 1;
+        p.vs.write(0x25, 0);
+        p.vs.write(0x26, 15 | 0x1B << 5 | 0x1B << 14 | 0x1B << 23);
+        p.vs.write(0x1B, 0);
+        p.vs.write(0x1C, 0x13 << 26);
+        p.vs.write(0x1C, 0x22 << 26);
+        let positions = [[-0.5f32, -0.5, -0.25, 1.0], [0.5, -0.5, -0.25, 1.0], [0.0, 0.5, -0.25, 1.0]];
+        let mut bytes = vec![0; 8192];
+        for (output, value) in bytes[..48].as_chunks_mut::<4>().0.iter_mut().zip(positions.iter().flatten()) {
+            *output = value.to_le_bytes();
+        }
+        let mut memory = Memory::new();
+        memory.map(0x30000000, bytes, usum_guest::Perm::RW).unwrap();
+        draw_inner(&mut p, &mut memory, false).unwrap();
+        let captures = p.take_vulkan_snapshots();
+        assert_eq!(captures.len(), 1);
+        let gpu = captures[0].gpu_vertex.as_ref().unwrap();
+        assert_eq!(gpu.indices, [0, 1, 2]);
+        assert_eq!(gpu.inputs[1][0], positions[1]);
+        assert!(captures[0].vertices.is_empty());
+        p.vs.floats[0] = [7.0; 4];
+        p.regs[0x50] = 0;
+        assert_eq!(gpu.uniforms[0], 0.0f32.to_bits());
+        assert_eq!(gpu.uniforms[392], 0x03020100);
+        p.vs.code[0] = 0x2D << 26; // backward uniform jump, not taken with bool 0 false
+        p.regs[0x50] = 0x03020100;
+        draw_inner(&mut p, &mut memory, false).unwrap();
+        let fallback = p.take_vulkan_snapshots();
+        assert!(fallback[0].gpu_vertex.is_none());
+        assert_eq!(fallback[0].vertices.len(), 3);
+        assert_eq!(p.vulkan_vertex_counts, [1, 3, 0, 1]);
+        assert!(p.vulkan_vertex_error.as_ref().unwrap().contains("backward"));
+    }
+
+    #[test]
+    fn fused_vertices_preserve_register_bits_order_and_first_memory_error() {
+        let mut pica = Pica::default();
+        pica.vs.write(0x25, 0);
+        pica.vs.write(0x26, 0xF | 0x1B << 5 | 0x1B << 14 | 0x1B << 23);
+        pica.vs.write(0x1B, 0);
+        pica.vs.write(0x1C, 0x13 << 26); // mov o0, v0
+        pica.vs.write(0x1C, 0x22 << 26); // end
+        let layout =
+            Ok(Layout { total: 1, loaders: vec![Loader { start: 0x1000, stride: 16, span: 16, fields: vec![(0, 3, 4, 0)] }] });
+        let data = (0..128)
+            .flat_map(|i| {
+                [i as f32, -(i as f32), if i % 7 == 0 { f32::NAN } else { i as f32 * 0.5 }, -0.0]
+                    .into_iter()
+                    .flat_map(f32::to_le_bytes)
+            })
+            .collect();
+        let mut memory = Memory::new();
+        memory.map(0x1000, data, usum_guest::Perm::R).unwrap();
+        for count in [1, 15, 16, 65, 127] {
+            let indices: Vec<u32> = (0..count).map(|i| i * 7 % 128).collect();
+            let inputs: Vec<_> =
+                indices.iter().map(|&index| load_vertex(&pica, layout.as_ref().unwrap(), &memory, index).unwrap()).collect();
+            let expected: Vec<_> = inputs.iter().map(|input| shader::run(&pica.vs, input).unwrap()).collect();
+            let actual = process_vertices(&pica, &memory, &layout, &indices, |out| out).unwrap();
+            let bits = |values: Vec<[Vec4; 16]>| values.into_iter().map(|v| v.map(|r| r.map(f32::to_bits))).collect::<Vec<_>>();
+            assert_eq!(bits(actual), bits(expected));
+        }
+        let mut indices = vec![0; 32];
+        indices[4] = 65_535;
+        indices[12] = 65_534;
+        let expected = load_vertex(&pica, layout.as_ref().unwrap(), &memory, indices[4]).unwrap_err();
+        assert_eq!(process_vertices(&pica, &memory, &layout, &indices, |out| out).unwrap_err(), expected);
+    }
 
     /// A small deterministic generator (xorshift), so the test needs no
     /// dependency and repeats exactly.

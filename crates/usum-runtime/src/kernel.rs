@@ -544,6 +544,7 @@ impl Kernel {
                 // DisplayTransfer(input, output, input dims, output dims,
                 // flags): PPF when done
                 gsp::DISPLAY_TRANSFER => {
+                    let started = std::time::Instant::now();
                     let dims = |w: u32| (w & 0xFFFF, w >> 16);
                     let (input_dims, output_dims, flags) = (dims(c[3]), dims(c[4]), c[5]);
                     let fin = crate::pica::bytes_per_pixel((flags >> 8) & 7).ok_or("DisplayTransfer input format")?;
@@ -552,6 +553,8 @@ impl Kernel {
                         .map_err(|f| format!("DisplayTransfer input: {f}"))?;
                     let out = crate::pica::display_transfer(&input, input_dims, output_dims, flags)?;
                     mem.device_write(c[2], &out).map_err(|f| format!("DisplayTransfer output: {f}"))?;
+                    self.pica.display_transfer_time += started.elapsed();
+                    self.pica.display_transfers += 1;
                     Some(gsp::INTERRUPT_PPF)
                 }
                 // MemoryFill: two buffers (start, value, end), control 0 |

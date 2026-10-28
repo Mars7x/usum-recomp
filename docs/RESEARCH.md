@@ -2261,3 +2261,222 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   later close-up grass captures and full 650-second replay still need to be
   rerun with this fix. Private comparison image:
   retained locally (Vulkan left, software right); not distributed.
+
+### R-071 2026-10-28 — Extend live Vulkan replay validation through grass
+
+- Replayed the same private input and initial saves with acceleration and GPU
+  depth feedback enabled. The first attempt requested 650 seconds but hit the
+  default instruction cap at 30,626 VBlanks: 17,179,701,101 instructions,
+  1,117,523 draws, 430,590,079 triangles, 310,721 accelerated command lists,
+  zero software fallbacks, and 56,028 exact D24S8 feedback reads. This is a
+  partial replay, not evidence of completing the requested duration.
+- Both previously unchecked grass close-ups render correctly on visual
+  comparison. At VBlank 23,401, top-screen RGB MAE is 0.1551/255 with 240 of
+  96,000 pixels differing by more than eight in any channel. At 27,001,
+  MAE is 0.2397 with 842 pixels above that threshold. Both bottom screens are
+  byte-identical to software. The earlier corrected island view repeats at
+  MAE 0.5004; small coverage/shading differences remain.
+- Added `tools/compare-probe-frames.py` for reproducible, pixel-free JSON
+  measurement reports. It checks dimensions and payload lengths, matches
+  filenames exactly, and reports missing captures with a nonzero exit status.
+  Synthetic checks cover whitespace-valued pixels, thresholds, truncated
+  payloads, missing captures and periodic-only selection.
+- Quiet probe reports now include elapsed/requested game time, and an
+  instruction-cap stop explains the `USUM_MAX_REFILLS` override. A one-refill
+  private probe run confirms the warning at 0.004 seconds against a requested
+  650 seconds. Runtime tests (59), formatting and strict Clippy pass.
+- The second run, with `USUM_MAX_REFILLS=65536`, completes the same 650-second
+  sequence as software: 22,740,054,712 instructions, 38,889 VBlanks,
+  1,537,499 draws and 561,217,399 triangles. Vulkan accelerates 402,408 lists
+  with zero software fallbacks and 84,699 exact D24S8 feedback reads.
+- All 42 periodic captures (21 per screen) are present. Top-screen RGB MAE
+  averages 0.1743/255 across captures, with maximum 0.5004. Sixteen bottom
+  captures are byte-identical; the largest bottom MAE is 0.1983 in the final
+  animated Pokémon scene, with 126 of 76,800 pixels above eight channel levels.
+  Visual checks cover the island, both grass close-ups, later outdoor dialogue
+  and the final top/bottom scenes. No black-terrain regression is visible.
+  The first 26 repeated screen captures were checked byte-identical to the
+  capped Vulkan run. Private captures remain outside the source tree.
+- Wall time is 1,010.486 seconds (about 0.64x real time), including 359.207
+  seconds in live Vulkan replay. The historical software run took 758.559
+  seconds, but these were not controlled side-by-side speed measurements.
+  This validates the recorded sequence's rendering and execution, not a
+  performance improvement or complete game compatibility. Readback/upload
+  synchronization and residual rasterization differences remain next work.
+
+### R-072 2026-10-28 — Reduce Vulkan snapshot and upload overhead
+
+- Ran sequential 182-second replays from the same private saves/input, with
+  acceleration and depth feedback enabled, on the Ryzen 7 5800X3D/RX 9070 XT.
+  The unchanged baseline takes 208.445 seconds. Excluding host resource caches
+  from rollback checkpoints alone takes 215.394 seconds: no demonstrated speed
+  win. It remains necessary to avoid copying the new resident framebuffer cache.
+- Live targets retain their last successful color/depth readback. The next
+  command list still takes a fresh guest snapshot and skips re-upload only if
+  dimensions and all color/depth values match. Any target modification invalidates
+  this reuse marker until a successful readback; software fallback restores guest
+  state while preserving independent host caches, and a GPU error clears them.
+  This avoids 9,239 of 23,962 initial target uploads (38.6%) in the replay.
+  The residency-only run takes 202.548 seconds, with 70.960 seconds in live replay.
+- New preparation timers identify 44.079 seconds in framebuffer snapshot decoding,
+  versus 4.825 seconds in textures and 1.834 seconds in vertex packing. Specialized
+  RGBA8/D24S8 loops eliminate per-pixel variable-length copies, format dispatch
+  and vector growth checks. Other formats retain the generic conversion.
+- The final candidate takes 170.404 seconds: 18.25% less elapsed time, or 22.32%
+  higher throughput than the unchanged baseline. Snapshot decoding falls to
+  8.437 seconds; live replay remains 72.358 seconds. All runs execute the same
+  4,654,983,548 instructions, 10,888 VBlanks, 334,050 draws and 95,267,049 triangles,
+  accelerating 118,021 lists with zero fallbacks. Both outdoor captures at
+  VBlank 10,801 are byte-identical to the baseline. These are sequential local
+  measurements, not a controlled hardware benchmark or a game-wide FPS claim.
+- A coarser Rayon vertex-batching experiment takes 209.006 seconds and increases
+  shading time; it is removed. The original vertex scheduling remains unchanged.
+- Regression checks cover rollback preservation/disable paths, exact resident
+  reuse invalidation by color/depth/dimensions/NaNs, and specialized decoding
+  against generic conversions across tile boundaries. All 62 Vulkan-feature
+  runtime tests and 49 default runtime tests pass, as do formatting and strict
+  Clippy. Private `play` and `probe` executables are rebuilt. The full 650-second
+  validation in R-071 predates these optimizations and must be repeated.
+- Next performance work: separate final readback waits from CPU writeback cost,
+  then reduce command-list round trips with explicit guest-memory coherence.
+  GPU vertex-shader execution and translated-CPU hotspots need separate profiles.
+  Uncapping presentation alone cannot produce hundreds of unique game frames;
+  simulation/audio timing must also remain correct when increasing frame rate.
+
+### R-073 2026-10-28 — Separate transfers and accelerate CPU writeback
+
+- Added separate timers for final submit/readback (including mapping and host
+  copying) and CPU guest-framebuffer writeback. In a 60-second replay of the
+  same private recording, submit/readback costs 4.367 seconds, while CPU
+  writeback costs 9.224 seconds. This makes CPU conversion the larger immediate
+  target; these timers do not claim to isolate pure GPU execution time.
+- Specialized RGBA8 and D24S8 writeback with fixed-size loads/stores, preserving
+  the generic path for other formats. Depth conversion keeps the existing
+  clamping/truncation and leaves each guest stencil byte intact. Byte-for-byte
+  regression checks include multiple tile sizes, normalized depths, out-of-range
+  values, infinities and NaNs. All 63 Vulkan-feature runtime tests and 49 default
+  runtime tests pass, along with strict Clippy and formatting.
+- The matching short run takes 40.124 seconds versus 44.587 seconds before this
+  change. CPU writeback falls to 3.741 seconds (59.4% less); submit/readback is
+  effectively unchanged at 4.410 seconds. Both captures match byte-for-byte,
+  as do execution counts: 1,047,731,985 instructions, 3,589 VBlanks, 82,574 draws,
+  21,086,424 triangles, 36,864 accelerated lists and zero fallbacks.
+- Vertex shaders also gain a read-only fast check of the debug-trace flag before
+  its atomic swap. With tracing disabled, shader workers no longer perform a
+  shared atomic write for every vertex. A true flag still has one consuming
+  swap. Its performance effect is not independently measured.
+- The full 650-second replay validates all R-072/R-073 changes together.
+  It completes in 771.221 seconds versus 1,010.486 seconds in R-071: 23.68%
+  less elapsed time, or 31.02% higher throughput across the recent optimizations.
+  These sequential local runs are not controlled hardware benchmarks, and this
+  full-run comparison does not isolate today's writeback change.
+- All 42 periodic screens are byte-identical to R-071. Execution remains
+  22,740,054,712 instructions, 38,889 VBlanks, 1,537,499 draws and 561,217,399
+  triangles. All 402,408 lists accelerate with zero fallbacks and 84,699 exact
+  D24S8 feedback reads. Guest time reaches 649.999 seconds with every thread
+  waiting at the time limit. Private play/probe executables are rebuilt.
+- Live replay costs 273.652 seconds, including 77.144 seconds in final
+  submit/readback and 54.374 seconds in CPU writeback. There are 62,673 resident
+  reuses and 56,788 guest target uploads. Capture preparation costs 40.556 seconds
+  for target decoding, 19.001 for textures and 10.229 for vertex packing.
+- Overall speed is 0.843x real time. The dense grass intervals remain at
+  0.57–0.59x, with roughly 13.5 seconds of CPU shading per 30 seconds of guest
+  time. Complete reporting intervals total 155.37 seconds in CPU shading and
+  63.49 seconds in other vertex work. Framebuffer transfer optimization alone
+  is insufficient: GPU vertex processing, graphics-command overhead and work
+  outside command lists require further profiling/optimization before uncapping.
+
+### R-074 2026-10-28 — Batch shader diagnostics and fuse vertex processing
+
+- Vertex shader workers return their step counts locally and publish accumulated
+  run/instruction totals once per draw. Previously each invocation performed two
+  shared atomic increments; R-052's full replay recorded about 600 million shader
+  invocations. Geometry shaders and direct diagnostic calls retain their original
+  counting path. Failed shader executions still contribute their steps, invalid
+  input loads do not count as shader executions, and first-error order is retained.
+- Loading and shading now share one indexed worker pass. Inputs remain local to
+  each worker, avoiding the per-draw array of 16 input registers per vertex and
+  a second worker-pool synchronization. Ordinary draws retain mapped vertices
+  without a second array of raw output registers; geometry draws retain both.
+  Timing reports now label the combined work as vertex processing rather than
+  reporting it as shader execution alone.
+- A guarded display-transfer path directly converts tiled RGBA8 to linear RGB8
+  when no downscale is requested. It preserves cropping and vertical flips;
+  filtering, tiled output and other formats continue through the generic path.
+  New display-transfer timing includes input gathering and guest output writes.
+- In the 60-second replay, display transfer costs 2.821 seconds before the direct
+  conversion and 0.531 seconds afterward (81.2% less). Combined elapsed time
+  changes only from 40.176 to 39.411 seconds; the short test does not demonstrate
+  a large overall speedup. Both captures and all execution counters match,
+  including 15,445,286 shader runs and 1,830,407,951 shader instructions.
+- Tests compare fused outputs bit-for-bit with the original loader/interpreter
+  across serial/parallel sizes, repeated indices, NaNs, signed zero and multiple
+  memory errors. Display tests compare the direct path against generic conversion
+  across tile sizes, cropped/empty outputs, flips and short input. All 66 runtime
+  tests with Vulkan and 52 default runtime tests pass, as do formatting and strict
+  Clippy. Private play/probe binaries are rebuilt.
+- Full replay validation completes with all 42 periodic screens byte-identical
+  to R-073. Counters remain 22,740,054,712 guest instructions, 38,889 VBlanks,
+  1,537,499 draws, 561,217,399 triangles, 402,408 accelerated lists, zero fallbacks,
+  and 84,699 depth-feedback reads. Shader diagnostics match R-052 exactly:
+  600,578,761 runs and 64,030,698,169 instructions. This confirms that batching
+  did not lose counts or change execution. Its 818.915-second elapsed time is
+  excluded from performance comparisons because background encoding and a lower
+  replay priority affected the run. Earlier contended timing attempts are also
+  excluded; no overall speedup is claimed from them.
+- A separate recent user recording provides a shorter gameplay comparison.
+  With 40 seconds requested and 16 workers, the R-073 build takes 53.458 seconds
+  and the new build takes 47.813 seconds (11.81% higher throughput). Eight workers
+  take 46.530 seconds; that smaller difference requires repetition before choosing
+  a hardware-specific setting. All 14 captures in each comparison are identical,
+  as are 2,563,325,860 guest instructions, 2,392 VBlanks, 107,036 draws and
+  30,242,739 triangles. Both worker settings report 26,257,158 shader runs and
+  3,019,280,245 shader instructions.
+- Repeating in reverse order gives 54.864 seconds for the old build, 48.222
+  for the new build at 16 workers, and 47.980 at eight workers. Two-sample means
+  are 54.161, 48.0175 and 47.255 seconds respectively. At the unchanged 16-worker
+  setting this is 11.34% less elapsed time / 12.79% higher throughput on the recent
+  recording. All 14 captures in every repeat remain byte-identical. Eight workers
+  average only 1.61% higher throughput than sixteen, below the spread between its
+  individual samples, so no universal worker cap is introduced. These are local
+  samples, not an isolated hardware benchmark or a game-wide FPS guarantee.
+- The short-run benchmark waits for encoders to finish. If encoding starts during
+  a sample, it interrupts only its own probe and retries after encoding completes.
+
+### R-075 2026-10-28 — Execute PICA vertex programs in the hardware vertex stage
+
+- Added an in-memory PICA-to-WGSL compiler for arithmetic, relative uniforms,
+  integer address registers, comparison, structured calls/branches/loops/breaks
+  and forward conditional jumps. Backward/unstructured control flow, recursion
+  and geometry emission are rejected for CPU fallback. Expansion limits and a
+  conservative uniform-dependent instruction budget bound GPU execution.
+- The renderer now accepts raw input registers, per-draw uniforms and triangle
+  indices. It executes the translated program in a real graphics vertex stage,
+  feeds its outputs directly into existing Vulkan raster/TEV/lighting, and uses
+  indexed drawing to reuse transformed vertices. Shader modules and pipelines
+  are cached. There is no shaded-vertex readback in the gameplay path.
+- Runtime snapshots own immutable inputs/uniforms; unsupported programs and
+  geometry draws retain the CPU path. Program caching checks code, descriptors
+  and entry point, including direct public-field mutations. Enable only with
+  `USUM_VULKAN_VERTEX=1` alongside acceleration. The CPU path remains the default.
+- Original synthetic hardware programs match the CPU interpreter for arithmetic,
+  matrix DP4, MOVA/relative MOV/MAD, loops, conditional branches, calls and breaks.
+  An indexed hardware triangle is byte-identical to the CPU-fed raster path.
+  A diagnostic compute harness evaluates the same translated function for these
+  comparisons; gameplay uses the vertex stage directly.
+- The recent 40-second recording offloads all 107,036 draws and 26,257,158 distinct
+  vertex inputs, with zero CPU shader runs, no geometry/program fallbacks and zero
+  software raster fallbacks. Guest execution remains 2,563,325,860 instructions,
+  2,392 VBlanks and 30,242,739 triangles. All 14 frames are present. Maximum RGB
+  MAE versus CPU vertex processing is 0.00003125/255, and no pixel differs by more
+  than eight channel levels. Very small float/rounding differences remain.
+- This first pass takes 48.084 seconds, comparable to the CPU-vertex R-074 mean
+  of 48.0175 seconds. Offload is functional, but no overall speed gain is yet
+  established. Next specialize output mapping to eliminate dynamic register-array
+  traversal and measure remaining submission/readback costs. This is not evidence
+  of achieving the 200 FPS target.
+- Validation: 16 renderer and 68 runtime tests with Vulkan, 52 default runtime
+  tests, formatting and strict Clippy pass. Tests cover program cache invalidation,
+  immutable captured inputs/uniforms and per-program CPU fallback. The complete
+  650-second GPU-vertex replay remains pending. Generated game shader source and
+  captures stay in memory or private diagnostic locations, outside this repository.

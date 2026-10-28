@@ -297,6 +297,11 @@ pub struct RasterBatch<'a> {
     draws: u32,
 }
 
+enum VertexSource<'a> {
+    Cpu(&'a [RasterVertex]),
+    Pica(crate::PicaVertexDraw<'a>),
+}
+
 /// A host viewport in top-left target coordinates.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Viewport {
@@ -612,6 +617,7 @@ struct BlendKey {
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct PipelineKey {
+    vertex_program: u64,
     cull: CullMode,
     depth: DepthState,
     color_mask: ColorMask,
@@ -622,6 +628,9 @@ pub(super) struct RasterPipelines {
     shader: wgpu::ShaderModule,
     fragment_layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
+    vertex_layout: wgpu::BindGroupLayout,
+    vertex_pipeline_layout: wgpu::PipelineLayout,
+    vertex_shaders: Mutex<HashMap<u64, wgpu::ShaderModule>>,
     depth_upload_layout: wgpu::BindGroupLayout,
     depth_upload_pipeline: wgpu::RenderPipeline,
     depth_feedback_layout: wgpu::BindGroupLayout,
@@ -1206,18 +1215,56 @@ impl Renderer {
         state: RasterState,
         inputs: FragmentInputs<'_>,
     ) -> Result<(), String> {
-        validate_vertices(vertices.len())?;
+        self.encode_draw(encoder, target, VertexSource::Cpu(vertices), viewport, state, inputs)
+    }
+
+    fn encode_draw(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &ColorTarget,
+        source: VertexSource<'_>,
+        viewport: Viewport,
+        state: RasterState,
+        inputs: FragmentInputs<'_>,
+    ) -> Result<(), String> {
         viewport.validate(target)?;
         let blend_constant = state.blend.map(BlendState::host_constant).transpose()?;
-        let bytes = vertex_bytes(vertices);
-        let vertex_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("PICA shaded vertices"),
-            size: bytes.len() as u64,
-            usage: wgpu::BufferUsages::VERTEX,
-            mapped_at_creation: true,
-        });
-        vertex_buffer.get_mapped_range_mut(..).map_err(|e| e.to_string())?.copy_from_slice(&bytes);
-        vertex_buffer.unmap();
+        let (vertex_buffer, index_buffer, vertex_group, count, program) = match source {
+            VertexSource::Cpu(vertices) => {
+                validate_vertices(vertices.len())?;
+                let buffer =
+                    self.upload_draw_buffer("PICA shaded vertices", &vertex_bytes(vertices), wgpu::BufferUsages::VERTEX)?;
+                (Some(buffer), None, None, vertices.len() as u32, None)
+            }
+            VertexSource::Pica(draw) => {
+                draw.validate()?;
+                let mut bytes = Vec::with_capacity(draw.inputs.len() * 256);
+                for input in draw.inputs {
+                    for register in input {
+                        for value in register {
+                            bytes.extend_from_slice(&value.to_ne_bytes());
+                        }
+                    }
+                }
+                if bytes.len() as u64 > self.device.limits().max_storage_buffer_binding_size {
+                    return Err("PICA vertex input exceeds device storage limit".into());
+                }
+                let input = self.upload_draw_buffer("PICA vertex inputs", &bytes, wgpu::BufferUsages::STORAGE)?;
+                let uniform =
+                    self.upload_draw_buffer("PICA vertex uniforms", &words_bytes(draw.uniforms), wgpu::BufferUsages::STORAGE)?;
+                let index =
+                    self.upload_draw_buffer("PICA triangle indices", &words_bytes(draw.indices), wgpu::BufferUsages::INDEX)?;
+                let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("PICA vertex inputs/uniforms"),
+                    layout: &self.raster_pipelines.vertex_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: uniform.as_entire_binding() },
+                    ],
+                });
+                (None, Some(index), Some(group), draw.indices.len() as u32, Some(draw.program))
+            }
+        };
         let mut fragment_words = [0; 37];
         fragment_words[36] = state.depth_max;
         fragment_words[..4].copy_from_slice(&state.alpha_test.map(AlphaTest::uniform).unwrap_or([0; 4]));
@@ -1273,6 +1320,7 @@ impl Renderer {
             ],
         });
         let key = PipelineKey {
+            vertex_program: program.map_or(0, |program| program.id),
             cull: state.cull,
             depth: state.depth,
             color_mask: state.color_mask,
@@ -1280,7 +1328,26 @@ impl Renderer {
         };
         let mut pipelines = self.raster_pipelines.pipelines.lock().map_err(|_| "Vulkan pipeline cache lock was poisoned")?;
         let pipeline = pipelines.entry(key).or_insert_with(|| {
-            create_pipeline(&self.device, &self.raster_pipelines.shader, &self.raster_pipelines.pipeline_layout, key)
+            if let Some(program) = program {
+                let mut shaders = self.raster_pipelines.vertex_shaders.lock().expect("vertex shader cache lock");
+                let shader = shaders.entry(program.id).or_insert_with(|| {
+                    self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                        label: Some("translated PICA vertex program"),
+                        source: wgpu::ShaderSource::Wgsl(
+                            format!(
+                                "{RASTER_SHADER}\n{}\n{}\n{}",
+                                program.source,
+                                crate::vertex::BINDINGS,
+                                crate::vertex::VERTEX_ENTRY
+                            )
+                            .into(),
+                        ),
+                    })
+                });
+                create_pipeline(&self.device, shader, &self.raster_pipelines.vertex_pipeline_layout, key)
+            } else {
+                create_pipeline(&self.device, &self.raster_pipelines.shader, &self.raster_pipelines.pipeline_layout, key)
+            }
         });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1306,10 +1373,28 @@ impl Renderer {
             }
             pass.set_bind_group(0, &fragment_group, &[]);
             pass.set_viewport(viewport.x, viewport.y, viewport.width, viewport.height, 0.0, 1.0);
-            pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-            pass.draw(0..vertices.len() as u32, 0..1);
+            if let (Some(indices), Some(group)) = (&index_buffer, &vertex_group) {
+                pass.set_bind_group(1, group, &[]);
+                pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..count, 0, 0..1);
+            } else if let Some(vertices) = &vertex_buffer {
+                pass.set_vertex_buffer(0, vertices.slice(..));
+                pass.draw(0..count, 0..1);
+            }
         }
         Ok(())
+    }
+
+    fn upload_draw_buffer(&self, label: &str, bytes: &[u8], usage: wgpu::BufferUsages) -> Result<wgpu::Buffer, String> {
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: bytes.len() as u64,
+            usage,
+            mapped_at_creation: true,
+        });
+        buffer.get_mapped_range_mut(..).map_err(|e| e.to_string())?.copy_from_slice(bytes);
+        buffer.unmap();
+        Ok(buffer)
     }
 
     /// Starts a command buffer which can collect many draws before one submit.
@@ -1555,6 +1640,18 @@ impl Renderer {
 }
 
 impl RasterBatch<'_> {
+    pub fn draw_pica_vertices(
+        &mut self,
+        vertices: crate::PicaVertexDraw<'_>,
+        viewport: Viewport,
+        state: RasterState,
+        inputs: FragmentInputs<'_>,
+    ) -> Result<(), String> {
+        let encoder = self.encoder.as_mut().ok_or("Vulkan raster batch was already submitted")?;
+        self.renderer.encode_draw(encoder, self.target, VertexSource::Pica(vertices), viewport, state, inputs)?;
+        self.draws = self.draws.checked_add(1).ok_or("too many draws in one Vulkan batch")?;
+        Ok(())
+    }
     pub fn draw(&mut self, vertices: &[RasterVertex], viewport: Viewport, state: RasterState) -> Result<(), String> {
         self.draw_with_inputs(vertices, viewport, state, FragmentInputs::default())
     }
@@ -1886,10 +1983,31 @@ pub(super) fn create_pipelines(device: &wgpu::Device, queue: &wgpu::Queue) -> Ra
             * 4
     ]);
     dummy_lighting.unmap();
+    let vertex_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("PICA raw vertex layout"),
+        entries: &[0, 1].map(|binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::VERTEX,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }),
+    });
+    let vertex_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("PICA hardware vertex pipeline layout"),
+        bind_group_layouts: &[Some(&fragment_layout), Some(&vertex_layout)],
+        immediate_size: 0,
+    });
     RasterPipelines {
         shader,
         fragment_layout,
         pipeline_layout,
+        vertex_layout,
+        vertex_pipeline_layout,
+        vertex_shaders: Mutex::new(HashMap::new()),
         depth_upload_layout,
         depth_upload_pipeline,
         depth_feedback_layout,
@@ -1921,14 +2039,15 @@ fn create_pipeline(
             wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 72, shader_location: 6 },
         ],
     };
+    let cpu_buffers = [Some(layout)];
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("PICA shaded-vertex raster pipeline"),
         layout: Some(pipeline_layout),
         vertex: wgpu::VertexState {
             module: shader,
-            entry_point: Some("vertex"),
+            entry_point: Some(if key.vertex_program == 0 { "vertex" } else { "pica_vertex" }),
             compilation_options: Default::default(),
-            buffers: &[Some(layout)],
+            buffers: if key.vertex_program == 0 { &cpu_buffers } else { &[] },
         },
         primitive: wgpu::PrimitiveState { cull_mode: key.cull.wgpu(), ..Default::default() },
         depth_stencil: Some(wgpu::DepthStencilState {

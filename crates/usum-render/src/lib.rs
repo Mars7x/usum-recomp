@@ -7,6 +7,8 @@
 //! active until output can be compared draw-for-draw.
 
 mod raster;
+mod vertex;
+pub use vertex::{PicaVertexDraw, VertexProgram};
 
 pub use raster::{
     AlphaTest, BlendComponent, BlendFactor, BlendOperation, BlendState, ColorMask, ColorTarget, CullMode, DepthCompare,

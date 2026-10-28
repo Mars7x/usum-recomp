@@ -28,5 +28,9 @@ vulkan-compare = ["dep:usum-render"]
 name = "vulkan-compare-smoke"
 required-features = ["vulkan-compare"]
 
+[[example]]
+name = "vertex-shader-smoke"
+required-features = ["vulkan-compare"]
+
 [lints]
 workspace = true

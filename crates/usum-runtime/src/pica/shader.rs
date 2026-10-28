@@ -98,6 +98,17 @@ pub struct Unit {
     float_at: usize,
     float32: bool,
     pending: Vec<u32>,
+    #[cfg(feature = "vulkan-compare")]
+    gpu_cache: Option<std::sync::Arc<GpuProgramCache>>,
+}
+
+#[cfg(feature = "vulkan-compare")]
+#[derive(Debug)]
+struct GpuProgramCache {
+    entry: u32,
+    code: Vec<u32>,
+    descriptors: Vec<u32>,
+    program: Result<std::sync::Arc<usum_render::VertexProgram>, String>,
 }
 
 impl Default for Unit {
@@ -117,11 +128,30 @@ impl Default for Unit {
             float_at: 0,
             float32: false,
             pending: Vec::new(),
+            #[cfg(feature = "vulkan-compare")]
+            gpu_cache: None,
         }
     }
 }
 
 impl Unit {
+    #[cfg(feature = "vulkan-compare")]
+    pub(super) fn gpu_program(&mut self) -> Result<std::sync::Arc<usum_render::VertexProgram>, String> {
+        if !self
+            .gpu_cache
+            .as_ref()
+            .is_some_and(|cache| cache.entry == self.entry && cache.code == self.code && cache.descriptors == self.descs)
+        {
+            self.gpu_cache = Some(std::sync::Arc::new(GpuProgramCache {
+                entry: self.entry,
+                code: self.code.clone(),
+                descriptors: self.descs.clone(),
+                program: usum_render::VertexProgram::compile(&self.code, &self.descs, self.entry),
+            }));
+        }
+        self.gpu_cache.as_ref().expect("vertex program cached").program.clone()
+    }
+
     /// A write to the shader register at `offset` from the unit's base
     /// (0x280 geometry, 0x2B0 vertex).
     pub fn write(&mut self, offset: u16, value: u32) {
@@ -268,9 +298,21 @@ pub static STEPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::n
 pub fn run_with(unit: &Unit, v: &[Vec4; 16], emitter: Option<&mut Emitter>) -> Result<[Vec4; 16], String> {
     let mut steps = 0u32;
     let out = run_counted(unit, v, emitter, &mut steps);
-    RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    STEPS.fetch_add(u64::from(steps), std::sync::atomic::Ordering::Relaxed);
+    record_runs(1, u64::from(steps));
     out
+}
+
+/// Runs a vertex shader and returns its instruction count, including on failure.
+/// Batch callers publish their accumulated statistics after workers finish.
+pub(super) fn run_measured(unit: &Unit, v: &[Vec4; 16]) -> (Result<[Vec4; 16], String>, u32) {
+    let mut steps = 0;
+    let out = run_counted(unit, v, None, &mut steps);
+    (out, steps)
+}
+
+pub(super) fn record_runs(runs: u64, steps: u64) {
+    RUNS.fetch_add(runs, std::sync::atomic::Ordering::Relaxed);
+    STEPS.fetch_add(steps, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// A float uniform with relative addressing (3dbrew): out-of-range offsets
@@ -329,7 +371,10 @@ fn run_on(
     steps: &mut u32,
     stack: &mut Vec<Frame>,
 ) -> Result<[Vec4; 16], String> {
-    let trace = TRACE_ONCE.swap(false, std::sync::atomic::Ordering::Relaxed);
+    // Most vertices run with tracing disabled. A shared read avoids forcing
+    // every shader worker to acquire this cache line for an atomic write.
+    let trace =
+        TRACE_ONCE.load(std::sync::atomic::Ordering::Relaxed) && TRACE_ONCE.swap(false, std::sync::atomic::Ordering::Relaxed);
     let mut r = [[0f32; 4]; 16];
     let mut o = [[0f32; 4]; 16];
     let mut a0 = [0i32; 2];
@@ -560,6 +605,40 @@ mod tests {
         u.descs[0] = XYZW;
         u.operands[0] = operands(XYZW);
         u
+    }
+
+    #[cfg(feature = "vulkan-compare")]
+    #[test]
+    fn gpu_program_cache_tracks_public_code_descriptor_and_entry_changes() {
+        let mut u = unit(&[0x13 << 26, 0x22 << 26]);
+        let first = u.gpu_program().unwrap();
+        u.floats[0] = [7.0; 4];
+        u.ints[0] = [3, 0, 1, 0];
+        u.bools = 1;
+        assert!(std::sync::Arc::ptr_eq(&first, &u.gpu_program().unwrap()));
+        u.code[0] = 0x21 << 26;
+        let changed = u.gpu_program().unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&first, &changed));
+        u.descs[0] ^= 1;
+        let descriptor = u.gpu_program().unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&changed, &descriptor));
+        u.entry = 1;
+        assert!(!std::sync::Arc::ptr_eq(&descriptor, &u.gpu_program().unwrap()));
+    }
+
+    #[test]
+    fn measured_shader_runs_count_success_and_failure_instructions() {
+        let valid = unit(&[0x13 << 26, 0x22 << 26]); // mov o0, v0; end
+        let mut inputs = [[0.0; 4]; 16];
+        inputs[0] = [1.0, -2.0, 3.0, 4.0];
+        let (result, steps) = run_measured(&valid, &inputs);
+        assert_eq!(result.unwrap()[0], inputs[0]);
+        assert_eq!(steps, 2);
+
+        let invalid = unit(&[0x11 << 26]);
+        let (result, steps) = run_measured(&invalid, &inputs);
+        assert!(result.is_err());
+        assert_eq!(steps, 1);
     }
 
     #[test]
