@@ -2547,3 +2547,13 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   A 2,000-operation mixed CPU/device sequence matches eager memory throughout.
 - These are foundations, not yet the gameplay path. They establish the coherence
   needed to remove per-list stalls; no new gameplay speedup is claimed here.
+
+### R-079 2026-10-28 — Preserve contiguous reads across deferred aliases
+
+- A contiguous mapped slice can span both RAM and pending device ranges. Preserve
+  its original readable-slice guarantee by lazily caching the combined region;
+  invalidate that cache on CPU/device writes, overlay replacement and remapping.
+  This prevents texture and DMA callers from mistaking valid mixed data for an
+  unmapped range. Ordinary RAM reads and exact device slices keep their fast paths.
+- The 2,000-operation eager/deferred differential check now also compares whole
+  mapped slices after every operation. All 26 guest tests and strict Clippy pass.

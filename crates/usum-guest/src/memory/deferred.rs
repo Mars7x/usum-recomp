@@ -94,6 +94,8 @@ impl Memory {
         self.prepare_overwrite(address, len)?;
         let i = self.deferred.ranges.partition_point(|r| r.address < address);
         self.deferred.ranges.insert(i, Range { address, source, len });
+        let (region, _) = self.find(address).expect("validated device mapping");
+        self.regions[region].logical.take();
         self.deferred.refresh_bounds();
         Ok(())
     }
@@ -128,6 +130,21 @@ impl Memory {
         self.deferred.ranges.retain(|r| !overlaps(r));
         self.deferred.refresh_bounds();
         Ok(())
+    }
+
+    pub(super) fn logical_region(&self, index: usize) -> Result<Vec<u8>, Fault> {
+        let region = &self.regions[index];
+        let mut bytes = region.bytes.clone();
+        for range in self
+            .deferred
+            .ranges
+            .iter()
+            .filter(|r| r.address >= region.base && r.end() <= u64::from(region.base) + region.bytes.len() as u64)
+        {
+            let offset = (range.address - region.base) as usize;
+            bytes[offset..offset + range.len].copy_from_slice(range.bytes()?);
+        }
+        Ok(bytes)
     }
 
     pub(super) fn materialize_all(&mut self) -> Result<(), Fault> {
@@ -311,6 +328,7 @@ mod tests {
                 eager.write_range(address, &vec![value; len]).unwrap();
             }
             assert_eq!(lazy.read_range(0x1000, 16), eager.read_range(0x1000, 16), "step {step}");
+            assert_eq!(lazy.slice(0x1000, 16), eager.slice(0x1000, 16), "mixed slice at step {step}");
             for offset in 0..13 {
                 assert_eq!(lazy.read_u32(0x1000 + offset), eager.read_u32(0x1000 + offset));
             }

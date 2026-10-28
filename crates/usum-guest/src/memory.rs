@@ -10,7 +10,7 @@ use crate::Fault;
 mod deferred;
 use deferred::DeferredRanges;
 pub use deferred::{DeferredBytes, MemorySpan};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Perm {
@@ -28,6 +28,7 @@ struct Region {
     base: u32,
     perm: Perm,
     bytes: Vec<u8>,
+    logical: OnceLock<Result<Vec<u8>, Fault>>,
 }
 
 impl Region {
@@ -63,7 +64,7 @@ impl Memory {
         if overlaps {
             return Err(Overlap);
         }
-        self.regions.push(Region { base, perm, bytes });
+        self.regions.push(Region { base, perm, bytes, logical: OnceLock::new() });
         self.regions.sort_by_key(|r| r.base);
         Ok(())
     }
@@ -147,10 +148,15 @@ impl Memory {
         let moved = r.bytes[o..o + len].to_vec();
         let mut pieces = Vec::new();
         if o > 0 {
-            pieces.push(Region { base: r.base, perm: r.perm, bytes: r.bytes[..o].to_vec() });
+            pieces.push(Region { base: r.base, perm: r.perm, bytes: r.bytes[..o].to_vec(), logical: OnceLock::new() });
         }
         if o + len < r.bytes.len() {
-            pieces.push(Region { base: r.base + (o + len) as u32, perm: r.perm, bytes: r.bytes[o + len..].to_vec() });
+            pieces.push(Region {
+                base: r.base + (o + len) as u32,
+                perm: r.perm,
+                bytes: r.bytes[o + len..].to_vec(),
+                logical: OnceLock::new(),
+            });
         }
         let saved = self.regions.clone();
         self.regions.extend(pieces);
@@ -173,6 +179,7 @@ impl Memory {
         for r in std::mem::take(&mut self.regions) {
             match merged.last_mut() {
                 Some(last) if last.perm == r.perm && last.base as u64 + last.bytes.len() as u64 == u64::from(r.base) => {
+                    last.logical.take();
                     last.bytes.extend_from_slice(&r.bytes);
                 }
                 _ => merged.push(r),
@@ -197,6 +204,7 @@ impl Memory {
             let r = &self.regions[i];
             if (device || r.perm.write) && bytes.len() <= r.bytes.len() - o {
                 self.prepare_overwrite(address, bytes.len())?;
+                self.regions[i].logical.take();
                 self.regions[i].bytes[o..o + bytes.len()].copy_from_slice(bytes);
                 return Ok(());
             }
@@ -228,6 +236,7 @@ impl Memory {
         while k < bytes.len() {
             let (i, o) = self.find(address.wrapping_add(k as u32)).expect("validated device write");
             let r = &mut self.regions[i];
+            r.logical.take();
             let n = (r.bytes.len() - o).min(bytes.len() - k);
             r.bytes[o..o + n].copy_from_slice(&bytes[k..k + n]);
             k += n;
@@ -243,7 +252,14 @@ impl Memory {
             return None;
         }
         if self.deferred.overlaps(address, len as usize) {
-            return self.deferred.read(address, len as usize).ok().flatten();
+            if let Some(bytes) = self.deferred.read(address, len as usize).ok().flatten() {
+                return Some(bytes);
+            }
+            // A mixed RAM/device slice still lies in one mapped region. Keep
+            // that API guarantee for texture aliases and DMA. This rare cache
+            // is invalidated by any write to the region or its device overlays.
+            let bytes = r.logical.get_or_init(|| self.logical_region(i)).as_ref().ok()?;
+            return Some(&bytes[o..o + len as usize]);
         }
         Some(&r.bytes[o..o + len as usize])
     }
