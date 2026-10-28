@@ -266,7 +266,9 @@ Scaled targets now accept native-size color/depth uploads, with exact replicatio
 performed on the GPU. Native guest readbacks likewise sample the scaled target
 on the GPU; full-resolution color is read only for an actual LCD transfer.
 `USUM_VULKAN_SCALED_UPLOAD=0` and `USUM_VULKAN_NATIVE_READBACK=0` select the older
-CPU expansion/full-readback paths for reference comparisons.
+CPU expansion/full-readback paths for reference comparisons. Display cropping,
+rotation and RGB packing also execute on the GPU;
+`USUM_VULKAN_GPU_DISPLAY_COPY=0` restores the CPU display transform.
 
 `USUM_VULKAN_DEFER_READBACK=1` additionally enables experimental immutable
 readback tickets for RGBA8/D24S8 targets with depth buffers. Both exact guest

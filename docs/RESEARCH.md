@@ -2708,3 +2708,25 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   or the 200-FPS goal. Controlled intro measurements are separate.
 - `USUM_VULKAN_NATIVE_READBACK=0` and `USUM_VULKAN_SCALED_UPLOAD=0` retain the old
   paths for reference measurements. Deferred guest readbacks remain opt-in at 1×.
+
+### R-087 2026-10-28 — Perform LCD crop, rotation and RGB packing on the GPU
+
+- Replace the large strided CPU RGBA scan with a compute pass that crops,
+  rotates, flips, averages hardware-downscaled samples and packs four RGB pixels
+  into three words. Only tightly packed display RGB reaches the CPU; high-resolution
+  RGBA and depth stay resident. CPU source-byte coherence checks are retained.
+  `USUM_VULKAN_GPU_DISPLAY_COPY=0` selects the prior CPU transform for reference.
+- Hardware comparisons match the existing CPU transform exactly at scales
+  1/2/3/6/8, across cropping, both flip states, all four 1×/2× sampling-factor
+  combinations and RGB tails that do not fill a four-pixel group. The real padded
+  6× LCD-view test also passes without materializing a CPU RGBA plane.
+- The recorded 16-game-second 6× replay now takes 29.217 seconds, versus
+  51.761 after R-086 and 123.923 originally: 17.04 top-screen updates/second and
+  4.24× original throughput. Instructions, draws and VBlanks are unchanged; both
+  native and high-resolution captures of both screens are byte-identical.
+- A controlled 6× intro comparison used CPU/GPU/GPU/CPU ordering over six game
+  seconds. CPU transforms took 23.782/24.386 seconds; GPU transforms 13.638/14.154.
+  Each executes 1,583,340,348 guest instructions, 344 conversion jobs and 347
+  top-screen updates. All native/scaled captures at VBlank 180 are byte-identical.
+  Including R-086, intro throughput is 4.78× the original 65.991/66.806-second
+  reference. It still runs below real time, and the 200-FPS goal remains unmet.

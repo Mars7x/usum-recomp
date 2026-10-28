@@ -139,13 +139,21 @@ pub(in crate::pica) fn capture_transfer(
     }
     // Native guest coherence needs only center samples. Read the full-resolution
     // color plane once, when the game actually transfers this target to an LCD.
-    let color = match &target.scaled_color {
-        Some(color) => Arc::clone(color),
-        None => live_renderer()?.read_color_target(&target.gpu)?.into(),
-    };
     trace(|| format!("scaled LCD hit {input_address:#x} -> {output_address:#x} {ow}x{oh}"));
-    let rgb = lcd_rgb(&color, (target.info.width, target.info.height), (ow, oh), scale, (sx, sy), flags & 1 != 0, origin);
-    pica.vulkan_live_target_cache[index].scaled_color = Some(color);
+    let rgb = if std::env::var("USUM_VULKAN_GPU_DISPLAY_COPY").as_deref() != Ok("0") {
+        live_renderer()?.read_display_rgb(
+            &target.gpu,
+            usum_render::DisplayCopy { origin, size: (ow, oh), scale, downscale: (sx, sy), flip: flags & 1 != 0 },
+        )?
+    } else {
+        let color = match &target.scaled_color {
+            Some(color) => Arc::clone(color),
+            None => live_renderer()?.read_color_target(&target.gpu)?.into(),
+        };
+        let rgb = lcd_rgb(&color, (target.info.width, target.info.height), (ow, oh), scale, (sx, sy), flags & 1 != 0, origin);
+        pica.vulkan_live_target_cache[index].scaled_color = Some(color);
+        rgb
+    };
     let (width, height) = (oh * scale, ow * scale);
     if pica.scaled_displays.len() > 16 {
         pica.scaled_displays.clear();
@@ -249,6 +257,26 @@ pub(in crate::pica) fn presented(
 mod tests {
     use super::*;
     #[test]
+    #[ignore = "requires a Vulkan hardware adapter"]
+    fn gpu_display_matches_cpu_crops_flips_downscales_and_rgb_tail_packing() {
+        let renderer = Renderer::new().unwrap();
+        for scale in [1, 2, 3, 6, 8] {
+            let (width, height) = (72, 64);
+            let color: Vec<u8> = (0..width * height * scale * scale * 4).map(|n| (n * 13 + n / 257) as u8).collect();
+            let depth = vec![1.0; (width * height * scale * scale) as usize];
+            let target = renderer.create_color_target_from_snapshot(width * scale, height * scale, &color, &depth).unwrap();
+            for downscale in [(1, 1), (2, 1), (1, 2), (2, 2)] {
+                for flip in [false, true] {
+                    let copy = usum_render::DisplayCopy { origin: (7, 5), size: (19, 23), scale, downscale, flip };
+                    let actual = renderer.read_display_rgb(&target, copy).unwrap();
+                    let expected = lcd_rgb(&color, (width, height), copy.size, scale, downscale, flip, copy.origin);
+                    assert_eq!(actual, expected, "scale {scale}, downscale {downscale:?}, flip {flip}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn lcd_views_start_inside_padded_targets_and_read_only_the_crop() {
         let info =
             CaptureTarget { color_address: 0, depth_address: 0, width: 256, height: 512, color_format: 0, depth_format: 3 };
@@ -323,8 +351,8 @@ mod tests {
         assert_eq!((frame.width, frame.height), (2400, 1440));
         assert_eq!(frame.rgb.as_ref(), expected_lcd);
         assert!(
-            pica.vulkan_live_target_cache[0].scaled_color.is_some(),
-            "LCD transfer caches the full-resolution plane on demand"
+            pica.vulkan_live_target_cache[0].scaled_color.is_none(),
+            "LCD transfer keeps the full-resolution RGBA plane on the GPU"
         );
         let varied = (0..240).any(|y| {
             (0..400).any(|x| {

@@ -1,5 +1,7 @@
+mod display;
 mod readback;
 mod seed;
+pub use display::DisplayCopy;
 pub use readback::{ColorDepthReadback, PendingReadback};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -641,6 +643,7 @@ pub(super) struct RasterPipelines {
     depth_feedback_pipeline: wgpu::RenderPipeline,
     resolved_readback: readback::ResolvePipeline,
     scaled_seed: seed::SeedPipeline,
+    display_copy: display::DisplayPipeline,
     _dummy_texture: wgpu::Texture,
     dummy_view: wgpu::TextureView,
     dummy_sampler: wgpu::Sampler,
@@ -2051,6 +2054,7 @@ pub(super) fn create_pipelines(device: &wgpu::Device, queue: &wgpu::Queue) -> Ra
         depth_feedback_pipeline,
         resolved_readback: readback::ResolvePipeline::new(device),
         scaled_seed: seed::SeedPipeline::new(device),
+        display_copy: display::DisplayPipeline::new(device),
         _dummy_texture: dummy_texture,
         dummy_view,
         dummy_sampler,
