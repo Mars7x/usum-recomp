@@ -247,6 +247,20 @@ The synthetic hardware vertex checks use no game data:
 cargo run -p usum-runtime --example vertex-shader-smoke --features vulkan-compare
 ```
 
+`USUM_RESOLUTION_SCALE=1..8` selects the Vulkan internal resolution multiplier
+(native is 1). For example, `USUM_RESOLUTION_SCALE=6` renders the top screen at
+2400×1440. F3/F4 lower/raise the multiplier while playing; the window title shows
+the requested scale. Window resizing controls how the two screens fit on your
+display and is independent of internal rendering resolution. Touch coordinates
+remain native. Unsupported/CPU-rendered presentation uses native output.
+
+Scaled color/depth targets and viewports are actually rasterized at the higher
+resolution. Guest buffers retain native dimensions; a full-resolution host image
+survives supported LCD transfers and rotation into the play window. Native guest
+snapshots remain suitable for comparison. Resolution scaling currently keeps
+synchronous readback; the deferred-readback experiment below only applies at 1×.
+Use the same internal scale for gameplay and probe performance measurements.
+
 `USUM_VULKAN_DEFER_READBACK=1` additionally enables experimental immutable
 readback tickets for RGBA8/D24S8 targets with depth buffers. Both exact guest
 plane identities must match before reusing resident GPU contents; CPU writes

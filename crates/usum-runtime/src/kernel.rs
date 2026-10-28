@@ -190,6 +190,7 @@ pub struct Present {
 pub struct FrameOut {
     /// The newest framebuffers, top and bottom, as stored.
     pub frames: std::sync::Mutex<[Option<crate::probe::RawFrame>; 2]>,
+    pub resolution_scale: std::sync::atomic::AtomicU32,
     /// Called after each VBlank's frames are in place.
     pub notify: Box<dyn Fn() + Send + Sync>,
 }
@@ -564,6 +565,8 @@ impl Kernel {
                         .read_range(c[1], input_dims.0 * input_dims.1 * fin as u32)
                         .map_err(|f| format!("DisplayTransfer input: {f}"))?;
                     let out = crate::pica::display_transfer(&input, input_dims, output_dims, flags)?;
+                    #[cfg(feature = "vulkan-compare")]
+                    self.pica.capture_scaled_transfer((c[1], c[2]), (input_dims, output_dims), flags, &input, &out)?;
                     mem.device_write(c[2], &out).map_err(|f| format!("DisplayTransfer output: {f}"))?;
                     self.pica.display_transfer_time += started.elapsed();
                     self.pica.display_transfers += 1;
@@ -707,9 +710,21 @@ impl Kernel {
         }
         self.vblanks += 1;
         if let Some(out) = &self.frame_out {
+            #[cfg(feature = "vulkan-compare")]
+            self.pica.set_vulkan_resolution_scale(out.resolution_scale.load(std::sync::atomic::Ordering::Relaxed))?;
             let latest = |screen| self.presented.iter().rev().find(|p| p.screen == screen);
-            let raw = [(0u32, 400u32), (1, 320)]
-                .map(|(screen, columns)| latest(screen).and_then(|p| crate::probe::framebuffer_raw(mem, p, columns).ok()));
+            let raw = [(0u32, 400u32), (1, 320)].map(|(screen, columns)| {
+                latest(screen).and_then(|p| {
+                    let raw = crate::probe::framebuffer_raw(mem, p, columns).ok()?;
+                    #[cfg(feature = "vulkan-compare")]
+                    let raw = {
+                        let mut raw = raw;
+                        raw.scaled = self.pica.scaled_frame(p, columns, &raw);
+                        raw
+                    };
+                    Some(raw)
+                })
+            });
             if let Ok(mut frames) = out.frames.lock() {
                 for (slot, frame) in frames.iter_mut().zip(raw) {
                     if frame.is_some() {

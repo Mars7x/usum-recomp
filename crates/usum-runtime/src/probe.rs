@@ -160,6 +160,20 @@ pub fn setup(
 
 /// The `main` of a generated probe program: `probe <dump>`.
 pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules: Modules) -> ExitCode {
+    let _resolution_scale = match crate::pica::resolution_scale_env() {
+        Ok(scale) if scale == 1 || (cfg!(feature = "vulkan-compare") && std::env::var_os("USUM_VULKAN_ACCELERATE").is_some()) => {
+            scale
+        }
+        Ok(_) => {
+            eprintln!("resolution scaling requires Vulkan acceleration");
+            return ExitCode::FAILURE;
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     let Some(dump) = std::env::args_os().nth(1) else {
         eprintln!("usage: probe <dump>");
         return ExitCode::FAILURE;
@@ -182,6 +196,11 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
     #[cfg(feature = "vulkan-compare")]
     if std::env::var_os("USUM_VULKAN_ACCELERATE").is_some() {
         kernel.pica.enable_vulkan_acceleration();
+        let scale = crate::pica::resolution_scale_env().expect("validated resolution scale");
+        if let Err(error) = kernel.pica.set_vulkan_resolution_scale(scale) {
+            eprintln!("{error}");
+        }
+        eprintln!("internal resolution scale {scale}x: top {}x{}", 400 * scale, 240 * scale);
         if std::env::var_os("USUM_VULKAN_DEFER_READBACK").is_some() {
             kernel.pica.enable_vulkan_deferred_readback();
             eprintln!("experimental deferred Vulkan readbacks enabled");
@@ -764,7 +783,15 @@ fn framebuffer_ppm(mem: &Memory, p: &crate::kernel::Present, columns: u32) -> Re
 
 /// A presented framebuffer's bytes as stored, with what decoding them
 /// needs: the pixel format and the stride.
+#[derive(Clone, Debug)]
+pub struct ScaledFrame {
+    pub width: u32,
+    pub height: u32,
+    pub rgb: std::sync::Arc<[u8]>,
+}
+
 pub struct RawFrame {
+    pub scaled: Option<ScaledFrame>,
     pub bytes: Vec<u8>,
     pub format: u32,
     pub stride: u32,
@@ -776,7 +803,7 @@ pub fn framebuffer_raw(mem: &Memory, p: &crate::kernel::Present, columns: u32) -
     let format = p.format & 7;
     crate::pica::bytes_per_pixel(format).ok_or(format!("framebuffer format {:#x}", p.format))?;
     let bytes = mem.read_range(p.left, p.stride * columns).map_err(|f| f.to_string())?;
-    Ok(RawFrame { bytes, format, stride: p.stride })
+    Ok(RawFrame { bytes, format, stride: p.stride, scaled: None })
 }
 
 /// A framebuffer as the LCD shows it: 240 rows of `columns` RGB pixels,

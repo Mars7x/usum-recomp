@@ -157,6 +157,20 @@ fn compare_vulkan_captures(kernel: &mut crate::kernel::Kernel) {
 
 /// The `main` of a generated play program: `play <dump>`.
 pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules: Modules) -> ExitCode {
+    let resolution_scale = match crate::pica::resolution_scale_env() {
+        Ok(scale) if scale == 1 || (cfg!(feature = "vulkan-compare") && std::env::var_os("USUM_VULKAN_ACCELERATE").is_some()) => {
+            scale
+        }
+        Ok(_) => {
+            eprintln!("resolution scaling requires Vulkan acceleration");
+            return ExitCode::FAILURE;
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     let Some(dump) = std::env::args_os().nth(1) else {
         eprintln!("usage: play <dump>");
         return ExitCode::FAILURE;
@@ -187,6 +201,7 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
         let proxy = proxy.clone();
         Arc::new(crate::kernel::FrameOut {
             frames: Mutex::new([None, None]),
+            resolution_scale: AtomicU32::new(resolution_scale),
             notify: Box::new(move || {
                 let _ = proxy.send_event(());
             }),
@@ -224,7 +239,8 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
         quit: quit.clone(),
         title_stopped: false,
         draws: 0,
-        rgb: (Vec::new(), Vec::new()),
+        rgb: (Arc::from([]), Arc::from([])),
+        rgb_dimensions: [TOP, BOTTOM],
         draw_time: Duration::ZERO,
     };
     let result = event_loop.run_app(&mut app);
@@ -287,6 +303,11 @@ fn run_game(
     #[cfg(feature = "vulkan-compare")]
     if std::env::var_os("USUM_VULKAN_ACCELERATE").is_some() {
         kernel.pica.enable_vulkan_acceleration();
+        let scale = crate::pica::resolution_scale_env().expect("validated resolution scale");
+        if let Err(error) = kernel.pica.set_vulkan_resolution_scale(scale) {
+            eprintln!("{error}");
+        }
+        eprintln!("internal resolution scale {scale}x: top {}x{}", 400 * scale, 240 * scale);
         if std::env::var_os("USUM_VULKAN_DEFER_READBACK").is_some() {
             kernel.pica.enable_vulkan_deferred_readback();
             eprintln!("experimental deferred Vulkan readbacks enabled");
@@ -404,7 +425,8 @@ struct App {
     /// Time spent redrawing, for the report at exit.
     draw_time: Duration,
     /// The screens as last converted: top, bottom (RGB rows).
-    rgb: (Vec<u8>, Vec<u8>),
+    rgb: (Arc<[u8]>, Arc<[u8]>),
+    rgb_dimensions: [(u32, u32); 2],
 }
 
 impl ApplicationHandler for App {
@@ -462,6 +484,15 @@ impl ApplicationHandler for App {
                     self.quit.store(true, Ordering::Relaxed);
                     event_loop.exit();
                     return;
+                }
+                if event.state == ElementState::Pressed
+                    && matches!(key, KeyCode::F3 | KeyCode::F4)
+                    && cfg!(feature = "vulkan-compare")
+                    && std::env::var_os("USUM_VULKAN_ACCELERATE").is_some()
+                {
+                    let scale = self.frames.resolution_scale.load(Ordering::Relaxed);
+                    let scale = if key == KeyCode::F3 { scale.saturating_sub(1).max(1) } else { (scale + 1).min(8) };
+                    self.frames.resolution_scale.store(scale, Ordering::Relaxed);
                 }
                 if let Some(bit) = pad_bit(key) {
                     match event.state {
@@ -558,39 +589,57 @@ impl App {
             Ok(mut f) => [f[0].take(), f[1].take()],
             Err(_) => return,
         };
-        if let Some(raw) = new_top {
-            self.rgb.0 = probe::raw_to_rgb(&raw, TOP.0);
+        for (screen, raw) in [new_top, new_bottom].into_iter().enumerate() {
+            if let Some(raw) = raw {
+                let (pixels, dims) = match &raw.scaled {
+                    Some(frame) => (Arc::clone(&frame.rgb), (frame.width, frame.height)),
+                    None => (
+                        probe::raw_to_rgb(&raw, if screen == 0 { TOP.0 } else { BOTTOM.0 }).into(),
+                        if screen == 0 { TOP } else { BOTTOM },
+                    ),
+                };
+                if screen == 0 {
+                    self.rgb.0 = pixels;
+                } else {
+                    self.rgb.1 = pixels;
+                }
+                self.rgb_dimensions[screen] = dims;
+            }
         }
-        if let Some(raw) = new_bottom {
-            self.rgb.1 = probe::raw_to_rgb(&raw, BOTTOM.0);
-        }
-        let screens = [(&self.rgb.0, TOP, (0, 0)), (&self.rgb.1, BOTTOM, ((CANVAS.0 - BOTTOM.0) / 2, TOP.1))];
-        for (rgb, (sw, sh), (cx, cy)) in screens {
+        let screens = [
+            (&self.rgb.0, TOP, (0, 0), self.rgb_dimensions[0]),
+            (&self.rgb.1, BOTTOM, ((CANVAS.0 - BOTTOM.0) / 2, TOP.1), self.rgb_dimensions[1]),
+        ];
+        for (rgb, (native_w, native_h), (cx, cy), (sw, sh)) in screens {
             if rgb.len() != (sw * sh * 3) as usize {
                 continue;
             }
-            // each source row scaled once into a line, then copied to the
-            // `scale` window rows it covers
-            let left = x0 + cx * scale;
-            let visible = (sw * scale).min(width.saturating_sub(left)) as usize;
-            let mut line = Vec::with_capacity(visible);
-            for sy in 0..sh {
-                line.clear();
-                let src = &rgb[(sy * sw * 3) as usize..((sy + 1) * sw * 3) as usize];
-                for px in src.as_chunks::<3>().0 {
-                    let value = u32::from(px[0]) << 16 | u32::from(px[1]) << 8 | u32::from(px[2]);
-                    line.extend(std::iter::repeat_n(value, scale as usize));
-                }
-                line.truncate(visible);
-                for dy in 0..scale {
-                    let row = y0 + (cy + sy) * scale + dy;
-                    if row >= height {
-                        break;
-                    }
-                    let at = (row * width + left) as usize;
-                    buffer[at..at + visible].copy_from_slice(&line);
-                }
+            let (left, top) = (x0 + cx * scale, y0 + cy * scale);
+            if left >= width || top >= height {
+                continue;
             }
+            let (dw, dh) = (native_w * scale, native_h * scale);
+            let visible = dw.min(width - left);
+            let mut line = Vec::with_capacity(visible as usize);
+            let mut previous_source = None;
+            for dy in 0..dh.min(height - top) {
+                let sy = (u64::from(dy) * u64::from(sh) / u64::from(dh)) as u32;
+                if previous_source != Some(sy) {
+                    line.clear();
+                    for dx in 0..visible {
+                        let sx = (u64::from(dx) * u64::from(sw) / u64::from(dw)) as u32;
+                        let at = ((sy * sw + sx) * 3) as usize;
+                        line.push(u32::from(rgb[at]) << 16 | u32::from(rgb[at + 1]) << 8 | u32::from(rgb[at + 2]));
+                    }
+                    previous_source = Some(sy);
+                }
+                let at = ((top + dy) * width + left) as usize;
+                buffer[at..at + visible as usize].copy_from_slice(&line);
+            }
+        }
+        if stopped.is_none() {
+            let internal = self.frames.resolution_scale.load(Ordering::Relaxed);
+            window.set_title(&format!("usum-recomp — {internal}× ({}×{} top) — F3/F4 scale", 400 * internal, 240 * internal));
         }
         if let Some(why) = &stopped {
             if !self.title_stopped {

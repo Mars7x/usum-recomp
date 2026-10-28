@@ -78,6 +78,7 @@ impl DeferredTarget {
 
 pub(super) fn eligible(pica: &Pica, info: CaptureTarget) -> bool {
     pica.vulkan_defer_readback
+        && pica.vulkan_resolution_scale == 1
         && pica.vulkan_accelerate
         && pica.vulkan_live_depth
         && info.color_format == 0
@@ -233,7 +234,13 @@ mod tests {
         let depth: Vec<_> = (0..64).map(|n| n as f32 / 63.0).collect();
         renderer.upload_target(&gpu, &color, &depth).unwrap();
         let ticket = Arc::new(renderer.begin_batch(&gpu).submit_readback().unwrap());
-        pica.vulkan_live_target_cache.push(LiveTarget { info, gpu: Arc::clone(&gpu), contents: None, pending: None });
+        pica.vulkan_live_target_cache.push(LiveTarget {
+            info,
+            gpu: Arc::clone(&gpu),
+            contents: None,
+            pending: None,
+            scaled_color: None,
+        });
         install(&mut pica, &mut mem, info, ticket).unwrap();
         let seed = resident_seed(&pica, &mem, info).unwrap();
         assert!(matches(pica.vulkan_live_target_cache[0].pending.as_ref(), &seed));

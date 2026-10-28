@@ -1651,6 +1651,10 @@ impl Renderer {
 }
 
 impl RasterBatch<'_> {
+    pub fn dimensions(&self) -> (u32, u32) {
+        self.target.dimensions()
+    }
+
     pub fn draw_pica_vertices(
         &mut self,
         vertices: crate::PicaVertexDraw<'_>,

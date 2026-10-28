@@ -97,6 +97,10 @@ pub struct Pica {
     #[cfg(feature = "vulkan-compare")]
     vulkan_defer_readback: bool,
     #[cfg(feature = "vulkan-compare")]
+    vulkan_resolution_scale: u32,
+    #[cfg(feature = "vulkan-compare")]
+    scaled_displays: Vec<vulkan_compare::scale::Display>,
+    #[cfg(feature = "vulkan-compare")]
     vulkan_vertex_counts: [u64; 4],
     #[cfg(feature = "vulkan-compare")]
     vulkan_vertex_error: Option<String>,
@@ -171,6 +175,10 @@ impl Default for Pica {
             #[cfg(feature = "vulkan-compare")]
             vulkan_defer_readback: false,
             #[cfg(feature = "vulkan-compare")]
+            vulkan_resolution_scale: 1,
+            #[cfg(feature = "vulkan-compare")]
+            scaled_displays: Vec::new(),
+            #[cfg(feature = "vulkan-compare")]
             vulkan_vertex_counts: [0; 4],
             #[cfg(feature = "vulkan-compare")]
             vulkan_vertex_error: None,
@@ -233,6 +241,7 @@ impl Pica {
     pub fn enable_vulkan_live(&mut self) {
         self.vulkan_live = true;
         self.vulkan_live_target_cache.clear();
+        self.scaled_displays.clear();
         self.vulkan_live_resources.clear();
     }
 
@@ -256,6 +265,19 @@ impl Pica {
     #[cfg(feature = "vulkan-compare")]
     pub fn enable_vulkan_cpu_depth_feedback(&mut self) {
         self.vulkan_cpu_depth_feedback = true;
+    }
+
+    #[cfg(feature = "vulkan-compare")]
+    pub fn set_vulkan_resolution_scale(&mut self, scale: u32) -> Result<(), String> {
+        if !(1..=8).contains(&scale) {
+            return Err("resolution scale must be between 1 and 8".into());
+        }
+        if self.vulkan_resolution_scale != scale {
+            self.vulkan_resolution_scale = scale;
+            self.vulkan_live_target_cache.clear();
+            self.scaled_displays.clear();
+        }
+        Ok(())
     }
 
     #[cfg(feature = "vulkan-compare")]
@@ -288,6 +310,26 @@ impl Pica {
         self.vulkan_live_resources.capture_times()
     }
 
+    #[cfg(feature = "vulkan-compare")]
+    pub(crate) fn capture_scaled_transfer(
+        &mut self,
+        addresses: (u32, u32),
+        dims: ((u32, u32), (u32, u32)),
+        flags: u32,
+        input: &[u8],
+        output: &[u8],
+    ) -> Result<(), String> {
+        vulkan_compare::scale::capture_transfer(self, addresses.0, addresses.1, dims, flags, input, output)
+    }
+    #[cfg(feature = "vulkan-compare")]
+    pub(crate) fn scaled_frame(
+        &self,
+        p: &crate::kernel::Present,
+        columns: u32,
+        raw: &crate::probe::RawFrame,
+    ) -> Option<crate::probe::ScaledFrame> {
+        vulkan_compare::scale::presented(self, p, columns, raw)
+    }
     #[cfg(feature = "vulkan-compare")]
     pub fn vulkan_deferred_stats(&self) -> (u64, u64, std::time::Duration) {
         self.vulkan_live_resources.deferred_stats()
@@ -429,6 +471,7 @@ impl Pica {
                     self.vulkan_live = false;
                     self.vulkan_snapshots.clear();
                     self.vulkan_live_target_cache.clear();
+                    self.scaled_displays.clear();
                     self.vulkan_live_resources.clear();
                 }
             }
@@ -532,6 +575,7 @@ impl Pica {
             self.vulkan_live = false;
             self.vulkan_accelerate = false;
             self.vulkan_live_target_cache.clear();
+            self.scaled_displays.clear();
             self.vulkan_live_resources.clear();
         }
         let result = self.run_list(mem, address, size);
@@ -595,6 +639,19 @@ impl Pica {
             at += 8 + (extra + (extra & 1)) * 4;
         }
         Ok(false)
+    }
+}
+
+/// Integer internal rendering multiplier; native is the default.
+pub fn resolution_scale_env() -> Result<u32, String> {
+    match std::env::var("USUM_RESOLUTION_SCALE") {
+        Ok(value) => value
+            .parse::<u32>()
+            .ok()
+            .filter(|n| (1..=8).contains(n))
+            .ok_or_else(|| "USUM_RESOLUTION_SCALE must be an integer from 1 to 8".into()),
+        Err(std::env::VarError::NotPresent) => Ok(1),
+        Err(_) => Err("USUM_RESOLUTION_SCALE is not valid text".into()),
     }
 }
 

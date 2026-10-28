@@ -3,6 +3,7 @@
 //! software framebuffer; execution and replacement remain separate steps.
 
 mod deferred;
+pub(super) mod scale;
 
 use std::sync::Arc;
 use usum_guest::Memory;
@@ -51,6 +52,7 @@ pub(super) struct LiveTarget {
     /// requires matching guest bytes, or both immutable pending-plane identities.
     contents: Option<TargetSnapshot>,
     pending: Option<Arc<deferred::DeferredTarget>>,
+    scaled_color: Option<Arc<[u8]>>,
 }
 
 /// One triangle-list draw after PICA vertex and optional geometry shading.
@@ -357,6 +359,12 @@ impl DrawSnapshot {
         feedback: &[LiveFeedbackTexture],
     ) -> Result<(), String> {
         resources.begin_draw();
+        let factor = batch.dimensions().0 as f32 / self.target_info.width as f32;
+        let mut viewport = self.state.viewport;
+        viewport.x *= factor;
+        viewport.y *= factor;
+        viewport.width *= factor;
+        viewport.height *= factor;
         let mut texture_indices = [None; 3];
         let mut feedback_inputs: [Option<&SampledTexture>; 3] = [None, None, None];
         for ((output, direct), snapshot) in texture_indices.iter_mut().zip(&mut feedback_inputs).zip(&self.textures) {
@@ -378,9 +386,9 @@ impl DrawSnapshot {
             lighting: lighting_index.map(|index| resources.lighting[index].gpu.as_ref()),
         };
         if let Some(vertex) = &self.gpu_vertex {
-            batch.draw_pica_vertices(vertex.draw(), self.state.viewport, self.state.raster, inputs)
+            batch.draw_pica_vertices(vertex.draw(), viewport, self.state.raster, inputs)
         } else {
-            batch.draw_with_inputs(&self.vertices, self.state.viewport, self.state.raster, inputs)
+            batch.draw_with_inputs(&self.vertices, viewport, self.state.raster, inputs)
         }
     }
 
@@ -865,6 +873,7 @@ pub(crate) fn replay_live(pica: &mut Pica, mem: &mut Memory) -> Result<(usize, u
                         .find(|target| target.info == info)
                         .ok_or("depth feedback target was not created")?;
                     let stencil = d24s8_stencil(pica, mem, info)?;
+                    let stencil = scale::expand(&stencil, info.width, info.height, pica.vulkan_resolution_scale, 1);
                     let gpu = renderer.create_d24s8_feedback_texture(&target.gpu, &stencil, texture.sampler, texture.border)?;
                     feedback_textures.push(LiveFeedbackTexture {
                         address: texture.address,
@@ -894,7 +903,7 @@ pub(crate) fn replay_live(pica: &mut Pica, mem: &mut Memory) -> Result<(usize, u
         let readback_started = std::time::Instant::now();
         if deferred::eligible(pica, info) {
             let ticket = Arc::new(renderer.begin_batch(&target.gpu).submit_readback()?);
-            results.push(LiveResult { info, color: Vec::new(), depth: None, pending: Some(ticket) });
+            results.push(LiveResult { info, color: Vec::new(), depth: None, pending: Some(ticket), scaled_color: None });
             pica.vulkan_live_resources.transfer_times[0] += readback_started.elapsed();
             continue;
         }
@@ -905,7 +914,10 @@ pub(crate) fn replay_live(pica: &mut Pica, mem: &mut Memory) -> Result<(usize, u
             (renderer.read_color_target(&target.gpu)?, None)
         };
         pica.vulkan_live_resources.transfer_times[0] += readback_started.elapsed();
-        results.push(LiveResult { info, color, depth, pending: None });
+        results.push(scale::resolve(
+            LiveResult { info, color, depth, pending: None, scaled_color: None },
+            pica.vulkan_resolution_scale,
+        ));
     }
     let writeback_started = std::time::Instant::now();
     for result in results {
@@ -914,6 +926,9 @@ pub(crate) fn replay_live(pica: &mut Pica, mem: &mut Memory) -> Result<(usize, u
             continue;
         }
         write_color_result(pica, mem, result.info, &result.color)?;
+        if let Some(target) = pica.vulkan_live_target_cache.iter_mut().find(|t| t.info == result.info) {
+            target.scaled_color = result.scaled_color;
+        }
         if let Some(depth) = result.depth.as_deref() {
             write_depth_result(pica, mem, result.info, depth)?;
         }
@@ -936,6 +951,7 @@ struct LiveResult {
     color: Vec<u8>,
     depth: Option<Vec<f32>>,
     pending: Option<Arc<usum_render::PendingReadback>>,
+    scaled_color: Option<Arc<[u8]>>,
 }
 
 fn depth_texture_matches(pica: &Pica, texture: &TextureSnapshot, target: CaptureTarget) -> Result<bool, String> {
@@ -972,8 +988,17 @@ fn render_live_segment(
         let target_index = match pica.vulkan_live_target_cache.iter().position(|target| target.info == target_info) {
             Some(index) => index,
             None => {
-                let target = Arc::new(renderer.create_color_target(initial.width, initial.height)?);
-                pica.vulkan_live_target_cache.push(LiveTarget { info: target_info, gpu: target, contents: None, pending: None });
+                let target = Arc::new(renderer.create_color_target(
+                    initial.width * pica.vulkan_resolution_scale,
+                    initial.height * pica.vulkan_resolution_scale,
+                )?);
+                pica.vulkan_live_target_cache.push(LiveTarget {
+                    info: target_info,
+                    gpu: target,
+                    contents: None,
+                    pending: None,
+                    scaled_color: None,
+                });
                 pica.vulkan_live_target_cache.len() - 1
             }
         };
@@ -984,6 +1009,7 @@ fn render_live_segment(
         // describes it. Only a fully successful readback can restore reuse.
         cached.contents = None;
         cached.pending = None;
+        cached.scaled_color = None;
         let target = Arc::clone(&cached.gpu);
         if !initialized {
             if resident_matches {
@@ -994,9 +1020,16 @@ fn render_live_segment(
         }
         // A target already written in this list stays resident across feedback
         // barriers. Only the first segment imports the guest snapshot.
+        let expanded;
         let mut batch = if initialized || resident_matches {
             renderer.begin_batch(&target)
         } else {
+            let initial = if pica.vulkan_resolution_scale > 1 {
+                expanded = scale::seed(initial, pica.vulkan_resolution_scale);
+                &expanded
+            } else {
+                initial
+            };
             renderer.begin_batch_from_snapshot(&target, &initial.color, &initial.depth)?
         };
         for draw in &draws {
@@ -1006,7 +1039,13 @@ fn render_live_segment(
             let readback_started = std::time::Instant::now();
             if deferred::eligible(pica, target_info) {
                 let ticket = Arc::new(batch.submit_readback()?);
-                results.push(LiveResult { info: target_info, color: Vec::new(), depth: None, pending: Some(ticket) });
+                results.push(LiveResult {
+                    info: target_info,
+                    color: Vec::new(),
+                    depth: None,
+                    pending: Some(ticket),
+                    scaled_color: None,
+                });
                 pica.vulkan_live_resources.transfer_times[0] += readback_started.elapsed();
                 if !initialized {
                     latest.push(target_info);
@@ -1021,7 +1060,10 @@ fn render_live_segment(
                 (renderer.read_color_target(&target)?, None)
             };
             pica.vulkan_live_resources.transfer_times[0] += readback_started.elapsed();
-            results.push(LiveResult { info: target_info, color, depth, pending: None });
+            results.push(scale::resolve(
+                LiveResult { info: target_info, color, depth, pending: None, scaled_color: None },
+                pica.vulkan_resolution_scale,
+            ));
         } else {
             batch.submit()?;
         }

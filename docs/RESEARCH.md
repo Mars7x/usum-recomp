@@ -2594,3 +2594,24 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   71 enabled runtime tests and the 53-test default runtime pass. Linux builds need
   pkg-config and libudev development files; the dependency audit and CI list them.
   Physical Xbox-controller gameplay still requires an end-to-end user test.
+
+### R-082 2026-10-28 — Internal resolution scaling and scaled LCD presentation
+
+- Added 1×–8× Vulkan internal resolution (`USUM_RESOLUTION_SCALE`), with F3/F4
+  changing scale during play. The requested first user test is 6× (2400×1440 top).
+  Changing scale discards resident target/display caches while preserving native
+  guest memory, input coordinates and saves.
+- GPU targets, viewports, snapshot seeds and depth-feedback stencil planes scale
+  together. Readbacks retain the full-resolution color image while resolving native
+  guest color/depth. Supported linear LCD transfers preserve the high-resolution
+  image through cropping, hardware downscaling, flipping and 3DS display rotation;
+  CPU writes invalidate presentation reuse through native-byte comparison.
+- Native resolution stays the default. Other presentations and software fallbacks
+  use native frames. Deferred readback is temporarily restricted to 1×; scaled
+  rendering still uses synchronous transfers and needs optimization/measurement.
+- All 73 enabled runtime tests pass, as does strict Clippy. LCD transform tests
+  agree with the native transfer and rotation reference for flips, crops and both
+  hardware downscales. A hardware 6× test produces 192×192 raster data from a
+  32×32 guest target and verifies variation inside native pixel blocks, proving
+  real subpixel rasterization rather than nearest-neighbor enlargement. Native
+  guest buffers retain their sizes. Full scaled gameplay validation is pending.
