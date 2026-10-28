@@ -1,0 +1,18 @@
+[package]
+name = "usum-difftest"
+description = "Differential tests: recompiled synthetic ARM programs against QEMU (test-only)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+usum-guest.workspace = true
+
+[build-dependencies]
+usum-recomp.workspace = true
+usum-import.workspace = true
+
+[lints]
+workspace = true

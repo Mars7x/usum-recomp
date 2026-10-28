@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+members = ["crates/usum-import", "crates/usumctl", "crates/usum-guest", "crates/usum-arm", "crates/usum-recomp", "crates/usum-runtime", "crates/usum-render", "crates/usum-difftest"]
+# The differential tests need external ARM tools (docs/BUILDING.md); run
+# them with `cargo test -p usum-difftest`.
+default-members = ["crates/usum-import", "crates/usumctl", "crates/usum-guest", "crates/usum-arm", "crates/usum-recomp", "crates/usum-runtime", "crates/usum-render"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+# Oldest Rust that builds the workspace (slice::as_chunks). The Flatpak
+# builds with the org.freedesktop.Sdk.Extension.rust-stable//26.08 compiler
+# (1.98.0 when checked, 2026-10-25); see docs/BUILDING.md.
+rust-version = "1.88"
+license = "MIT"
+
+[workspace.dependencies]
+usum-import = { path = "crates/usum-import" }
+usum-guest = { path = "crates/usum-guest" }
+usum-arm = { path = "crates/usum-arm" }
+usum-recomp = { path = "crates/usum-recomp" }
+usum-runtime = { path = "crates/usum-runtime" }
+usum-render = { path = "crates/usum-render" }
+# Every dependency is pure Rust; docs/DEPENDENCIES.md records the audit.
+sha2 = { version = "0.10", default-features = false, features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# a worker pool for the renderer's parallel bands and vertices
+rayon = "1"
+# The play window (usum-runtime's `window` feature): pure Rust over the
+# Wayland and X11 client libraries, which are opened at run time
+# (DEPENDENCIES.md).
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
+softbuffer = { version = "0.4", default-features = false, features = ["x11", "x11-dlopen", "wayland", "wayland-dlopen"] }
+# The play window's sound: the PulseAudio native protocol in pure Rust,
+# over the socket (PipeWire serves it too); no client library
+pulseaudio = "0.3"
+# PICA200 rendering on the host GPU. Restrict wgpu to Vulkan on native
+# builds; naga is used internally for WGSL validation and translation.
+wgpu = { version = "30", default-features = false, features = ["std", "vulkan", "wgsl"] }
+pollster = "1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+debug = 1

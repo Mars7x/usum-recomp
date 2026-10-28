@@ -1,0 +1,16 @@
+[package]
+name = "usum-recomp"
+description = "Static recompilation: code discovery and Rust emission for ARM code"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+usum-arm.workspace = true
+
+[dev-dependencies]
+usum-guest.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,10 @@
+[package]
+name = "usum-guest"
+description = "Guest CPU state, guest memory and the interface recompiled code runs against"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

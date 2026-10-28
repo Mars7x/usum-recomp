@@ -1,0 +1,53 @@
+# Build output
+/target/
+/build/
+/.flatpak-builder/
+/flatpak/build-dir/
+/flatpak/repo/
+
+# --- Game data: NEVER commit anything derived from a dump. ---
+# tools/check-no-game-data.sh (run by the pre-commit hook and CI) also checks
+# file contents, since a renamed file would slip past these patterns.
+/dump/
+/dumps/
+/extracted/
+/generated/
+*.3ds
+*.cci
+*.cxi
+*.cia
+*.cfa
+*.ncch
+*.app
+*.3dsx
+code.bin
+exheader.bin
+exefs/
+romfs/
+*.cro
+*.crs
+*.bcsar
+*.garc
+*.sav
+*.so
+usum-manifest.json
+
+# QEMU core dumps from crashed test programs
+*.core
+
+# Private replay/capture output and local credentials
+*.save
+*.ppm
+*.rgba
+*.f32le
+*.wav
+/recordings/
+/probe-frames/
+/probe-save/
+/diagnostics/
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+__pycache__/

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Installed by tools/install-hooks.sh. Blocks commits containing game data.
+set -euo pipefail
+exec "$(git rev-parse --show-toplevel)/tools/check-no-game-data.sh" --staged

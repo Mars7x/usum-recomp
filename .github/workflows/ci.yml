@@ -1,0 +1,28 @@
+name: ci
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    env:
+      # Keep the generated corpus within hosted-runner memory. The full local
+      # corpus remains the default documented in BUILDING.md.
+      USUM_DIFFTEST_CASES: 2000
+      USUM_DIFFTEST_MEM_CASES: 2000
+      USUM_DIFFTEST_THUMB_CASES: 2000
+      USUM_DIFFTEST_VFP_CASES: 2000
+      USUM_DIFFTEST_MEDIA_CASES: 2000
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust and differential-test tools
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+          sudo apt-get update
+          sudo apt-get install -y python3 qemu-user binutils-arm-none-eabi
+      - name: No private data in the repository
+        run: tools/check-no-game-data.sh --tracked && tools/test-check-no-game-data.sh
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --all-targets --features usum-runtime/window,usum-runtime/vulkan-compare -- -D warnings
+      - run: cargo test --locked --workspace --features usum-runtime/window,usum-runtime/vulkan-compare
