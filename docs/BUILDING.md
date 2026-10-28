@@ -262,6 +262,12 @@ snapshots remain suitable for comparison. Resolution scaling currently keeps
 synchronous readback; the deferred-readback experiment below only applies at 1×.
 Use the same internal scale for gameplay and probe performance measurements.
 
+Scaled targets now accept native-size color/depth uploads, with exact replication
+performed on the GPU. Native guest readbacks likewise sample the scaled target
+on the GPU; full-resolution color is read only for an actual LCD transfer.
+`USUM_VULKAN_SCALED_UPLOAD=0` and `USUM_VULKAN_NATIVE_READBACK=0` select the older
+CPU expansion/full-readback paths for reference comparisons.
+
 `USUM_VULKAN_DEFER_READBACK=1` additionally enables experimental immutable
 readback tickets for RGBA8/D24S8 targets with depth buffers. Both exact guest
 plane identities must match before reusing resident GPU contents; CPU writes

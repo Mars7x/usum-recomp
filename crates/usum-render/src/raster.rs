@@ -1,4 +1,5 @@
 mod readback;
+mod seed;
 pub use readback::{ColorDepthReadback, PendingReadback};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -638,6 +639,8 @@ pub(super) struct RasterPipelines {
     depth_upload_pipeline: wgpu::RenderPipeline,
     depth_feedback_layout: wgpu::BindGroupLayout,
     depth_feedback_pipeline: wgpu::RenderPipeline,
+    resolved_readback: readback::ResolvePipeline,
+    scaled_seed: seed::SeedPipeline,
     _dummy_texture: wgpu::Texture,
     dummy_view: wgpu::TextureView,
     dummy_sampler: wgpu::Sampler,
@@ -912,7 +915,10 @@ impl Renderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -2043,6 +2049,8 @@ pub(super) fn create_pipelines(device: &wgpu::Device, queue: &wgpu::Queue) -> Ra
         depth_upload_pipeline,
         depth_feedback_layout,
         depth_feedback_pipeline,
+        resolved_readback: readback::ResolvePipeline::new(device),
+        scaled_seed: seed::SeedPipeline::new(device),
         _dummy_texture: dummy_texture,
         dummy_view,
         dummy_sampler,

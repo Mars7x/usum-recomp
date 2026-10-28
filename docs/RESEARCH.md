@@ -2684,3 +2684,27 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   all four runs. No encoder was active. All 77 enabled runtime tests and strict
   Clippy pass. Movie playback remains below real time (about 0.53×); this is a
   measured improvement, not a claim of full-speed playback or 200-FPS gameplay.
+
+### R-086 2026-10-28 — Keep scaled framebuffer traffic native until presentation
+
+- At 6× the old path expanded guest color/depth on the CPU, uploaded 36 times as
+  many pixels, and read full-resolution color/depth back after command lists.
+  Add a render pass that expands native seeds on the GPU and a compute pass that
+  freezes native center samples into immutable staging tickets. Full-resolution
+  color stays on the GPU until an LCD transfer needs it. Guest memory, depth
+  quantization, stencil handling and CPU-write coherence retain their semantics.
+- Color/depth GPU tests cover scales 1/2/3/6/8, odd dimensions and padded rows,
+  all channel values, exact depth samples and frozen results after target reuse
+  and destruction. The 6× presentation test compares GPU-native samples to the
+  old full readback and verifies exact LCD rotation/cropping, subpixel edges and
+  rejection after CPU writes. All 77 enabled runtime tests, six runtime hardware
+  tests, 16 renderer unit tests, both new renderer hardware tests and Clippy pass.
+- In the same recorded 16-game-second 6× overworld replay, elapsed time went
+  from 123.923 seconds to 87.307 with native readbacks, then to 51.761 with GPU
+  seed expansion too: 2.39× baseline throughput. All runs execute 1,170,300,377
+  guest instructions, 45,832 draws and 956 VBlanks, with no software fallbacks.
+  Both native and scaled LCD captures at VBlank 900 are byte-identical. Throughput
+  remains only 9.62 top-screen updates/second, far short of full-speed 6× gameplay
+  or the 200-FPS goal. Controlled intro measurements are separate.
+- `USUM_VULKAN_NATIVE_READBACK=0` and `USUM_VULKAN_SCALED_UPLOAD=0` retain the old
+  paths for reference measurements. Deferred guest readbacks remain opt-in at 1×.

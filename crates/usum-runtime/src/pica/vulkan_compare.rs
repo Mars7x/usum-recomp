@@ -833,12 +833,16 @@ fn d24s8_stencil(pica: &Pica, mem: &Memory, target: CaptureTarget) -> Result<Vec
     Ok(stencil)
 }
 
+fn live_renderer() -> Result<&'static Renderer, String> {
+    static RENDERER: std::sync::OnceLock<Result<Renderer, String>> = std::sync::OnceLock::new();
+    RENDERER.get_or_init(Renderer::new).as_ref().map_err(Clone::clone)
+}
+
 /// Replays captured draws in Vulkan, batching each target into one submission.
 /// Color and optionally depth are exposed as checked guest device writes;
 /// experimental deferred writes materialize only when a guest reader needs them.
 pub(crate) fn replay_live(pica: &mut Pica, mem: &mut Memory) -> Result<(usize, usize, FeedbackStats), String> {
-    static RENDERER: std::sync::OnceLock<Result<Renderer, String>> = std::sync::OnceLock::new();
-    let renderer = RENDERER.get_or_init(Renderer::new).as_ref().map_err(Clone::clone)?;
+    let renderer = live_renderer()?;
     let mut snapshots = pica.take_vulkan_snapshots();
     let draws = snapshots.len();
     let feedback = feedback_reads_in(&snapshots, pica)?;
@@ -920,6 +924,11 @@ pub(crate) fn replay_live(pica: &mut Pica, mem: &mut Memory) -> Result<(usize, u
             pica.vulkan_live_resources.transfer_times[0] += readback_started.elapsed();
             continue;
         }
+        if native_readback(pica) {
+            results.push(read_native_result(renderer.begin_batch(&target.gpu), info, pica.vulkan_resolution_scale)?);
+            pica.vulkan_live_resources.transfer_times[0] += readback_started.elapsed();
+            continue;
+        }
         let (color, depth) = if pica.vulkan_live_depth {
             let (color, depth) = renderer.read_color_and_depth_target(&target.gpu)?;
             (color, Some(depth))
@@ -965,6 +974,18 @@ struct LiveResult {
     depth: Option<Vec<f32>>,
     pending: Option<Arc<usum_render::PendingReadback>>,
     scaled_color: Option<Arc<[u8]>>,
+}
+
+fn native_readback(pica: &Pica) -> bool {
+    pica.vulkan_live_depth
+        && pica.vulkan_resolution_scale > 1
+        && std::env::var("USUM_VULKAN_NATIVE_READBACK").as_deref() != Ok("0")
+}
+
+fn read_native_result(batch: RasterBatch<'_>, info: CaptureTarget, scale: u32) -> Result<LiveResult, String> {
+    let ticket = batch.submit_resolved_readback(scale)?;
+    let read = ticket.read()?;
+    Ok(LiveResult { info, color: read.color.clone(), depth: Some(read.depth.clone()), pending: None, scaled_color: None })
 }
 
 fn depth_texture_matches(pica: &Pica, texture: &TextureSnapshot, target: CaptureTarget) -> Result<bool, String> {
@@ -1036,6 +1057,8 @@ fn render_live_segment(
         let expanded;
         let mut batch = if initialized || resident_matches {
             renderer.begin_batch(&target)
+        } else if pica.vulkan_resolution_scale > 1 && std::env::var("USUM_VULKAN_SCALED_UPLOAD").as_deref() != Ok("0") {
+            renderer.begin_scaled_batch_from_snapshot(&target, &initial.color, &initial.depth, pica.vulkan_resolution_scale)?
         } else {
             let initial = if pica.vulkan_resolution_scale > 1 {
                 expanded = scale::seed(initial, pica.vulkan_resolution_scale);
@@ -1059,6 +1082,14 @@ fn render_live_segment(
                     pending: Some(ticket),
                     scaled_color: None,
                 });
+                pica.vulkan_live_resources.transfer_times[0] += readback_started.elapsed();
+                if !initialized {
+                    latest.push(target_info);
+                }
+                continue;
+            }
+            if native_readback(pica) {
+                results.push(read_native_result(batch, target_info, pica.vulkan_resolution_scale)?);
                 pica.vulkan_live_resources.transfer_times[0] += readback_started.elapsed();
                 if !initialized {
                     latest.push(target_info);

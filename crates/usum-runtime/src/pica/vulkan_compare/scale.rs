@@ -101,14 +101,14 @@ pub(in crate::pica) fn capture_transfer(
         return Ok(());
     }
     let mut found = None;
-    for target in &pica.vulkan_live_target_cache {
+    for (index, target) in pica.vulkan_live_target_cache.iter().enumerate() {
         let address = pica.pa_to_va(target.info.color_address)?;
         if let Some(origin) = transfer_origin(target.info, address, input_address, source_dims, (ow * sx, oh * sy)) {
-            found = Some((target, origin));
+            found = Some((index, origin));
             break;
         }
     }
-    let Some((target, origin)) = found else {
+    let Some((index, origin)) = found else {
         trace(|| {
             format!(
                 "no source target for {input_address:#x} {source_dims:?}; targets {:?}",
@@ -120,8 +120,9 @@ pub(in crate::pica) fn capture_transfer(
         });
         return Ok(());
     };
-    let (Some(color), Some(contents)) = (&target.scaled_color, &target.contents) else {
-        trace(|| format!("source {input_address:#x}: missing scaled color or native contents"));
+    let target = &pica.vulkan_live_target_cache[index];
+    let Some(contents) = &target.contents else {
+        trace(|| format!("source {input_address:#x}: missing native contents"));
         return Ok(());
     };
     // CPU writes or an aliased target must not leave a stale high-resolution image.
@@ -136,8 +137,15 @@ pub(in crate::pica) fn capture_transfer(
             }
         }
     }
+    // Native guest coherence needs only center samples. Read the full-resolution
+    // color plane once, when the game actually transfers this target to an LCD.
+    let color = match &target.scaled_color {
+        Some(color) => Arc::clone(color),
+        None => live_renderer()?.read_color_target(&target.gpu)?.into(),
+    };
     trace(|| format!("scaled LCD hit {input_address:#x} -> {output_address:#x} {ow}x{oh}"));
-    let rgb = lcd_rgb(color, (target.info.width, target.info.height), (ow, oh), scale, (sx, sy), flags & 1 != 0, origin);
+    let rgb = lcd_rgb(&color, (target.info.width, target.info.height), (ow, oh), scale, (sx, sy), flags & 1 != 0, origin);
+    pica.vulkan_live_target_cache[index].scaled_color = Some(color);
     let (width, height) = (oh * scale, ow * scale);
     if pica.scaled_displays.len() > 16 {
         pica.scaled_displays.clear();
@@ -255,7 +263,7 @@ mod tests {
     #[test]
     #[ignore = "requires a Vulkan hardware adapter"]
     fn six_x_subregion_survives_transfer_rotation_and_presentation() {
-        let renderer = Renderer::new().unwrap();
+        let renderer = live_renderer().unwrap();
         let mut pica = Pica::default();
         pica.enable_vulkan_acceleration();
         pica.set_vulkan_resolution_scale(6).unwrap();
@@ -280,6 +288,10 @@ mod tests {
             .unwrap();
         let (color, depth) = renderer.read_color_and_depth_target(&gpu).unwrap();
         let result = resolve(LiveResult { info, color, depth: Some(depth), pending: None, scaled_color: None }, 6);
+        let native = read_native_result(renderer.begin_batch(&gpu), info, 6).unwrap();
+        assert_eq!(native.color, result.color);
+        assert_eq!(native.depth, result.depth);
+        let expected_lcd = lcd_rgb(result.scaled_color.as_ref().unwrap(), (256, 512), (240, 400), 6, (1, 1), false, (0, 112));
         let mut tiled = vec![0; 256 * 512 * 4];
         encode_rgba8_target(&result.color, &mut tiled, 256);
         pica.vulkan_live_target_cache.push(LiveTarget {
@@ -287,7 +299,7 @@ mod tests {
             gpu,
             contents: Some(TargetSnapshot { width: 256, height: 512, color: result.color, depth: result.depth.unwrap() }),
             pending: None,
-            scaled_color: result.scaled_color,
+            scaled_color: None,
         });
         let mut memory = Memory::new();
         memory.map(pica.linear_base, vec![0; 0x20_0000], usum_guest::Perm::RW).unwrap();
@@ -309,6 +321,11 @@ mod tests {
         let mut raw = crate::probe::RawFrame { bytes: output, format: 1, stride: 720, scaled: None };
         let frame = presented(&pica, &present, 400, &raw).expect("cropped high-resolution frame reaches the window");
         assert_eq!((frame.width, frame.height), (2400, 1440));
+        assert_eq!(frame.rgb.as_ref(), expected_lcd);
+        assert!(
+            pica.vulkan_live_target_cache[0].scaled_color.is_some(),
+            "LCD transfer caches the full-resolution plane on demand"
+        );
         let varied = (0..240).any(|y| {
             (0..400).any(|x| {
                 let at = (y * 6 * 2400 + x * 6) * 3;
@@ -319,6 +336,19 @@ mod tests {
         assert!(varied, "presented native pixel blocks must retain subpixel raster edges");
         raw.bytes[0] ^= 1;
         assert!(presented(&pica, &present, 400, &raw).is_none(), "CPU changes invalidate stale display snapshots");
+        let mut changed_input = input;
+        changed_input[0] ^= 1;
+        capture_transfer(
+            &mut pica,
+            memory.regions().next().unwrap().0 + 0x1c000,
+            address,
+            ((256, 512), (240, 400)),
+            0x1004,
+            &changed_input,
+            &raw.bytes,
+        )
+        .unwrap();
+        assert!(pica.scaled_displays.is_empty(), "CPU framebuffer writes invalidate the scaled source before readback");
     }
 
     #[test]
@@ -409,7 +439,8 @@ mod tests {
         replay_live(&mut pica, &mut mem).unwrap();
         let target = &pica.vulkan_live_target_cache[0];
         assert_eq!(target.gpu.dimensions(), (192, 192));
-        let color = target.scaled_color.as_ref().unwrap();
+        assert!(target.scaled_color.is_none(), "command lists keep high-resolution color on the GPU");
+        let color = live_renderer().unwrap().read_color_target(&target.gpu).unwrap();
         assert_eq!(color.len(), 192 * 192 * 4);
         let has_subpixel_edges = (0..32).any(|y| {
             (0..32).any(|x| {
