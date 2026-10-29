@@ -166,7 +166,7 @@ struct Decoded {
 }
 
 /// What a unit is configured with: address (virtual), format, size.
-fn unit_key(p: &Pica, unit: usize) -> Option<(u32, u32, u32, u32)> {
+pub(super) fn unit_key(p: &Pica, unit: usize) -> Option<(u32, u32, u32, u32)> {
     if p.regs[0x80] & (1 << unit) == 0 {
         return None;
     }

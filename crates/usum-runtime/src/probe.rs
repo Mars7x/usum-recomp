@@ -203,9 +203,9 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
             eprintln!("{error}");
         }
         eprintln!("internal resolution scale {scale}x: top {}x{}", 400 * scale, 240 * scale);
-        if std::env::var_os("USUM_VULKAN_DEFER_READBACK").is_some() {
+        if std::env::var("USUM_VULKAN_DEFER_READBACK").as_deref() != Ok("0") {
             kernel.pica.enable_vulkan_deferred_readback();
-            eprintln!("experimental deferred Vulkan readbacks enabled");
+            eprintln!("deferred Vulkan readbacks enabled");
         }
         if !std::env::var("USUM_VULKAN_VERTEX").is_ok_and(|value| value == "0") {
             kernel.pica.enable_vulkan_vertex();
@@ -296,6 +296,10 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
                 if let Some(error) = error {
                     println!("vulkan vertex fallback: {error}");
                 }
+            }
+            let frozen = kernel.pica.vulkan_frozen_texture_captures();
+            if frozen != 0 {
+                println!("vulkan frozen textures {frozen} captures");
             }
             let (queued, materialized, elapsed) = kernel.pica.vulkan_deferred_stats();
             if queued != 0 {

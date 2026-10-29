@@ -3,6 +3,7 @@
 //! software framebuffer; execution and replacement remain separate steps.
 
 mod deferred;
+pub use deferred::FrozenTexture;
 mod resident;
 pub(super) mod scale;
 
@@ -32,8 +33,19 @@ pub struct TextureSnapshot {
     pub width: u32,
     pub height: u32,
     pub pixels: Arc<[u8]>,
+    /// Experimental framebuffer view; use `resolved_pixels` for native data.
+    pub frozen: Option<Arc<FrozenTexture>>,
     pub sampler: SamplerState,
     pub border: [u8; 4],
+}
+
+impl TextureSnapshot {
+    pub fn resolved_pixels(&self) -> Result<&Arc<[u8]>, String> {
+        match &self.frozen {
+            Some(frozen) => frozen.pixels(),
+            None => Ok(&self.pixels),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -179,6 +191,7 @@ pub(super) struct LiveResources {
     resident_textures: Vec<resident::ResidentTexture>,
     texture_uses: u64,
     texture_uploads: u64,
+    pub(super) frozen_texture_captures: u64,
     lighting_uses: u64,
     lighting_uploads: u64,
     target_reuses: u64,
@@ -195,6 +208,7 @@ impl LiveResources {
         self.resident_textures.clear();
         self.texture_uses = 0;
         self.texture_uploads = 0;
+        self.frozen_texture_captures = 0;
         self.lighting_uses = 0;
         self.lighting_uploads = 0;
         self.target_reuses = 0;
@@ -235,26 +249,27 @@ impl LiveResources {
 
     fn texture(&mut self, renderer: &Renderer, snapshot: &TextureSnapshot) -> Result<usize, String> {
         self.texture_uses += 1;
+        let pixels = snapshot.resolved_pixels()?;
         if let Some(index) = self.textures.iter().position(|entry| {
             entry.width == snapshot.width
                 && entry.height == snapshot.height
                 && entry.sampler == snapshot.sampler
                 && entry.border == snapshot.border
-                && Arc::ptr_eq(&entry.pixels, &snapshot.pixels)
+                && Arc::ptr_eq(&entry.pixels, pixels)
         }) {
             return Ok(index);
         }
         let gpu = renderer.create_rgba8_texture_with_border(
             snapshot.width,
             snapshot.height,
-            &snapshot.pixels,
+            pixels,
             snapshot.sampler,
             snapshot.border,
         )?;
         self.textures.push(LiveTexture {
             width: snapshot.width,
             height: snapshot.height,
-            pixels: Arc::clone(&snapshot.pixels),
+            pixels: Arc::clone(pixels),
             sampler: snapshot.sampler,
             border: snapshot.border,
             gpu: Arc::new(gpu),
@@ -354,7 +369,7 @@ impl DrawSnapshot {
                 *output = Some(renderer.create_rgba8_texture_with_border(
                     snapshot.width,
                     snapshot.height,
-                    &snapshot.pixels,
+                    snapshot.resolved_pixels()?,
                     snapshot.sampler,
                     snapshot.border,
                 )?);
@@ -398,6 +413,8 @@ impl DrawSnapshot {
             if let Some(snapshot) = snapshot {
                 if let Some(entry) = feedback.iter().find(|entry| entry.matches(snapshot)) {
                     *direct = Some(entry.gpu.as_ref());
+                } else if let Some(frozen) = &snapshot.frozen {
+                    *direct = Some(frozen.gpu.as_ref());
                 } else {
                     *output = Some(resources.texture(renderer, snapshot)?);
                 }
@@ -456,7 +473,7 @@ impl DrawSnapshot {
         }
         for (unit, texture) in self.textures.iter().enumerate() {
             if let Some(texture) = texture {
-                write(&format!("texture-{unit}.rgba"), &texture.pixels)?;
+                write(&format!("texture-{unit}.rgba"), texture.resolved_pixels()?)?;
                 write(
                     &format!("texture-{unit}.txt"),
                     format!(
@@ -670,18 +687,26 @@ fn capture_buffers(
     };
     pica.vulkan_live_resources.capture_times[0] += phase.elapsed();
     let phase = std::time::Instant::now();
-    let textures = std::array::from_fn(|unit| {
-        super::texture::decoded_snapshot(pica, mem, unit).map(|snapshot| TextureSnapshot {
+    let mut textures = [None, None, None];
+    let frozen = std::env::var("USUM_VULKAN_DEFER_TEXTURES").as_deref() != Ok("0");
+    for (unit, output) in textures.iter_mut().enumerate() {
+        if let Some(snapshot) = deferred::texture_snapshot(pica, mem, unit, frozen)? {
+            pica.vulkan_live_resources.frozen_texture_captures += 1;
+            *output = Some(snapshot);
+            continue;
+        }
+        *output = super::texture::decoded_snapshot(pica, mem, unit).map(|snapshot| TextureSnapshot {
             address: snapshot.address,
             source_size: snapshot.source_size,
             format: snapshot.format,
             width: snapshot.width,
             height: snapshot.height,
             pixels: snapshot.pixels,
+            frozen: None,
             sampler: SamplerState::from_pica(snapshot.parameters),
             border: snapshot.border,
-        })
-    });
+        });
+    }
     pica.vulkan_live_resources.capture_times[1] += phase.elapsed();
     Ok((target, textures))
 }
@@ -1485,6 +1510,7 @@ mod tests {
                 snapshot.state.raster.color_mask = if step == 2 { ColorMask::ALL } else { ColorMask::from_bits(0) };
                 if split && step == 2 {
                     snapshot.textures[0] = Some(TextureSnapshot {
+                        frozen: None,
                         address: pica.pa_to_va(first.depth_address).unwrap(),
                         source_size: 4096,
                         format: 0,
@@ -1938,6 +1964,7 @@ mod tests {
             DrawSnapshot::from_shaded_vertices(&pica, &vertices, &[[0, 1, 2]], target_info, target.clone(), [None, None, None])
                 .unwrap();
         let texture = TextureSnapshot {
+            frozen: None,
             address: pica.pa_to_va(target_info.color_address).unwrap(),
             source_size: 32 * 32 * 4,
             format: 0,

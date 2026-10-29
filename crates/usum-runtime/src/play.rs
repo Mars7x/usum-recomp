@@ -311,9 +311,9 @@ fn run_game(
             eprintln!("{error}");
         }
         eprintln!("internal resolution scale {scale}x: top {}x{}", 400 * scale, 240 * scale);
-        if std::env::var_os("USUM_VULKAN_DEFER_READBACK").is_some() {
+        if std::env::var("USUM_VULKAN_DEFER_READBACK").as_deref() != Ok("0") {
             kernel.pica.enable_vulkan_deferred_readback();
-            eprintln!("experimental deferred Vulkan readbacks enabled");
+            eprintln!("deferred Vulkan readbacks enabled");
         }
         if !std::env::var("USUM_VULKAN_VERTEX").is_ok_and(|value| value == "0") {
             kernel.pica.enable_vulkan_vertex();

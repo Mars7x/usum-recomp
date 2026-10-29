@@ -331,6 +331,11 @@ impl Pica {
         vulkan_compare::scale::presented(self, p, columns, raw)
     }
     #[cfg(feature = "vulkan-compare")]
+    pub fn vulkan_frozen_texture_captures(&self) -> u64 {
+        self.vulkan_live_resources.frozen_texture_captures
+    }
+
+    #[cfg(feature = "vulkan-compare")]
     pub fn vulkan_deferred_stats(&self) -> (u64, u64, std::time::Duration) {
         self.vulkan_live_resources.deferred_stats()
     }

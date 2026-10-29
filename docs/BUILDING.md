@@ -263,8 +263,9 @@ remain native. Unsupported/CPU-rendered presentation uses native output.
 Scaled color/depth targets and viewports are actually rasterized at the higher
 resolution. Guest buffers retain native dimensions; a full-resolution host image
 survives supported LCD transfers and rotation into the play window. Native guest
-snapshots remain suitable for comparison. Resolution scaling keeps synchronous readback by default; the deferred-readback
-experiment below supports native and scaled targets.
+snapshots remain suitable for comparison. Compatible targets use immutable
+readback tickets and frozen framebuffer textures by default at native and
+scaled resolutions.
 Use the same internal scale for gameplay and probe performance measurements.
 
 Scaled targets now accept native-size color/depth uploads, with exact replication
@@ -275,16 +276,25 @@ CPU expansion/full-readback paths for reference comparisons. Display cropping,
 rotation and RGB packing also execute on the GPU;
 `USUM_VULKAN_GPU_DISPLAY_COPY=0` restores the CPU display transform.
 
-`USUM_VULKAN_DEFER_READBACK=1` additionally enables experimental immutable
-readback tickets for RGBA8/D24S8 targets with depth buffers. Both exact guest
-plane identities must match before reusing resident GPU contents; CPU writes
-invalidate reuse. Actual CPU readers still receive the frozen result, including
-stencil bytes. Other formats keep synchronous writeback. This path is disabled
-by default: recorded intro, overworld and battle images match, while 6×
-performance validation continues. Unset the variable to select synchronous
-readback; setting it to `0` still enables this presence-based option. Deferred device failures are
-reported as guest memory faults rather than exposing stale RAM. The probe reports
-queued/materialized tickets and materialization time separately.
+Compatible RGBA8/D24S8 targets with depth buffers use immutable readback tickets
+by default. Exact guest plane identities guard resident target reuse; CPU writes
+invalidate reuse. Actual CPU readers receive the frozen result, including
+stencil bytes. Other formats keep synchronous writeback. Deferred device failures
+become guest memory faults rather than stale RAM. The probe reports queued and
+materialized tickets and materialization time separately.
+
+Full-plane framebuffer color and depth/stencil textures also use immutable GPU
+views. Matching dimensions, format and logical device-write identity are required;
+CPU writes, subviews and incompatible layouts use ordinary texture decoding.
+Native diagnostics can request `TextureSnapshot::resolved_pixels()` on demand.
+Both paths preserve default-on outlines and full internal-resolution detail.
+
+`USUM_VULKAN_DEFER_READBACK=0` selects synchronous readback;
+`USUM_VULKAN_DEFER_TEXTURES=0` disables frozen GPU texture captures while retaining
+deferred target writes. These options now use `0` to disable and are enabled
+when unset. `USUM_VULKAN_NATIVE_READBACK=0` also disables scaled deferred targets
+so the older full-readback reference remains usable. All reference switches can
+be combined with `USUM_VULKAN_VERTEX=0` for CPU vertex shading.
 
 Common unfiltered RGBA8-to-RGB8 LCD transfers read only the prefix containing
 sampled tiles, omitting unused padded rows/columns. `USUM_DISPLAY_FULL_INPUT=1`

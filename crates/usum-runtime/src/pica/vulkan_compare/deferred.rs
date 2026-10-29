@@ -2,7 +2,7 @@
 use super::*;
 use std::any::Any;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Default)]
 pub(super) struct Stats {
@@ -33,6 +33,7 @@ pub(super) struct DeferredTarget {
     /// deliberately fail upload validation if the residency proof is lost.
     seed: Arc<TargetSnapshot>,
     encoded: OnceLock<Result<EncodedPlanes, Fault>>,
+    views: Mutex<Vec<FrozenView>>,
 }
 
 #[derive(Debug)]
@@ -72,6 +73,7 @@ pub(super) fn eligible(pica: &Pica, info: CaptureTarget) -> bool {
     pica.vulkan_defer_readback
         && pica.vulkan_accelerate
         && pica.vulkan_live_depth
+        && (pica.vulkan_resolution_scale == 1 || std::env::var("USUM_VULKAN_NATIVE_READBACK").as_deref() != Ok("0"))
         && info.color_format == 0
         && info.depth_format == 3
         && info.depth_address != 0
@@ -127,6 +129,7 @@ pub(super) fn install(
             stencil: Vec::new(),
         }),
         encoded: OnceLock::new(),
+        views: Mutex::default(),
     });
     let color = pica.pa_to_va(info.color_address)?;
     let depth = pica.pa_to_va(info.depth_address)?;
@@ -163,10 +166,241 @@ pub(super) fn hydrate_ready(pica: &mut Pica) {
     }
 }
 
+#[derive(Debug)]
+struct FrozenView {
+    depth: bool,
+    sampler: SamplerState,
+    border: [u8; 4],
+    gpu: Arc<SampledTexture>,
+}
+
+/// Immutable GPU view with an on-demand native reference for diagnostics.
+#[derive(Debug)]
+pub struct FrozenTexture {
+    source: Arc<DeferredTarget>,
+    depth: bool,
+    pub(super) gpu: Arc<SampledTexture>,
+    pixels: OnceLock<Result<Arc<[u8]>, String>>,
+}
+
+impl PartialEq for FrozenTexture {
+    fn eq(&self, other: &Self) -> bool {
+        self.depth == other.depth && Arc::ptr_eq(&self.source, &other.source)
+    }
+}
+
+impl FrozenTexture {
+    pub(super) fn pixels(&self) -> Result<&Arc<[u8]>, String> {
+        self.pixels
+            .get_or_init(|| {
+                // Use the normal provider so accounting and later guest reads also
+                // observe this materialization, including deferred device failures.
+                self.source.encoded.get_or_init(|| self.source.encode()).as_ref().map_err(ToString::to_string)?;
+                let read = self.source.ticket.read()?;
+                let (w, h) = (self.source.info.width as usize, self.source.info.height as usize);
+                let mut pixels = Vec::with_capacity(w * h * 4);
+                for y in (0..h).rev() {
+                    if self.depth {
+                        for x in 0..w {
+                            let at = y * w + x;
+                            let depth = (read.depth[at].clamp(0.0, 1.0) * 0xFF_FFFF as f32) as u32;
+                            pixels.extend_from_slice(&(depth.swap_bytes() | u32::from(read.stencil[at])).to_le_bytes());
+                        }
+                    } else {
+                        pixels.extend_from_slice(&read.color[y * w * 4..(y + 1) * w * 4]);
+                    }
+                }
+                Ok(pixels.into())
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+}
+
+pub(super) fn texture_snapshot(pica: &Pica, mem: &Memory, unit: usize, enabled: bool) -> Result<Option<TextureSnapshot>, String> {
+    if !pica.vulkan_live
+        || !pica.vulkan_defer_readback
+        || !enabled
+        || std::env::var("USUM_VULKAN_RESIDENT_TEXTURES").as_deref() == Ok("0")
+    {
+        return Ok(None);
+    }
+    let Some((address, format, width, height)) = super::super::texture::unit_key(pica, unit) else {
+        return Ok(None);
+    };
+    if format != 0 {
+        return Ok(None);
+    }
+    let Some(size) = width.checked_mul(height).and_then(|n| n.checked_mul(4)) else {
+        return Ok(None);
+    };
+    let Some(plane) = mem.deferred_source(address, size as usize).and_then(|s| s.as_any().downcast_ref::<Plane>()) else {
+        return Ok(None);
+    };
+    let info = plane.target.info;
+    if (width, height) != (info.width, info.height)
+        || plane.depth && std::env::var("USUM_VULKAN_RESIDENT_DEPTH_TEXTURE").as_deref() == Ok("0")
+    {
+        return Ok(None);
+    }
+    let Some(source) = pica
+        .vulkan_live_target_cache
+        .iter()
+        .find(|t| t.info == info && t.pending.as_ref().is_some_and(|p| Arc::ptr_eq(p, &plane.target)))
+    else {
+        return Ok(None);
+    };
+    let reg = [0x81, 0x91, 0x99][unit];
+    let sampler = SamplerState::from_pica(pica.regs[reg + 2]);
+    let border = pica.regs[reg].to_le_bytes();
+    let mut views = plane.target.views.lock().map_err(|_| "frozen texture cache poisoned")?;
+    let gpu = match views.iter().find(|v| v.depth == plane.depth && v.sampler == sampler && v.border == border) {
+        Some(view) => Arc::clone(&view.gpu),
+        None => {
+            let renderer = live_renderer()?;
+            let gpu = Arc::new(if plane.depth {
+                renderer.create_d24s8_feedback_texture(&source.gpu, sampler, border)?
+            } else {
+                renderer.create_color_feedback_texture(&source.gpu, sampler, border)?
+            });
+            views.push(FrozenView { depth: plane.depth, sampler, border, gpu: Arc::clone(&gpu) });
+            gpu
+        }
+    };
+    Ok(Some(TextureSnapshot {
+        address,
+        source_size: size,
+        format,
+        width,
+        height,
+        pixels: Arc::from([]),
+        sampler,
+        border,
+        frozen: Some(Arc::new(FrozenTexture {
+            source: Arc::clone(&plane.target),
+            depth: plane.depth,
+            gpu,
+            pixels: OnceLock::new(),
+        })),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use usum_guest::Perm;
+
+    #[test]
+    #[ignore = "requires a Vulkan hardware adapter"]
+    fn frozen_texture_capture_is_gpu_only_immutable_and_keeps_native_reference() {
+        use usum_render::{DepthCompare, DepthState, RasterState, TevStage, Viewport};
+        let renderer = live_renderer().unwrap();
+        for scale in [1, 6] {
+            for depth_plane in [false, true] {
+                let mut pica = Pica::default();
+                pica.enable_vulkan_acceleration();
+                pica.enable_vulkan_deferred_readback();
+                pica.set_vulkan_resolution_scale(scale).unwrap();
+                let info = CaptureTarget {
+                    color_address: 0x2000_0000,
+                    depth_address: 0x2000_1000,
+                    width: 16,
+                    height: 16,
+                    color_format: 0,
+                    depth_format: 3,
+                };
+                let mut mem = Memory::new();
+                mem.map(pica.linear_base, vec![0; 0x2000], Perm::RW).unwrap();
+                let side = 16 * scale;
+                let count = (side * side) as usize;
+                let color: Vec<u8> = (0..count * 4).map(|n| (n * 37 + n / 19) as u8).collect();
+                let depths = vec![0.5; count];
+                let stencil: Vec<u8> = (0..256).map(|n| (n * 7) as u8).collect();
+                let gpu = Arc::new(renderer.create_color_target_from_snapshot(side, side, &color, &depths).unwrap());
+                let mut batch = renderer.begin_batch(&gpu);
+                batch.seed_stencil(&stencil, scale).unwrap();
+                let ticket = Arc::new(batch.submit_resolved_readback(scale).unwrap());
+                pica.vulkan_live_target_cache.push(LiveTarget {
+                    info,
+                    gpu: Arc::clone(&gpu),
+                    contents: None,
+                    pending: None,
+                    scaled_color: None,
+                    last_draw: 1,
+                    depth_detail: true,
+                });
+                install(&mut pica, &mut mem, info, Arc::clone(&ticket)).unwrap();
+                pica.regs[0x80] = 1;
+                pica.regs[0x82] = 16 << 16 | 16;
+                let physical = if depth_plane { info.depth_address } else { info.color_address };
+                pica.regs[0x85] = physical >> 3;
+                assert!(texture_snapshot(&pica, &mem, 0, false).unwrap().is_none());
+                let snapshot = texture_snapshot(&pica, &mem, 0, true).unwrap().unwrap();
+                let again = texture_snapshot(&pica, &mem, 0, true).unwrap().unwrap();
+                let frozen = snapshot.frozen.as_ref().unwrap();
+                assert!(Arc::ptr_eq(&frozen.gpu, &again.frozen.as_ref().unwrap().gpu));
+                assert!(ticket.ready().is_none(), "capturing a GPU texture must not map its source");
+                assert_eq!(pica.vulkan_live_resources.deferred.get().1, 0);
+                let mut expected = Vec::with_capacity(count * 4);
+                for y in (0..side).rev() {
+                    for x in 0..side {
+                        if depth_plane {
+                            expected.extend_from_slice(&[stencil[((y / scale) * 16 + x / scale) as usize], 0x7f, 0xff, 0xff]);
+                        } else {
+                            let at = ((y * side + x) * 4) as usize;
+                            expected.extend_from_slice(&color[at..at + 4]);
+                        }
+                    }
+                }
+                let reference =
+                    renderer.create_rgba8_texture_with_border(side, side, &expected, snapshot.sampler, snapshot.border).unwrap();
+                // Reuse the source allocation after freezing it. Its old view and
+                // immutable native ticket must both keep the previous generation.
+                let _overwrite =
+                    renderer.begin_batch_from_snapshot(&gpu, &vec![0; count * 4], &depths).unwrap().submit_readback().unwrap();
+                let v = |x, y, u, v| RasterVertex::new([x, y, 0.0, 1.0], [1.0; 4]).with_texcoord0([u, v]);
+                let vertices = [
+                    v(-1.0, -1.0, 0.0, 0.0),
+                    v(1.0, -1.0, 1.0, 0.0),
+                    v(1.0, 1.0, 1.0, 1.0),
+                    v(-1.0, -1.0, 0.0, 0.0),
+                    v(1.0, 1.0, 1.0, 1.0),
+                    v(-1.0, 1.0, 0.0, 1.0),
+                ];
+                let render = |texture: &SampledTexture| {
+                    let target = renderer.create_color_target(side, side).unwrap();
+                    let mut state =
+                        RasterState { depth: DepthState { compare: DepthCompare::Always, write: false }, ..Default::default() };
+                    state.tev.stages[0] = TevStage::replace(3);
+                    renderer
+                        .draw_vertices_with_inputs(
+                            &target,
+                            &vertices,
+                            Viewport::full(&target),
+                            state,
+                            FragmentInputs { texture0: Some(texture), ..Default::default() },
+                        )
+                        .unwrap();
+                    renderer.read_color_target(&target).unwrap()
+                };
+                let actual = render(&frozen.gpu);
+                assert_eq!(actual, render(&reference));
+                assert!(actual.as_chunks::<4>().0.iter().any(|p| p[..3] != [0, 0, 0]));
+                assert!(ticket.ready().is_none(), "sampling the frozen GPU view must not map its source");
+                let native = super::super::super::texture::decoded_snapshot(&mut pica, &mem, 0).unwrap();
+                assert_eq!(snapshot.resolved_pixels().unwrap().as_ref(), native.pixels.as_ref());
+                let address = pica.pa_to_va(physical).unwrap();
+                mem.write_u8(address, 0x91).unwrap();
+                assert!(
+                    texture_snapshot(&pica, &mem, 0, true).unwrap().is_none(),
+                    "partial CPU writes invalidate the logical source"
+                );
+                pica.vulkan_live_target_cache.clear();
+                drop(gpu);
+                assert_eq!(actual, render(&frozen.gpu), "snapshot survives source destruction");
+            }
+        }
+    }
 
     #[test]
     #[ignore = "requires a Vulkan hardware adapter"]

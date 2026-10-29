@@ -153,6 +153,7 @@ mod tests {
             stencil: vec![0x12, 0x34, 0x56, 0x78],
         };
         let mut texture = TextureSnapshot {
+            frozen: None,
             address: 0,
             source_size: 16,
             format: 0,
@@ -180,6 +181,7 @@ mod tests {
     fn color_texture_proof_checks_rows_and_all_channels() {
         let mut contents = TargetSnapshot { width: 2, height: 2, color: (0..16).collect(), depth: vec![], stencil: vec![] };
         let texture = TextureSnapshot {
+            frozen: None,
             address: 0,
             source_size: 16,
             format: 0,
@@ -209,9 +211,14 @@ mod tests {
     fn later_lists_sample_full_resolution_planes_and_refresh_identical_native_results() {
         use usum_render::{ColorMask, DepthCompare, DepthState, StencilState, TevStage, TevState, Viewport};
         let renderer = live_renderer().unwrap();
-        for (plane, defer) in
-            [(Plane::DepthStencil, false), (Plane::Color, false), (Plane::DepthStencil, true), (Plane::Color, true)]
-        {
+        for (plane, defer, freeze) in [
+            (Plane::DepthStencil, false, false),
+            (Plane::Color, false, false),
+            (Plane::DepthStencil, true, false),
+            (Plane::Color, true, false),
+            (Plane::DepthStencil, true, true),
+            (Plane::Color, true, true),
+        ] {
             let mut pica = Pica::default();
             pica.enable_vulkan_acceleration();
             if defer {
@@ -274,6 +281,17 @@ mod tests {
                 let source = pica.vulkan_live_target_cache.iter().find(|t| t.info == info).unwrap();
                 assert_eq!(source.pending.is_some(), defer);
                 let materialized = pica.vulkan_live_resources.deferred.get().1;
+                let frozen = if freeze {
+                    pica.regs[0x80] = 1;
+                    pica.regs[0x82] = 32 << 16 | 32;
+                    pica.regs[0x85] = (if plane == Plane::Color { info.color_address } else { info.depth_address }) >> 3;
+                    let snapshot = deferred::texture_snapshot(&pica, &mem, 0, true).unwrap().unwrap();
+                    pica.regs[0x80] = 0;
+                    assert_eq!(pica.vulkan_live_resources.deferred.get().1, materialized);
+                    Some(snapshot)
+                } else {
+                    None
+                };
                 let pixels = pixels(&pica, &mem, info, plane);
                 if defer {
                     assert_eq!(pica.vulkan_live_resources.deferred.get().1, materialized + 1);
@@ -282,16 +300,17 @@ mod tests {
                     assert_eq!(&**prior, &*pixels, "native samples deliberately stay identical");
                 }
                 let pixels = Arc::clone(native_pixels.get_or_insert(pixels));
-                let texture = TextureSnapshot {
+                let texture = frozen.unwrap_or(TextureSnapshot {
                     address: pica.linear_base + if plane == Plane::Color { 0 } else { 0x1000 },
                     source_size: 4096,
                     format: 0,
                     width: 32,
                     height: 32,
                     pixels,
+                    frozen: None,
                     sampler: Default::default(),
                     border: [0; 4],
-                };
+                });
                 let expected_texture = match plane {
                     Plane::DepthStencil => {
                         renderer.create_d24s8_feedback_texture(&source.gpu, texture.sampler, texture.border).unwrap()
@@ -336,7 +355,7 @@ mod tests {
                     assert_ne!(actual, prior, "subpixel geometry changes despite identical native bytes");
                 }
                 prior_high_resolution = Some(actual);
-                assert_eq!(pica.vulkan_live_resources.resident_textures.len(), 1);
+                assert_eq!(pica.vulkan_live_resources.resident_textures.len(), usize::from(!freeze));
             }
             mem.write_u8(pica.linear_base + if plane == Plane::Color { 3 } else { 0x1003 }, 0x33).unwrap();
             let pixels = pixels(&pica, &mem, info, plane);
@@ -347,6 +366,7 @@ mod tests {
                 width: 32,
                 height: 32,
                 pixels,
+                frozen: None,
                 sampler: Default::default(),
                 border: [0; 4],
             };

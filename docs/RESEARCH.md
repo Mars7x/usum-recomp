@@ -3016,3 +3016,41 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   Both stop at their configured sleep/time budget, with no unsupported command
   and zero software rendering fallbacks. Game data and captures remain private.
   This fixes a gameplay stop; it does not establish the 200-FPS goal.
+
+### R-101 2026-10-29 — Keep deferred framebuffer textures on the GPU
+
+- Freeze compatible full-plane RGBA8 color and D24S8-as-RGBA textures directly
+  from their proven resident GPU generation. Exact immutable deferred-provider
+  identity, dimensions and format replace eager CPU pixel decoding. Cache GPU
+  views per source generation / plane / sampler / border without ownership cycles.
+  CPU writes and incompatible layouts retain ordinary decoding. Within-list
+  feedback still takes precedence over the frozen incoming view.
+- A fallible on-demand native reference supports isolated rendering, diagnostics
+  and export. Software fallback still reads authoritative logical guest memory.
+  GPU tests verify capture/sampling never map the source, output survives source
+  reuse/destruction, native references match regular decoding, and CPU writes
+  invalidate reuse. Extended color/stencil tests move subpixel geometry while
+  native samples remain identical; both generations must render correctly.
+- All 86 enabled runtime tests, eleven runtime hardware tests and strict Clippy
+  pass. All 36 intro/overworld/battle native and scaled captures match. The latest
+  complete user recording also matches all 24 captures, 5,117,853,423 guest
+  instructions, 165,848 draws and 3708 VBlanks at the 62-second budget. There
+  are no software fallbacks. Concurrent session checks establish correctness;
+  their wall times are not performance measurements.
+- Sequential same-binary 6× overworld pairs: synchronous 19.792/18.622 seconds,
+  deferred-only 19.213/18.500, frozen/deferred 18.254/18.605 for 16 game seconds.
+  The combined path averages about 4.2% more throughput than synchronous, around
+  27 top-screen updates/s, with variation between runs. Materialized tickets fall
+  from 2004 to 1666; 2388 texture captures stay on the GPU.
+- Battle synchronous/frozen/frozen/synchronous times: 39.628/30.030/29.571/39.969
+  seconds for 30 game seconds, about 33.6% more throughput for the combined path.
+  It averages 32.6 versus 24.4 top-screen updates/s; all captures agree. There
+  are 4620 frozen texture captures and 3050 materialized tickets versus the
+  deferred-only correctness replay's 3579. No gain is attributed to this texture
+  change alone when comparing against synchronous mode.
+- Enable the validated combined path by default in play/probe. Explicit
+  `USUM_VULKAN_DEFER_READBACK=0` or `USUM_VULKAN_DEFER_TEXTURES=0` retain reference
+  modes; the legacy full-readback switch remains honored. This supersedes the
+  earlier presence-based readback option. Rendering correctness and the CPU
+  fallback remain required. Game data stays private. Normal-speed 200 FPS has
+  not been reached; the goal remains active.
