@@ -3085,3 +3085,37 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
 - Separately, the latest manual 6× test closed normally after 11969 VBlanks,
   719680 draws and 134566 Vulkan lists, with zero software fallbacks. Recordings
   and game data stay private. The normal-speed 200-FPS objective remains active.
+
+### R-103 2026-10-29 — Restart the title when leaving Mystery Gift
+
+- Both the earlier short recording and the latest reported freeze stop at
+  `APT:PrepareToDoApplicationJump` with flags 2 (current application). The game
+  then releases its GPU right and sends `DoApplicationJump` with empty delivery
+  buffers. This is process termination and relaunch, not a return into the old
+  game's torn-down runtime. Follow the command formats and self-chainload flag
+  in [libctru APT](https://github.com/devkitPro/libctru/blob/master/libctru/source/services/apt.c)
+  and [GPU-right release](https://github.com/devkitPro/libctru/blob/master/libctru/source/services/gspgpu.c).
+- Capture a pristine CPU/address-space boot image before execution. A prepared
+  self-jump restores it and creates fresh kernel handles, threads, mappings,
+  loader state, audio sources, GPU registers, and framebuffer/texture caches.
+  Invalidate translated dispatch ownership too. Keep the host session's save
+  directory, RomFS, controller/touch state, quit flag, audio sink, display sink,
+  current resolution/Vulkan policy, cumulative counters and monotonic clock /
+  input-recording timeline. In particular, never restore an old save snapshot
+  or reset recorded-input indices. Delivery data is copied before termination
+  and can be received once by the new process. Other-title jumps stay unsupported.
+- The original recording now restarts at VBlank 950, reaches the visible title
+  screen and runs through the 30-second limit (8767 lists, zero fallbacks).
+  Repeating the same menu sequence restarts twice at VBlanks 950 and 1900 and
+  runs to the 45-second limit (12235 lists, zero fallbacks).
+- The user's latest recording now restarts at VBlank 3728 and keeps running
+  through 78 seconds (4664 VBlanks, 25117 lists, zero fallbacks), beyond its
+  previous freeze. These are automated functional replays, not FPS benchmarks.
+- All 93 enabled Vulkan/window runtime tests and 68 default-feature tests pass,
+  together with strict Clippy for both configurations. New IPC tests verify
+  delivery bytes, pristine boot memory, terminated handles/mappings, preserved
+  session state and rejection of unprepared/invalid jumps. GPU-state reset tests
+  preserve 6× acceleration policy and cumulative counts. The standard intro and
+  overworld retain exact instruction/draw counts and all eight reference captures.
+- The 200 actual rendered FPS objective is still unmet; this fixes the menu
+  correctness regression before continuing performance work.

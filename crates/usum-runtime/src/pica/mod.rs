@@ -214,6 +214,27 @@ fn word_mask(mask: u32) -> u32 {
 }
 
 impl Pica {
+    /// A new guest process cannot inherit register/upload state or GPU views of
+    /// its predecessor's RAM. Keep host policy and cumulative profiling counts.
+    pub(crate) fn restart_process(&mut self) {
+        self.regs.fill(0);
+        self.vs = shader::Unit::default();
+        self.gs = shader::Unit::default();
+        self.fixed = [[0.0, 0.0, 0.0, 1.0]; 12];
+        self.light_luts = std::sync::Arc::new(vec![[0; 256]; 24]);
+        self.fixed_index = 0;
+        self.fixed_pending.clear();
+        self.texture_cache = texture::Cache::default();
+        #[cfg(feature = "vulkan-compare")]
+        {
+            self.vulkan_snapshots.clear();
+            self.vulkan_live_target_cache.clear();
+            self.scaled_displays.clear();
+            self.vulkan_live_resources.invalidate_process();
+            self.vulkan_skip_software = false;
+        }
+    }
+
     /// Captures at most `draws` subsequent post-geometry triangle lists for
     /// Vulkan comparison while the software renderer continues normally.
     #[cfg(feature = "vulkan-compare")]
@@ -839,6 +860,37 @@ pub fn display_transfer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_restart_resets_gpu_state_and_keeps_host_policy_and_counters() {
+        let mut pica = Pica::default();
+        pica.regs[0x41] = 0xabcd;
+        pica.fixed[0] = [3.0; 4];
+        pica.fixed_index = 9;
+        pica.fixed_pending.push(7);
+        std::sync::Arc::make_mut(&mut pica.light_luts)[0][4] = 0x123;
+        pica.draws = 58;
+        #[cfg(feature = "vulkan-compare")]
+        {
+            pica.enable_vulkan_acceleration();
+            pica.enable_vulkan_deferred_readback();
+            pica.enable_vulkan_vertex();
+            pica.set_vulkan_resolution_scale(6).unwrap();
+        }
+        pica.restart_process();
+        assert_eq!(pica.regs[0x41], 0);
+        assert_eq!(pica.fixed[0], [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(pica.fixed_index, 0);
+        assert!(pica.fixed_pending.is_empty());
+        assert_eq!(pica.light_luts[0][4], 0);
+        assert_eq!(pica.draws, 58);
+        #[cfg(feature = "vulkan-compare")]
+        {
+            assert!(pica.vulkan_accelerate && pica.vulkan_vertex && pica.vulkan_defer_readback);
+            assert_eq!(pica.vulkan_resolution_scale, 6);
+        }
+    }
+
     use usum_guest::memory::Perm;
 
     #[test]

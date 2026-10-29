@@ -37,6 +37,21 @@ pub enum Request {
         output_size: u32,
         output: u32,
     },
+    /// Restart/chainload preparation. Only flags 2 (current application) is
+    /// supported by this single-title runtime.
+    PrepareJump {
+        flags: u32,
+    },
+    DoJump {
+        parameter_size: u32,
+        parameter: u32,
+        hmac_size: u32,
+        hmac: u32,
+    },
+    ReceiveDeliverArg {
+        parameter_size: u32,
+        hmac_size: u32,
+    },
     Other(u32),
 }
 
@@ -57,6 +72,21 @@ pub fn parse(message: &Message) -> Request {
             input: message.words[5],
             output: message.statics[1],
         },
+        0x0031_0100 => Request::PrepareJump { flags: message.words[1] },
+        0x0032_0084
+            if message.words[1] <= 0x300
+                && message.words[2] <= 0x20
+                && message.words[3] == (message.words[1] << 14) | 2
+                && message.words[5] == (message.words[2] << 14) | 0x802 =>
+        {
+            Request::DoJump {
+                parameter_size: message.words[1],
+                parameter: message.words[4],
+                hmac_size: message.words[2],
+                hmac: message.words[6],
+            }
+        }
+        0x0035_0080 => Request::ReceiveDeliverArg { parameter_size: message.words[1], hmac_size: message.words[2] },
         other => Request::Other(other),
     }
 }
@@ -126,4 +156,12 @@ pub const UNLOCK_TRANSITION: u32 = 7;
 /// say what the applet result is for the void utilities; 0 is a choice.
 pub fn applet_utility_reply(applet_result: u32) -> Vec<u32> {
     vec![header(0x4B, 2, 0), 0, applet_result]
+}
+
+/// Immutable handoff to a newly booted application, not an IPC reply that
+/// lets the old process continue after DoApplicationJump.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeliverArg {
+    pub parameter: Vec<u8>,
+    pub hmac: Vec<u8>,
 }

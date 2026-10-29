@@ -9,6 +9,9 @@
 
 /// (service, request header, 3dbrew name).
 pub const RESULT_ONLY: &[(&str, u32, &str)] = &[
+    // GSP ReleaseRight: this single-application runtime has no competing GPU
+    // owner to wake; record the release alongside AcquireRight's flags.
+    ("gsp::Gpu", 0x0017_0000, "ReleaseRight"),
     // Sleep acknowledgements: the virtual shell remains open/awake. Record
     // the application's reply; there is no host sleep transition to perform.
     ("APT:A", 0x003E_0080, "ReplySleepQuery"),

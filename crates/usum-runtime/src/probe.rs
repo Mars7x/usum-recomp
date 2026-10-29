@@ -76,6 +76,7 @@ pub fn run_with(
     max_refills: u64,
     hook: &mut dyn FnMut(&mut Kernel, &Memory) -> bool,
 ) -> (Outcome, u64) {
+    let boot = kernel::BootImage::capture(cpu, mem, kernel);
     let mut refills = 0u64;
     let mut ran = 0u64;
     let mut dispatch = dispatch::CodeCache::new(std::env::var("USUM_DISPATCH_CACHE").as_deref() != Ok("0"));
@@ -101,6 +102,17 @@ pub fn run_with(
             Ok(Exit::Jump) => {}
             Ok(Exit::Svc(n)) => match kernel.tick_then_svc(cpu, mem, n) {
                 kernel::Outcome::Continue => {}
+                kernel::Outcome::Restart(args) => {
+                    let Some(boot) = &boot else {
+                        return (Outcome::Unimplemented("application restart without a boot image".into()), ran);
+                    };
+                    boot.restart(cpu, mem, kernel, args);
+                    cpu.budget = BUDGET;
+                    // Loaded CROs and all translated dispatch ownership belong to
+                    // the terminated process, even if their addresses recur.
+                    dispatch = dispatch::CodeCache::new(std::env::var("USUM_DISPATCH_CACHE").as_deref() != Ok("0"));
+                    eprintln!("application restarted: {} at VBlank {}", kernel.restarts, kernel.vblanks);
+                }
                 kernel::Outcome::Switch => {
                     if !kernel.switch(cpu, mem) {
                         return (Outcome::NoThread, ran);
@@ -151,6 +163,7 @@ pub fn setup(
     usum_guest::install_functions(Box::leak(table.into_boxed_slice()));
     let process = crate::boot::Process::from_exheader(&inspection.exheader);
     let mut kernel = Kernel::new(process, blocks, inspection.exheader.services.clone());
+    kernel.program_id = inspection.ncch.program_id;
     if let usum_import::profile::Match::Profile { profile } = &inspection.profile {
         kernel.console = crate::services::cfg::Console::for_region(profile.region);
     }

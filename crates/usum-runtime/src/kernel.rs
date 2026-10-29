@@ -8,6 +8,9 @@
 //! settles a detail, the code says so. An SVC not implemented here stops
 //! execution with a report; nothing is guessed.
 
+mod restart;
+pub(crate) use restart::BootImage;
+
 use std::collections::BTreeMap;
 
 use usum_guest::{Cpu, Memory, Perm};
@@ -105,6 +108,8 @@ pub struct Call {
 
 pub enum Outcome {
     Continue,
+    /// Terminate this process and boot a fresh copy of the current title.
+    Restart(apt::DeliverArg),
     /// The calling thread blocked, exited or was preempted: the run loop
     /// must call [`Kernel::switch`].
     Switch,
@@ -340,6 +345,11 @@ pub struct Kernel {
     pub settings: BTreeMap<(String, u32), Vec<u32>>,
     /// The application's registration with APT (Initialize).
     pub apt: Option<Apt>,
+    /// Current title identity, for delivery arguments across self-restarts.
+    pub program_id: u64,
+    pub restarts: u64,
+    apt_jump_prepared: bool,
+    deliver_arg: Option<apt::DeliverArg>,
     current: usize,
     next_thread_id: u32,
 }
@@ -997,6 +1007,7 @@ impl Kernel {
         };
         let header = message.words[0];
         let mut wake = false;
+        let mut restart = None;
         let reply = match service.as_str() {
             "srv:" => match srv::parse(&message) {
                 srv::Request::RegisterClient => Some(srv::register_client_reply()),
@@ -1013,6 +1024,67 @@ impl Kernel {
                 srv::Request::Other(_) => None,
             },
             "APT:A" | "APT:U" | "APT:S" => match apt::parse(&message) {
+                apt::Request::PrepareJump { flags: 2 } => {
+                    self.apt_jump_prepared = true;
+                    Some(services::result_reply(0x31))
+                }
+                apt::Request::PrepareJump { .. } => {
+                    self.apt_jump_prepared = false;
+                    None
+                }
+                apt::Request::DoJump { parameter_size, parameter, hmac_size, hmac } if self.apt_jump_prepared => {
+                    let read = |address, size| {
+                        if size == 0 {
+                            Ok(Vec::new())
+                        } else {
+                            mem.read_range(address, size)
+                        }
+                    };
+                    let args = match (read(parameter, parameter_size), read(hmac, hmac_size)) {
+                        (Ok(parameter), Ok(hmac)) => apt::DeliverArg { parameter, hmac },
+                        (Err(f), _) | (_, Err(f)) => return Outcome::Unimplemented(format!("APT jump buffer: {f}")),
+                    };
+                    restart = Some(args);
+                    Some(services::result_reply(0x32))
+                }
+                apt::Request::DoJump { .. } => None,
+                apt::Request::ReceiveDeliverArg { parameter_size, hmac_size } => {
+                    let mut buffers = [0; 2];
+                    let mut descriptors = [0; 2];
+                    for (output, (size, index)) in [(parameter_size, 0), (hmac_size, 2)].into_iter().enumerate() {
+                        let descriptor = (size.min(if index == 0 { 0x300 } else { 0x20 }) << 14) | (index << 10) | 2;
+                        let Some(pair) = message.statics.as_chunks::<2>().0.iter().find(|pair| pair[0] == descriptor) else {
+                            return Outcome::Unimplemented("APT deliver argument output descriptor".into());
+                        };
+                        buffers[output] = pair[1];
+                        descriptors[output] = descriptor;
+                    }
+                    if let Some(args) = &self.deliver_arg {
+                        for (data, size, address) in
+                            [(&args.parameter, parameter_size, buffers[0]), (&args.hmac, hmac_size, buffers[1])]
+                        {
+                            let bytes = &data[..data.len().min(size as usize)];
+                            if !bytes.is_empty() {
+                                if let Err(f) = mem.write_range(address, bytes) {
+                                    return Outcome::Unimplemented(format!("APT deliver argument output: {f}"));
+                                }
+                            }
+                        }
+                    }
+                    let received = self.deliver_arg.take().is_some();
+                    let sender = if received { self.program_id } else { 0 };
+                    Some(vec![
+                        services::header(0x35, 4, 4),
+                        0,
+                        sender as u32,
+                        (sender >> 32) as u32,
+                        u32::from(received),
+                        descriptors[0],
+                        buffers[0],
+                        descriptors[1],
+                        buffers[1],
+                    ])
+                }
                 apt::Request::GetLockHandle { flags } => {
                     let lock = match self.apt_lock {
                         Some(h) => h,
@@ -1767,6 +1839,9 @@ impl Kernel {
             Some(words) => match Message::reply(mem, buffer, &words) {
                 Ok(()) => {
                     cpu.r[0] = RESULT_SUCCESS;
+                    if let Some(args) = restart {
+                        return Outcome::Restart(args);
+                    }
                     // a service signaled an event: waiters may wake
                     if wake {
                         self.wake()
@@ -2552,7 +2627,7 @@ impl Kernel {
             _ => Outcome::Unimplemented(format!("svc {number:#04x} {}", name(number))),
         };
         call.blocked = matches!(self.threads.get(self.current).map(|t| &t.state), Some(ThreadState::Waiting(_)));
-        if matches!(outcome, Outcome::Continue | Outcome::Switch) && !call.blocked {
+        if matches!(outcome, Outcome::Continue | Outcome::Switch | Outcome::Restart(_)) && !call.blocked {
             call.result = Some(cpu.r[0]);
         }
         self.calls.push(call);

@@ -202,6 +202,12 @@ pub(super) struct LiveResources {
 }
 
 impl LiveResources {
+    pub(super) fn invalidate_process(&mut self) {
+        self.textures.clear();
+        self.lighting.clear();
+        self.resident_textures.clear();
+    }
+
     pub(super) fn clear(&mut self) {
         self.textures.clear();
         self.lighting.clear();
