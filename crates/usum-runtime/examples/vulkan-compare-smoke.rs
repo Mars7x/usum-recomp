@@ -15,7 +15,13 @@ fn main() -> Result<(), String> {
         Vertex { position: [0.75, -0.75, -0.5, 1.0], color: [0.0, 1.0, 0.0, 1.0], ..Vertex::default() },
         Vertex { position: [0.0, 0.75, -0.5, 1.0], color: [0.0, 0.0, 1.0, 1.0], ..Vertex::default() },
     ];
-    let target = TargetSnapshot { width: 32, height: 32, color: vec![0; 32 * 32 * 4], depth: vec![1.0; 32 * 32] };
+    let target = TargetSnapshot {
+        width: 32,
+        height: 32,
+        color: vec![0; 32 * 32 * 4],
+        depth: vec![1.0; 32 * 32],
+        stencil: vec![0; 32 * 32],
+    };
     let target_info =
         CaptureTarget { color_address: 0x2000_0000, depth_address: 0, width: 32, height: 32, color_format: 0, depth_format: 0 };
     let snapshot = DrawSnapshot::from_shaded_vertices(&pica, &shaded, &[[0, 1, 2]], target_info, target, [None, None, None])?;

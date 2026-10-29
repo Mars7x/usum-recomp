@@ -46,6 +46,7 @@ pub(super) fn seed(input: &TargetSnapshot, scale: u32) -> TargetSnapshot {
         height: input.height * scale,
         color: expand(&input.color, input.width, input.height, scale, 4),
         depth: expand(&input.depth, input.width, input.height, scale, 1),
+        stencil: expand(&input.stencil, input.width, input.height, scale, 1),
     }
 }
 
@@ -57,16 +58,19 @@ pub(super) fn resolve(mut result: LiveResult, scale: u32) -> LiveResult {
     let width = info.width * scale;
     let mut native_color = Vec::with_capacity((info.width * info.height * 4) as usize);
     let mut native_depth = Vec::with_capacity((info.width * info.height) as usize);
+    let mut native_stencil = Vec::with_capacity((info.width * info.height) as usize);
     for y in 0..info.height {
         for x in 0..info.width {
             let at = ((y * scale + scale / 2) * width + x * scale + scale / 2) as usize;
             native_color.extend_from_slice(&result.color[at * 4..at * 4 + 4]);
+            native_stencil.push(result.stencil[at]);
             if let Some(depth) = &result.depth {
                 native_depth.push(depth[at]);
             }
         }
     }
     result.scaled_color = Some(std::mem::replace(&mut result.color, native_color).into());
+    result.stencil = native_stencil;
     if result.depth.is_some() {
         result.depth = Some(native_depth);
     }
@@ -315,7 +319,10 @@ mod tests {
             )
             .unwrap();
         let (color, depth) = renderer.read_color_and_depth_target(&gpu).unwrap();
-        let result = resolve(LiveResult { info, color, depth: Some(depth), pending: None, scaled_color: None }, 6);
+        let result = resolve(
+            LiveResult { info, color, depth: Some(depth), stencil: vec![0; 1536 * 3072], pending: None, scaled_color: None },
+            6,
+        );
         let native = read_native_result(renderer.begin_batch(&gpu), info, 6).unwrap();
         assert_eq!(native.color, result.color);
         assert_eq!(native.depth, result.depth);
@@ -327,7 +334,13 @@ mod tests {
             depth_detail: true,
             info,
             gpu,
-            contents: Some(TargetSnapshot { width: 256, height: 512, color: result.color, depth: result.depth.unwrap() }),
+            contents: Some(TargetSnapshot {
+                width: 256,
+                height: 512,
+                color: result.color,
+                depth: result.depth.unwrap(),
+                stencil: result.stencil,
+            }),
             pending: None,
             scaled_color: None,
         });
@@ -383,7 +396,13 @@ mod tests {
 
     #[test]
     fn expanded_seed_and_guest_resolve_keep_native_memory_dimensions() {
-        let original = TargetSnapshot { width: 2, height: 1, color: vec![1, 2, 3, 4, 5, 6, 7, 8], depth: vec![0.25, 0.75] };
+        let original = TargetSnapshot {
+            width: 2,
+            height: 1,
+            color: vec![1, 2, 3, 4, 5, 6, 7, 8],
+            depth: vec![0.25, 0.75],
+            stencil: vec![0x91, 0xa5],
+        };
         let expanded = seed(&original, 6);
         assert_eq!((expanded.width, expanded.height), (12, 6));
         let result = resolve(
@@ -391,6 +410,7 @@ mod tests {
                 info: CaptureTarget { color_address: 0, depth_address: 1, width: 2, height: 1, color_format: 0, depth_format: 3 },
                 color: expanded.color,
                 depth: Some(expanded.depth),
+                stencil: expanded.stencil,
                 pending: None,
                 scaled_color: None,
             },
@@ -398,6 +418,7 @@ mod tests {
         );
         assert_eq!(result.color, original.color);
         assert_eq!(result.depth.unwrap(), original.depth);
+        assert_eq!(result.stencil, original.stencil);
         assert_eq!(result.scaled_color.unwrap().len(), 12 * 6 * 4);
     }
     #[test]

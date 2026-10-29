@@ -1,4 +1,4 @@
-//! Preserve full-resolution depth across framebuffer alias changes.
+//! Preserve full-resolution depth and stencil across framebuffer alias changes.
 use super::*;
 
 impl Renderer {
@@ -11,7 +11,7 @@ impl Renderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth32Float,
+            format: DEPTH_FORMAT,
             usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
@@ -20,7 +20,7 @@ impl Renderer {
             texture,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::DepthOnly,
+            aspect: wgpu::TextureAspect::All,
         };
         encoder.copy_texture_to_texture(image(&source.depth), image(&texture), extent);
         self.queue.submit([encoder.finish()]);
@@ -39,7 +39,7 @@ impl RasterBatch<'_> {
             texture,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::DepthOnly,
+            aspect: wgpu::TextureAspect::All,
         };
         encoder.copy_texture_to_texture(
             image(&snapshot.texture),

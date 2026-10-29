@@ -20,6 +20,7 @@ pub struct TargetSnapshot {
     pub height: u32,
     pub color: Vec<u8>,
     pub depth: Vec<f32>,
+    pub stencil: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -103,6 +104,7 @@ pub struct Comparison {
     pub different_depth_values: usize,
     pub maximum_depth_delta: u32,
     pub maximum_depth_at: [u32; 2],
+    pub different_stencil_values: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -318,6 +320,11 @@ impl DrawSnapshot {
     }
 
     fn render_target(&self, renderer: &Renderer) -> Result<(Vec<u8>, Vec<f32>), String> {
+        let read = self.render_target_full(renderer)?;
+        Ok((read.color, read.depth))
+    }
+
+    fn render_target_full(&self, renderer: &Renderer) -> Result<usum_render::ColorDepthReadback, String> {
         let target = renderer.create_color_target_from_snapshot(
             self.target.width,
             self.target.height,
@@ -343,14 +350,15 @@ impl DrawSnapshot {
             texture2: textures[2].as_ref(),
             lighting: lighting.as_ref(),
         };
+        let mut batch = renderer.begin_batch(&target);
+        batch.seed_stencil(&self.target.stencil, 1)?;
         if let Some(vertex) = &self.gpu_vertex {
-            let mut batch = renderer.begin_batch(&target);
             batch.draw_pica_vertices(vertex.draw(), self.state.viewport, self.state.raster, inputs)?;
-            batch.finish()?;
         } else {
-            renderer.draw_vertices_with_inputs(&target, &self.vertices, self.state.viewport, self.state.raster, inputs)?;
+            batch.draw_with_inputs(&self.vertices, self.state.viewport, self.state.raster, inputs)?;
         }
-        renderer.read_color_and_depth_target(&target)
+        let ticket = batch.submit_readback()?;
+        Ok(ticket.read()?.clone())
     }
 
     fn record_live(
@@ -417,15 +425,19 @@ impl DrawSnapshot {
             }
         }
         write("vertices.f32le", &vertices)?;
-        let (actual, depth) = self.render_target(renderer)?;
+        let read = self.render_target_full(renderer)?;
+        let (actual, depth) = (read.color, read.depth);
         let depth_bytes = |values: &[f32]| values.iter().flat_map(|value| value.to_le_bytes()).collect::<Vec<_>>();
         write("before.rgba", &self.target.color)?;
         write("before-depth.f32le", &depth_bytes(&self.target.depth))?;
+        write("before-stencil.u8", &self.target.stencil)?;
         write("vulkan.rgba", &actual)?;
         write("vulkan-depth.f32le", &depth_bytes(&depth))?;
+        write("vulkan-stencil.u8", &read.stencil)?;
         if let Some(expected) = &self.software_result {
             write("software.rgba", &expected.color)?;
             write("software-depth.f32le", &depth_bytes(&expected.depth))?;
+            write("software-stencil.u8", &expected.stencil)?;
         }
         for (unit, texture) in self.textures.iter().enumerate() {
             if let Some(texture) = texture {
@@ -445,7 +457,8 @@ impl DrawSnapshot {
 
     pub fn compare(&self, renderer: &Renderer) -> Result<Comparison, String> {
         let expected = self.software_result.as_ref().ok_or("draw snapshot has no software result")?;
-        let (actual, actual_depth) = self.render_target(renderer)?;
+        let read = self.render_target_full(renderer)?;
+        let (actual, actual_depth) = (read.color, read.depth);
         if actual.len() != expected.color.len() {
             return Err("Vulkan and software framebuffer sizes differ".into());
         }
@@ -483,6 +496,10 @@ impl DrawSnapshot {
                 maximum_depth_at = [index as u32 % self.target.width, index as u32 / self.target.width];
             }
         }
+        if read.stencil.len() != expected.stencil.len() {
+            return Err("Vulkan and software stencil-buffer sizes differ".into());
+        }
+        let different_stencil_values = read.stencil.iter().zip(&expected.stencil).filter(|(a, b)| a != b).count();
         Ok(Comparison {
             pixels: actual.len() / 4,
             different_pixels,
@@ -494,6 +511,7 @@ impl DrawSnapshot {
             different_depth_values,
             maximum_depth_delta,
             maximum_depth_at,
+            different_stencil_values,
         })
     }
 }
@@ -520,6 +538,7 @@ fn target_snapshot(pica: &Pica, mem: &Memory, target: CaptureTarget) -> Result<T
     }
 
     let mut depth = vec![1.0; pixels as usize];
+    let mut stencil = vec![0; pixels as usize];
     if depth_address != 0 {
         let depth_bpp = match depth_format {
             0 => 2,
@@ -532,6 +551,11 @@ fn target_snapshot(pica: &Pica, mem: &Memory, target: CaptureTarget) -> Result<T
             .ok_or("depth framebuffer not mapped")?;
         if depth_format == 3 {
             decode_d24s8_target(depth_raw, &mut depth, width);
+            for row in 0..height {
+                for x in 0..width {
+                    stencil[(row * width + x) as usize] = depth_raw[tiled_offset(x, row, width) as usize * 4 + 3];
+                }
+            }
         } else {
             let value_bytes = depth_bpp.min(3) as usize;
             let maximum = if depth_format == 0 { 0xFFFF } else { 0xFF_FFFF } as f32;
@@ -546,7 +570,7 @@ fn target_snapshot(pica: &Pica, mem: &Memory, target: CaptureTarget) -> Result<T
             }
         }
     }
-    Ok(TargetSnapshot { width, height, color, depth })
+    Ok(TargetSnapshot { width, height, color, depth, stencil })
 }
 
 // The common framebuffer formats have fixed four-byte input pixels. Keeping
@@ -724,12 +748,25 @@ fn write_color_result(pica: &Pica, mem: &mut Memory, target: CaptureTarget, colo
     mem.device_write(address, &tiled).map_err(|fault| format!("Vulkan live color buffer: {fault}"))
 }
 
+#[cfg(test)]
 fn write_depth_result(pica: &Pica, mem: &mut Memory, target: CaptureTarget, depth: &[f32]) -> Result<(), String> {
+    write_depth_stencil_result(pica, mem, target, Some(depth), None)
+}
+
+fn write_depth_stencil_result(
+    pica: &Pica,
+    mem: &mut Memory,
+    target: CaptureTarget,
+    depth: Option<&[f32]>,
+    stencil: Option<&[u8]>,
+) -> Result<(), String> {
     if target.depth_address == 0 {
         return Ok(());
     }
     let pixels = target.width.checked_mul(target.height).ok_or("framebuffer is too large")?;
-    if depth.len() != pixels as usize {
+    if depth.is_some_and(|depth| depth.len() != pixels as usize)
+        || stencil.is_some_and(|stencil| stencil.len() != pixels as usize)
+    {
         return Err("Vulkan depth result has the wrong size".into());
     }
     let bytes_per_pixel = match target.depth_format {
@@ -742,17 +779,28 @@ fn write_depth_result(pica: &Pica, mem: &mut Memory, target: CaptureTarget, dept
         .slice(address, pixels.checked_mul(bytes_per_pixel).ok_or("depth framebuffer is too large")?)
         .ok_or("depth framebuffer not mapped")?
         .to_vec();
+    if let Some(depth) = depth {
+        if target.depth_format == 3 {
+            encode_d24s8_target(depth, &mut tiled, target.width);
+        } else {
+            let maximum = if target.depth_format == 0 { 0xFFFF } else { 0xFF_FFFF } as f32;
+            let value_bytes = bytes_per_pixel.min(3) as usize;
+            for row in 0..target.height {
+                for x in 0..target.width {
+                    let source = (row * target.width + x) as usize;
+                    let value = (depth[source].clamp(0.0, 1.0) * maximum) as u32;
+                    let destination = tiled_offset(x, row, target.width) as usize * bytes_per_pixel as usize;
+                    tiled[destination..destination + value_bytes].copy_from_slice(&value.to_le_bytes()[..value_bytes]);
+                }
+            }
+        }
+    }
     if target.depth_format == 3 {
-        encode_d24s8_target(depth, &mut tiled, target.width);
-    } else {
-        let maximum = if target.depth_format == 0 { 0xFFFF } else { 0xFF_FFFF } as f32;
-        let value_bytes = bytes_per_pixel.min(3) as usize;
-        for row in 0..target.height {
-            for x in 0..target.width {
-                let source = (row * target.width + x) as usize;
-                let value = (depth[source].clamp(0.0, 1.0) * maximum) as u32;
-                let destination = tiled_offset(x, row, target.width) as usize * bytes_per_pixel as usize;
-                tiled[destination..destination + value_bytes].copy_from_slice(&value.to_le_bytes()[..value_bytes]);
+        if let Some(stencil) = stencil {
+            for y in 0..target.height {
+                for x in 0..target.width {
+                    tiled[tiled_offset(x, y, target.width) as usize * 4 + 3] = stencil[(y * target.width + x) as usize];
+                }
             }
         }
     }
@@ -817,24 +865,6 @@ fn d24s8_rgba8_texture(pica: &Pica, mem: &Memory, target: CaptureTarget, depth: 
     Ok(decoded.into())
 }
 
-fn d24s8_stencil(pica: &Pica, mem: &Memory, target: CaptureTarget) -> Result<Vec<u8>, String> {
-    if target.depth_format != 3 || target.depth_address == 0 {
-        return Err("depth feedback needs a D24S8 target".into());
-    }
-    let pixels = target.width.checked_mul(target.height).ok_or("depth feedback target is too large")?;
-    let address = pica.pa_to_va(target.depth_address)?;
-    let raw = mem
-        .slice(address, pixels.checked_mul(4).ok_or("depth feedback target is too large")?)
-        .ok_or("depth feedback target is not mapped")?;
-    let mut stencil = Vec::with_capacity(pixels as usize);
-    for row in 0..target.height {
-        for x in 0..target.width {
-            stencil.push(raw[tiled_offset(x, row, target.width) as usize * 4 + 3]);
-        }
-    }
-    Ok(stencil)
-}
-
 fn live_renderer() -> Result<&'static Renderer, String> {
     static RENDERER: std::sync::OnceLock<Result<Renderer, String>> = std::sync::OnceLock::new();
     RENDERER.get_or_init(Renderer::new).as_ref().map_err(Clone::clone)
@@ -891,9 +921,7 @@ pub(crate) fn replay_live(pica: &mut Pica, mem: &mut Memory) -> Result<(usize, u
                         .iter()
                         .find(|target| target.info == info)
                         .ok_or("depth feedback target was not created")?;
-                    let stencil = d24s8_stencil(pica, mem, info)?;
-                    let stencil = scale::expand(&stencil, info.width, info.height, pica.vulkan_resolution_scale, 1);
-                    let gpu = renderer.create_d24s8_feedback_texture(&target.gpu, &stencil, texture.sampler, texture.border)?;
+                    let gpu = renderer.create_d24s8_feedback_texture(&target.gpu, texture.sampler, texture.border)?;
                     feedback_textures.push(LiveFeedbackTexture {
                         address: texture.address,
                         sampler: texture.sampler,
@@ -922,7 +950,14 @@ pub(crate) fn replay_live(pica: &mut Pica, mem: &mut Memory) -> Result<(usize, u
         let readback_started = std::time::Instant::now();
         if deferred::eligible(pica, info) {
             let ticket = Arc::new(renderer.begin_batch(&target.gpu).submit_readback()?);
-            results.push(LiveResult { info, color: Vec::new(), depth: None, pending: Some(ticket), scaled_color: None });
+            results.push(LiveResult {
+                info,
+                color: Vec::new(),
+                depth: None,
+                stencil: Vec::new(),
+                pending: Some(ticket),
+                scaled_color: None,
+            });
             pica.vulkan_live_resources.transfer_times[0] += readback_started.elapsed();
             continue;
         }
@@ -931,17 +966,12 @@ pub(crate) fn replay_live(pica: &mut Pica, mem: &mut Memory) -> Result<(usize, u
             pica.vulkan_live_resources.transfer_times[0] += readback_started.elapsed();
             continue;
         }
-        let (color, depth) = if pica.vulkan_live_depth {
-            let (color, depth) = renderer.read_color_and_depth_target(&target.gpu)?;
-            (color, Some(depth))
-        } else {
-            (renderer.read_color_target(&target.gpu)?, None)
-        };
+        let mut result = read_native_result(renderer.begin_batch(&target.gpu), info, 1)?;
+        if !pica.vulkan_live_depth {
+            result.depth = None;
+        }
         pica.vulkan_live_resources.transfer_times[0] += readback_started.elapsed();
-        results.push(scale::resolve(
-            LiveResult { info, color, depth, pending: None, scaled_color: None },
-            pica.vulkan_resolution_scale,
-        ));
+        results.push(scale::resolve(result, pica.vulkan_resolution_scale));
     }
     let writeback_started = std::time::Instant::now();
     // A target read back after the final segment may have been drawn before
@@ -956,17 +986,20 @@ pub(crate) fn replay_live(pica: &mut Pica, mem: &mut Memory) -> Result<(usize, u
         if let Some(target) = pica.vulkan_live_target_cache.iter_mut().find(|t| t.info == result.info) {
             target.scaled_color = result.scaled_color;
         }
-        if let Some(depth) = result.depth.as_deref() {
-            write_depth_result(pica, mem, result.info, depth)?;
-        }
+        write_depth_stencil_result(pica, mem, result.info, result.depth.as_deref(), Some(&result.stencil))?;
         if let Some(depth) = result.depth {
             let target = pica
                 .vulkan_live_target_cache
                 .iter_mut()
                 .find(|target| target.info == result.info)
                 .ok_or("live target disappeared after readback")?;
-            target.contents =
-                Some(TargetSnapshot { width: result.info.width, height: result.info.height, color: result.color, depth });
+            target.contents = Some(TargetSnapshot {
+                width: result.info.width,
+                height: result.info.height,
+                color: result.color,
+                depth,
+                stencil: result.stencil,
+            });
         }
     }
     pica.vulkan_live_resources.transfer_times[1] += writeback_started.elapsed();
@@ -977,6 +1010,7 @@ struct LiveResult {
     info: CaptureTarget,
     color: Vec<u8>,
     depth: Option<Vec<f32>>,
+    stencil: Vec<u8>,
     pending: Option<Arc<usum_render::PendingReadback>>,
     scaled_color: Option<Arc<[u8]>>,
 }
@@ -990,7 +1024,14 @@ fn native_readback(pica: &Pica) -> bool {
 fn read_native_result(batch: RasterBatch<'_>, info: CaptureTarget, scale: u32) -> Result<LiveResult, String> {
     let ticket = batch.submit_resolved_readback(scale)?;
     let read = ticket.read()?;
-    Ok(LiveResult { info, color: read.color.clone(), depth: Some(read.depth.clone()), pending: None, scaled_color: None })
+    Ok(LiveResult {
+        info,
+        color: read.color.clone(),
+        depth: Some(read.depth.clone()),
+        stencil: read.stencil.clone(),
+        pending: None,
+        scaled_color: None,
+    })
 }
 
 fn depth_texture_matches(pica: &Pica, texture: &TextureSnapshot, target: CaptureTarget) -> Result<bool, String> {
@@ -1077,7 +1118,10 @@ fn render_live_segment(
                         && other.info.depth_format == target_info.depth_format
                         && other.info.width == target_info.width
                         && other.info.height == target_info.height
-                        && other.contents.as_ref().is_some_and(|contents| contents.depth == initial.depth)
+                        && other
+                            .contents
+                            .as_ref()
+                            .is_some_and(|contents| contents.depth == initial.depth && contents.stencil == initial.stencil)
                 })
                 .max_by_key(|other| other.last_draw)
                 .map(|other| renderer.snapshot_depth(&other.gpu))
@@ -1093,7 +1137,8 @@ fn render_live_segment(
         cached.pending = None;
         cached.scaled_color = None;
         cached.last_draw = draws.last().expect("nonempty target group").draw_number;
-        cached.depth_detail = retained_detail || draws.iter().any(|draw| draw.state.raster.depth.write);
+        cached.depth_detail =
+            retained_detail || draws.iter().any(|draw| draw.state.raster.depth.write || draw.state.raster.stencil.writes());
         let target = Arc::clone(&cached.gpu);
         if !initialized {
             if resident_matches {
@@ -1120,6 +1165,8 @@ fn render_live_segment(
         };
         if let Some(depth) = saved_depth {
             batch.restore_depth(&depth)?;
+        } else if !initialized && !resident_matches {
+            batch.seed_stencil(&initial.stencil, pica.vulkan_resolution_scale)?;
         }
         for draw in &draws {
             draw.record_live(renderer, &mut batch, &mut pica.vulkan_live_resources, feedback)?;
@@ -1132,6 +1179,7 @@ fn render_live_segment(
                     info: target_info,
                     color: Vec::new(),
                     depth: None,
+                    stencil: Vec::new(),
                     pending: Some(ticket),
                     scaled_color: None,
                 });
@@ -1147,18 +1195,12 @@ fn render_live_segment(
                 latest.push(target_info);
                 continue;
             }
-            let (color, depth) = if pica.vulkan_live_depth {
-                let (color, depth) = batch.finish_and_read_color_and_depth()?;
-                (color, Some(depth))
-            } else {
-                batch.finish()?;
-                (renderer.read_color_target(&target)?, None)
-            };
+            let mut result = read_native_result(batch, target_info, 1)?;
+            if !pica.vulkan_live_depth {
+                result.depth = None;
+            }
             pica.vulkan_live_resources.transfer_times[0] += readback_started.elapsed();
-            results.push(scale::resolve(
-                LiveResult { info: target_info, color, depth, pending: None, scaled_color: None },
-                pica.vulkan_resolution_scale,
-            ));
+            results.push(scale::resolve(result, pica.vulkan_resolution_scale));
         } else {
             batch.submit()?;
         }
@@ -1625,7 +1667,7 @@ mod tests {
 
     #[test]
     fn resident_reuse_requires_exact_color_depth_and_dimensions() {
-        let resident = TargetSnapshot { width: 2, height: 1, color: vec![19; 8], depth: vec![0.25, 0.75] };
+        let resident = TargetSnapshot { width: 2, height: 1, color: vec![19; 8], depth: vec![0.25, 0.75], stencil: vec![0; 2] };
         assert!(resident_contents_match(Some(&resident), &resident));
         assert!(!resident_contents_match(None, &resident));
         let mut guest = resident.clone();
@@ -1705,7 +1747,13 @@ mod tests {
             color_format: 0,
             depth_format: 0,
         };
-        let target = TargetSnapshot { width: 32, height: 32, color: vec![0; 32 * 32 * 4], depth: vec![1.0; 32 * 32] };
+        let target = TargetSnapshot {
+            width: 32,
+            height: 32,
+            color: vec![0; 32 * 32 * 4],
+            depth: vec![1.0; 32 * 32],
+            stencil: vec![0; 32 * 32],
+        };
         let snapshot =
             DrawSnapshot::from_shaded_vertices(&pica, &vertices, &[[2, 0, 1]], target_info, target.clone(), [None, None, None])
                 .unwrap();
@@ -1795,7 +1843,13 @@ mod tests {
             color_format: 0,
             depth_format: 0,
         };
-        let target = TargetSnapshot { width: 32, height: 32, color: vec![0; 32 * 32 * 4], depth: vec![1.0; 32 * 32] };
+        let target = TargetSnapshot {
+            width: 32,
+            height: 32,
+            color: vec![0; 32 * 32 * 4],
+            depth: vec![1.0; 32 * 32],
+            stencil: vec![0; 32 * 32],
+        };
         let vertices = [
             Vertex { position: [-1.0, -1.0, 0.0, 1.0], ..Vertex::default() },
             Vertex { position: [0.0, 1.0, 0.0, 1.0], ..Vertex::default() },

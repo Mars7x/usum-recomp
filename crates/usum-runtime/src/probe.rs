@@ -350,7 +350,7 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
                         }
                         match snapshot.compare(&renderer) {
                             Ok(comparison) => println!(
-                                "vulkan draw    {} (guest #{}, {} triangles, lighting {}): {}/{} pixels differ, {} over 1; maximum delta {} at {:?}, Vulkan {:?}, software {:?}; depth {} differ, maximum {} at {:?}",
+                                "vulkan draw    {} (guest #{}, {} triangles, lighting {}): {}/{} pixels differ, {} over 1; maximum delta {} at {:?}, Vulkan {:?}, software {:?}; depth {} differ, maximum {} at {:?}; stencil {} differ",
                                 index + 1,
                                 snapshot.draw_number,
                                 snapshot.vertices.len() / 3,
@@ -364,7 +364,8 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
                                 comparison.expected_at_maximum,
                                 comparison.different_depth_values,
                                 comparison.maximum_depth_delta,
-                                comparison.maximum_depth_at
+                                comparison.maximum_depth_at,
+                                comparison.different_stencil_values
                             ),
                             Err(error) => println!("vulkan draw    {}: unsupported: {error}", index + 1),
                         }

@@ -2848,3 +2848,32 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   software/Vulkan raster paths omit stencil execution and preserve old bytes;
   proper stencil handling is the next rendering investigation. Temporary trace
   instrumentation and game-derived payloads are excluded from Git.
+
+### R-094 2026-10-29 — Execute stencil operations and restore overworld outlines
+
+- The overworld replaces stencil bytes with model IDs, which later passes sample
+  as the red channel of D24S8 reinterpreted as RGBA8. Both raster backends previously
+  omitted stencil operations and retained old guest bytes. Implement masked
+  comparisons, write permissions, all eight operations and the correct failure /
+  depth-failure / pass selection. Alpha rejection suppresses stencil changes.
+- Vulkan uses float depth plus stencil, dynamic reference values and pipeline
+  keys that exclude those references. Seed stencil from native snapshots, keep
+  uniform clears on the GPU, preserve both aspects across aliases and immutable
+  snapshots, and resolve stencil alongside native color/depth. Feedback samples
+  the actual rendered stencil directly, removing CPU expansion/upload of old
+  stencil. Deferred planes now freeze rendered stencil rather than old guest data.
+- Restore stencil when replaying isolated diagnostic draws and include stencil
+  in comparisons and private diagnostic exports. Native snapshots and residency
+  comparisons include stencil. Adapters without the required float-depth/stencil
+  format report an error and retain the software rendering fallback.
+- CPU and hardware tests cover operations, masks, saturation/wrap, depth and
+  alpha failures, exact odd-sized 1/2/3/6/8× seeds/readbacks, immutable snapshots,
+  dynamic-reference pipeline reuse, deferred guest writes and framebuffer aliases.
+  All 80 enabled runtime tests, 16 enabled renderer tests, nine runtime hardware
+  tests, five renderer hardware tests and strict Clippy pass.
+- The recorded 6× overworld now visibly outlines the player, with zero software
+  fallbacks; battle models remain solid. Scaling of outline edges is still too
+  coarse and remains under investigation, including depth/stencil reads across
+  command lists. Outlines remain enabled by the game's default rendering state;
+  the requested future outline-disable setting is not implemented in this change.
+  The 200-FPS target remains unmet. Game captures stay private.

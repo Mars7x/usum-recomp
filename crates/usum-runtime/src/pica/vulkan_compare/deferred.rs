@@ -29,7 +29,6 @@ pub(super) struct DeferredTarget {
     info: CaptureTarget,
     stats: Arc<Stats>,
     ticket: Arc<usum_render::PendingReadback>,
-    stencil: Arc<[u8]>,
     /// Identity-only seed for an already resident target. Empty pixel arrays
     /// deliberately fail upload validation if the residency proof is lost.
     seed: Arc<TargetSnapshot>,
@@ -66,7 +65,7 @@ impl DeferredTarget {
             for x in 0..self.info.width {
                 let i = (row * self.info.width + x) as usize;
                 let at = tiled_offset(x, row, self.info.width) as usize * 4;
-                depth[at + 3] = self.stencil[i];
+                depth[at + 3] = read.stencil[i];
             }
         }
         encode_d24s8_target(&read.depth, &mut depth, self.info.width);
@@ -115,30 +114,23 @@ pub(super) fn matches(pending: Option<&Arc<DeferredTarget>>, seed: &Arc<TargetSn
     pending.is_some_and(|p| Arc::ptr_eq(&p.seed, seed))
 }
 
-pub(super) fn stencil(pica: &Pica, mem: &Memory, info: CaptureTarget) -> Result<Arc<[u8]>, String> {
-    let address = pica.pa_to_va(info.depth_address)?;
-    let len = info.width as usize * info.height as usize * 4;
-    if let Some(plane) = mem.deferred_source(address, len).and_then(|s| s.as_any().downcast_ref::<Plane>()) {
-        if plane.depth && plane.target.info == info {
-            return Ok(Arc::clone(&plane.target.stencil));
-        }
-    }
-    Ok(d24s8_stencil(pica, mem, info)?.into())
-}
-
 pub(super) fn install(
     pica: &mut Pica,
     mem: &mut Memory,
     info: CaptureTarget,
     ticket: Arc<usum_render::PendingReadback>,
 ) -> Result<(), String> {
-    let stencil = stencil(pica, mem, info)?;
     let pending = Arc::new(DeferredTarget {
         info,
         stats: Arc::clone(&pica.vulkan_live_resources.deferred),
         ticket,
-        stencil,
-        seed: Arc::new(TargetSnapshot { width: info.width, height: info.height, color: Vec::new(), depth: Vec::new() }),
+        seed: Arc::new(TargetSnapshot {
+            width: info.width,
+            height: info.height,
+            color: Vec::new(),
+            depth: Vec::new(),
+            stencil: Vec::new(),
+        }),
         encoded: OnceLock::new(),
     });
     let color = pica.pa_to_va(info.color_address)?;
@@ -214,7 +206,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires a Vulkan hardware adapter"]
-    fn frozen_guest_planes_preserve_stencil_and_residency_requires_both_planes() {
+    fn frozen_guest_planes_keep_rendered_stencil_and_residency_requires_both_planes() {
         let renderer = Renderer::new().unwrap();
         let mut pica = Pica::default();
         pica.enable_vulkan_acceleration();
@@ -233,7 +225,9 @@ mod tests {
         let color: Vec<_> = (0..256).map(|n| (n * 73) as u8).collect();
         let depth: Vec<_> = (0..64).map(|n| n as f32 / 63.0).collect();
         renderer.upload_target(&gpu, &color, &depth).unwrap();
-        let ticket = Arc::new(renderer.begin_batch(&gpu).submit_readback().unwrap());
+        let mut batch = renderer.begin_batch(&gpu);
+        batch.seed_stencil(&[0x91; 64], 1).unwrap();
+        let ticket = Arc::new(batch.submit_readback().unwrap());
         pica.vulkan_live_target_cache.push(LiveTarget {
             last_draw: 0,
             depth_detail: false,
@@ -249,8 +243,11 @@ mod tests {
         let snapshot = mem.clone();
         // A newer GPU target must not leak into the frozen guest snapshot.
         renderer.upload_target(&gpu, &[9; 256], &[0.75; 64]).unwrap();
+        let mut batch = renderer.begin_batch(&gpu);
+        batch.seed_stencil(&[0xfe; 64], 1).unwrap();
+        batch.submit().unwrap();
         let mut expected_color = vec![0; 256];
-        let mut expected_depth = vec![0xA5; 256];
+        let mut expected_depth = vec![0x91; 256];
         encode_rgba8_target(&color, &mut expected_color, 8);
         encode_d24s8_target(&depth, &mut expected_depth, 8);
         assert_eq!(mem.read_range(pica.linear_base, 256).unwrap(), expected_color);

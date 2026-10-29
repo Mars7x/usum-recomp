@@ -2,6 +2,9 @@ mod depth;
 mod display;
 mod readback;
 mod seed;
+mod stencil;
+pub use stencil::{StencilOperation, StencilState};
+const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32FloatStencil8;
 pub use display::DisplayCopy;
 pub use readback::{ColorDepthReadback, PendingReadback};
 use std::collections::HashMap;
@@ -273,7 +276,7 @@ impl Default for TevState {
     }
 }
 
-/// Persistent RGBA8 and depth host-GPU targets. Multiple PICA draws can
+/// Persistent RGBA8, float depth and stencil host-GPU targets. Multiple PICA draws can
 /// accumulate in them before a comparison readback or eventual presentation.
 #[derive(Debug)]
 pub struct ColorTarget {
@@ -281,13 +284,15 @@ pub struct ColorTarget {
     view: wgpu::TextureView,
     depth: wgpu::Texture,
     depth_view: wgpu::TextureView,
+    depth_sample: wgpu::TextureView,
+    stencil_sample: wgpu::TextureView,
     color_readback: wgpu::Buffer,
     depth_readback: wgpu::Buffer,
     width: u32,
     height: u32,
 }
 
-/// An immutable GPU-only depth snapshot, independent of a mutable framebuffer.
+/// An immutable GPU-only depth/stencil snapshot, independent of a mutable framebuffer.
 pub struct DepthSnapshot {
     texture: wgpu::Texture,
     width: u32,
@@ -634,6 +639,7 @@ struct PipelineKey {
     vertex_mapping: [u32; 10],
     cull: CullMode,
     depth: DepthState,
+    stencil: StencilState,
     color_mask: ColorMask,
     blend: Option<BlendKey>,
 }
@@ -664,6 +670,7 @@ pub(super) struct RasterPipelines {
 pub struct RasterState {
     pub cull: CullMode,
     pub depth: DepthState,
+    pub stencil: StencilState,
     /// Integer guest depth range; zero keeps native float precision.
     pub depth_max: u32,
     /// PICA's programmable mapping from signed clip Z/W to stored depth.
@@ -685,6 +692,9 @@ pub struct PicaRasterRegisters {
     pub depth_color_mask: u32,
     pub color_write_permissions: u32,
     pub depth_write_permissions: u32,
+    pub stencil_test: u32,
+    pub stencil_operations: u32,
+    pub depth_format: u32,
     pub color_operation: u32,
     pub blend_functions: u32,
     pub blend_constant: u32,
@@ -748,6 +758,9 @@ impl PicaRasterRegisters {
             depth_color_mask: register(0x107)?,
             color_write_permissions: register(0x113)?,
             depth_write_permissions: register(0x115)?,
+            stencil_test: register(0x105)?,
+            stencil_operations: register(0x106)?,
+            depth_format: register(0x116)?,
             color_operation: register(0x100)?,
             blend_functions: register(0x101)?,
             blend_constant: register(0x103)?,
@@ -761,6 +774,12 @@ impl RasterState {
         Self {
             cull: CullMode::from_pica(registers.cull_mode),
             depth: DepthState::from_pica(registers.depth_color_mask, registers.depth_write_permissions),
+            stencil: StencilState::from_pica(
+                registers.stencil_test,
+                registers.stencil_operations,
+                registers.depth_write_permissions,
+                registers.depth_format,
+            ),
             depth_max: 0,
             depth_scale: -1.0,
             depth_offset: 0.0,
@@ -778,6 +797,7 @@ impl Default for RasterState {
         Self {
             cull: CullMode::None,
             depth: DepthState::less_equal_write(),
+            stencil: StencilState::default(),
             depth_max: 0,
             depth_scale: -1.0,
             depth_offset: 0.0,
@@ -939,7 +959,7 @@ impl Renderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth32Float,
+            format: DEPTH_FORMAT,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::COPY_SRC
                 | wgpu::TextureUsages::COPY_DST
@@ -947,6 +967,10 @@ impl Renderer {
             view_formats: &[],
         });
         let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth_sample =
+            depth.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() });
+        let stencil_sample =
+            depth.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::StencilOnly, ..Default::default() });
         let row_bytes = width.checked_mul(4).ok_or("render target row is too large")?;
         let padded_row = row_bytes.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let readback_size = u64::from(padded_row).checked_mul(u64::from(height)).ok_or("render target is too large")?;
@@ -975,7 +999,7 @@ impl Renderer {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &depth_view,
                     depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
-                    stencil_ops: None,
+                    stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0), store: wgpu::StoreOp::Store }),
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -985,47 +1009,33 @@ impl Renderer {
         let submitted = self.queue.submit([encoder.finish()]);
         self.wait(submitted)?;
         check_errors(errors, "create color target")?;
-        Ok(ColorTarget { texture, view, depth, depth_view, color_readback, depth_readback, width, height })
+        Ok(ColorTarget {
+            texture,
+            view,
+            depth,
+            depth_view,
+            depth_sample,
+            stencil_sample,
+            color_readback,
+            depth_readback,
+            width,
+            height,
+        })
     }
 
-    /// Converts a rendered D24 depth plane plus its preserved guest stencil
-    /// bytes into PICA texture-format RGBA8 entirely on the GPU. Output rows
+    /// Converts rendered D24 depth and stencil into PICA texture-format RGBA8
+    /// entirely on the GPU. Output rows
     /// are flipped so direct texture coordinates retain PICA's bottom origin.
     /// Conversion is queued without a CPU wait; subsequent queue submissions
     /// observe the result in order, and readback supplies the completion wait.
     pub fn create_d24s8_feedback_texture(
         &self,
         target: &ColorTarget,
-        stencil: &[u8],
         sampler_state: SamplerState,
         border: [u8; 4],
     ) -> Result<SampledTexture, String> {
         let (width, height) = target.dimensions();
-        let pixels = usize::try_from(width)
-            .ok()
-            .and_then(|width| usize::try_from(height).ok().and_then(|height| width.checked_mul(height)))
-            .ok_or("depth feedback target is too large")?;
-        if stencil.len() != pixels {
-            return Err(format!("depth feedback needs {pixels} stencil bytes, got {}", stencil.len()));
-        }
         let extent = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
-        let stencil_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("PICA depth feedback stencil"),
-            size: extent,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        self.queue.write_texture(
-            stencil_texture.as_image_copy(),
-            stencil,
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(width), rows_per_image: Some(height) },
-            extent,
-        );
-        let stencil_view = stencil_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("PICA D24S8-as-RGBA8 feedback"),
             size: extent,
@@ -1041,8 +1051,8 @@ impl Renderer {
             label: Some("PICA depth feedback conversion"),
             layout: &self.raster_pipelines.depth_feedback_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&target.depth_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&stencil_view) },
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&target.depth_sample) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&target.stencil_sample) },
             ],
         });
         let errors = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -1131,7 +1141,7 @@ impl Renderer {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &target.depth_view,
                     depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
-                    stencil_ops: None,
+                    stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -1370,6 +1380,7 @@ impl Renderer {
             vertex_mapping,
             cull: state.cull,
             depth: state.depth,
+            stencil: state.stencil.key(),
             color_mask: state.color_mask,
             blend: state.blend.map(BlendState::key),
         };
@@ -1408,13 +1419,14 @@ impl Renderer {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &target.depth_view,
                     depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
-                    stencil_ops: None,
+                    stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
             pass.set_pipeline(pipeline);
+            pass.set_stencil_reference(u32::from(state.stencil.reference));
             if let Some([r, g, b, a]) = blend_constant {
                 pass.set_blend_constant(wgpu::Color { r: r.into(), g: g.into(), b: b.into(), a: a.into() });
             }
@@ -1515,7 +1527,7 @@ impl Renderer {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &target.depth_view,
                     depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
-                    stencil_ops: None,
+                    stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -1927,7 +1939,7 @@ pub(super) fn create_pipelines(device: &wgpu::Device, queue: &wgpu::Queue) -> Ra
         },
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: Some(wgpu::DepthStencilState {
-            format: wgpu::TextureFormat::Depth32Float,
+            format: DEPTH_FORMAT,
             depth_write_enabled: Some(true),
             depth_compare: Some(wgpu::CompareFunction::Always),
             stencil: wgpu::StencilState::default(),
@@ -1964,7 +1976,7 @@ pub(super) fn create_pipelines(device: &wgpu::Device, queue: &wgpu::Queue) -> Ra
                 binding: 1,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    sample_type: wgpu::TextureSampleType::Uint,
                     view_dimension: wgpu::TextureViewDimension::D2,
                     multisampled: false,
                 },
@@ -2105,10 +2117,10 @@ fn create_pipeline(
         },
         primitive: wgpu::PrimitiveState { cull_mode: key.cull.wgpu(), ..Default::default() },
         depth_stencil: Some(wgpu::DepthStencilState {
-            format: wgpu::TextureFormat::Depth32Float,
+            format: DEPTH_FORMAT,
             depth_write_enabled: Some(key.depth.write),
             depth_compare: Some(key.depth.compare.wgpu()),
-            stencil: wgpu::StencilState::default(),
+            stencil: key.stencil.wgpu(),
             bias: wgpu::DepthBiasState::default(),
         }),
         multisample: wgpu::MultisampleState::default(),
@@ -2319,7 +2331,7 @@ fn fragment(@builtin(position) position: vec4<f32>) -> @builtin(frag_depth) f32 
 
 const DEPTH_FEEDBACK_SHADER: &str = r#"
 @group(0) @binding(0) var rendered_depth: texture_depth_2d;
-@group(0) @binding(1) var guest_stencil: texture_2d<f32>;
+@group(0) @binding(1) var guest_stencil: texture_2d<u32>;
 
 @vertex
 fn vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
@@ -2341,7 +2353,7 @@ fn fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let stencil = textureLoad(guest_stencil, at, 0).r;
     let value = u32(clamp(depth, 0.0, 1.0) * 16777215.0);
     return vec4<f32>(
-        stencil,
+        f32(stencil) / 255.0,
         f32((value >> 16u) & 255u) / 255.0,
         f32((value >> 8u) & 255u) / 255.0,
         f32(value & 255u) / 255.0,
@@ -2941,6 +2953,7 @@ mod tests {
             blend_functions: 6 << 16 | 7 << 20 | 1 << 24,
             blend_constant: 0x4433_2211,
             alpha_test: 1 | 6 << 4 | 0x80 << 8,
+            ..Default::default()
         };
         let state = RasterState::from_pica(registers);
         assert_eq!(state.cull, CullMode::Back);

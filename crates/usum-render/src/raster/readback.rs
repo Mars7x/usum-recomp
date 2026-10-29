@@ -18,6 +18,8 @@ impl ResolvePipeline {
 @group(0) @binding(2) var<storage, read_write> colors: array<u32>;
 @group(0) @binding(3) var<storage, read_write> depths: array<f32>;
 @group(0) @binding(4) var<uniform> params: vec4<u32>;
+@group(0) @binding(5) var stencil: texture_2d<u32>;
+@group(0) @binding(6) var<storage, read_write> stencils: array<u32>;
 @compute @workgroup_size(8, 8)
 fn resolve(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= params.x || id.y >= params.y { return; }
@@ -25,6 +27,7 @@ fn resolve(@builtin(global_invocation_id) id: vec3<u32>) {
     let at = id.y * params.w + id.x;
     colors[at] = pack4x8unorm(textureLoad(color, source, 0));
     depths[at] = textureLoad(depth, source, 0);
+    stencils[at] = textureLoad(stencil, source, 0).r;
 }
 "#
                 .into(),
@@ -43,7 +46,7 @@ fn resolve(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 }
 
-/// A frozen color/depth snapshot queued after a raster batch. No CPU wait or
+/// A frozen color/depth/stencil snapshot queued after a raster batch. No CPU wait or
 /// mapping occurs until `read` is called. The target may be reused immediately;
 /// every ticket owns separate staging buffers and caches its result once.
 #[derive(Debug)]
@@ -52,16 +55,20 @@ pub struct PendingReadback {
     submission: wgpu::SubmissionIndex,
     color: wgpu::Buffer,
     depth: wgpu::Buffer,
+    stencil: wgpu::Buffer,
+    stencil_padded_row: u32,
+    stencil_stride: u32,
     width: u32,
     height: u32,
     padded_row: u32,
     result: OnceLock<Result<ColorDepthReadback, String>>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ColorDepthReadback {
     pub color: Vec<u8>,
     pub depth: Vec<f32>,
+    pub stencil: Vec<u8>,
 }
 
 impl PendingReadback {
@@ -76,35 +83,47 @@ impl PendingReadback {
     fn materialize(&self) -> Result<ColorDepthReadback, String> {
         let color_slice = self.color.slice(..);
         let depth_slice = self.depth.slice(..);
+        let stencil_slice = self.stencil.slice(..);
         let (color_send, color_receive) = std::sync::mpsc::sync_channel(1);
         let (depth_send, depth_receive) = std::sync::mpsc::sync_channel(1);
+        let (stencil_send, stencil_receive) = std::sync::mpsc::sync_channel(1);
         color_slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = color_send.send(r);
         });
         depth_slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = depth_send.send(r);
         });
-        // Always unmap both buffers, including on any polling/mapping failure.
+        stencil_slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = stencil_send.send(r);
+        });
+        // Always unmap all buffers, including on any polling/mapping failure.
         let result = (|| {
             self.device
                 .poll(wgpu::PollType::Wait { submission_index: Some(self.submission.clone()), timeout: None })
                 .map_err(|e| e.to_string())?;
             color_receive.recv().map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
             depth_receive.recv().map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+            stencil_receive.recv().map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
             let color_mapped = color_slice.get_mapped_range().map_err(|e| e.to_string())?;
             let depth_mapped = depth_slice.get_mapped_range().map_err(|e| e.to_string())?;
+            let stencil_mapped = stencil_slice.get_mapped_range().map_err(|e| e.to_string())?;
             let row_bytes = self.width as usize * 4;
             let mut color = vec![0; row_bytes * self.height as usize];
             let mut depth = Vec::with_capacity(self.width as usize * self.height as usize);
+            let mut stencil = Vec::with_capacity(self.width as usize * self.height as usize);
             for row in 0..self.height as usize {
                 let range = row * self.padded_row as usize..row * self.padded_row as usize + row_bytes;
                 color[row * row_bytes..][..row_bytes].copy_from_slice(&color_mapped[range.clone()]);
                 depth.extend(depth_mapped[range].as_chunks::<4>().0.iter().map(|b| f32::from_ne_bytes(*b)));
+                for x in 0..self.width as usize {
+                    stencil.push(stencil_mapped[row * self.stencil_padded_row as usize + x * self.stencil_stride as usize]);
+                }
             }
-            Ok(ColorDepthReadback { color, depth })
+            Ok(ColorDepthReadback { color, depth, stencil })
         })();
         self.color.unmap();
         self.depth.unmap();
+        self.stencil.unmap();
         result
     }
 }
@@ -135,9 +154,11 @@ impl RasterBatch<'_> {
         let output_usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC;
         let color_output = buffer("native color resolve", output_usage);
         let depth_output = buffer("native depth resolve", output_usage);
+        let stencil_output = buffer("native stencil resolve", output_usage);
         let stage_usage = wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ;
         let color = buffer("frozen native color", stage_usage);
         let depth = buffer("frozen native depth", stage_usage);
+        let stencil = buffer("frozen native stencil", stage_usage);
         use wgpu::util::DeviceExt;
         let parameters: Vec<u8> = [width, height, scale, padded_row / 4].into_iter().flat_map(u32::to_ne_bytes).collect();
         let parameters = self.renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -151,10 +172,12 @@ impl RasterBatch<'_> {
             layout: &resolve.layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.target.view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&self.target.depth_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&self.target.depth_sample) },
                 wgpu::BindGroupEntry { binding: 2, resource: color_output.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: depth_output.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: parameters.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&self.target.stencil_sample) },
+                wgpu::BindGroupEntry { binding: 6, resource: stencil_output.as_entire_binding() },
             ],
         });
         {
@@ -168,6 +191,7 @@ impl RasterBatch<'_> {
         }
         encoder.copy_buffer_to_buffer(&color_output, 0, &color, 0, size);
         encoder.copy_buffer_to_buffer(&depth_output, 0, &depth, 0, size);
+        encoder.copy_buffer_to_buffer(&stencil_output, 0, &stencil, 0, size);
         let submission = self.renderer.queue.submit([encoder.finish()]);
         check_errors(errors, "resolved raster batch submission")?;
         Ok(PendingReadback {
@@ -175,6 +199,9 @@ impl RasterBatch<'_> {
             submission,
             color,
             depth,
+            stencil,
+            stencil_padded_row: padded_row,
+            stencil_stride: 4,
             width,
             height,
             padded_row,
@@ -203,6 +230,7 @@ impl RasterBatch<'_> {
         };
         let color = staging("PICA frozen color readback");
         let depth = staging("PICA frozen depth readback");
+        let stencil = staging("PICA frozen stencil readback");
         let extent = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
         let layout = wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded_row), rows_per_image: Some(height) };
         encoder.copy_texture_to_buffer(
@@ -220,6 +248,16 @@ impl RasterBatch<'_> {
             wgpu::TexelCopyBufferInfo { buffer: &depth, layout },
             extent,
         );
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.target.depth,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::StencilOnly,
+            },
+            wgpu::TexelCopyBufferInfo { buffer: &stencil, layout },
+            extent,
+        );
         let submission = self.renderer.queue.submit([encoder.finish()]);
         check_errors(errors, "deferred raster batch submission")?;
         Ok(PendingReadback {
@@ -227,6 +265,9 @@ impl RasterBatch<'_> {
             submission,
             color,
             depth,
+            stencil,
+            stencil_padded_row: padded_row,
+            stencil_stride: 1,
             width,
             height,
             padded_row,

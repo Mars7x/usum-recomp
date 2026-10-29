@@ -12,6 +12,8 @@
 
 use usum_guest::Memory;
 
+mod stencil;
+
 use super::shader::{self, Vec4};
 use super::{bytes_per_pixel, decode_pixel, encode_pixel, tiled_offset, Pica};
 
@@ -549,6 +551,7 @@ fn combine(plan: &TevPlan, primary: Vec4, textures: &[Vec4; 3], lit: [Vec4; 2]) 
 struct Span {
     pixel: Vec<usize>,
     z: Vec<u32>,
+    stencil_outcome: Vec<u8>,
     /// Perspective-correct weights.
     weights: Vec<[f32; 3]>,
     color: Vec<Vec4>,
@@ -934,6 +937,8 @@ fn raster_band(
     let (color_write, depth_write) = (reg(p, 0x113) & 0xF != 0, reg(p, 0x115) & 2 != 0 && depth_mask >> 12 & 1 == 1);
     let depth_test = depth_mask & 1 == 1;
     let has_depth = !band.depth.is_empty();
+    let stencil = stencil::Stencil::new(reg(p, 0x105), reg(p, 0x106), reg(p, 0x115), t.depth_format);
+    let stencil_enabled = has_depth && stencil.enabled;
     let depth_scale = shader::f24(reg(p, 0x4d));
     let depth_offset = shader::f24(reg(p, 0x4e));
     let depth_w_buffer = reg(p, 0x6d) & 1 == 0;
@@ -984,14 +989,14 @@ fn raster_band(
                 continue;
             }
             let (x_lo, x_hi) = (lo.floor().max(min_x as f32) as u32, (hi.ceil() + 1.0).min(max_x as f32) as u32);
-            // 1. coverage and the depth test, per pixel; the survivors are
-            // collected. The depth test first: its outcome does not depend
-            // on the fragment's color, and a failing fragment changes
-            // nothing (no stencil yet), so shading it would be wasted.
+            // 1. coverage and fragment tests. A failing test can still write
+            // stencil, but alpha rejection must suppress that write. Shade
+            // those failures too; keep the early skip when nothing changes.
             // Pixels of a span are distinct, so the passes below see the
             // same stored values a pixel-at-a-time loop would (R-045)
             span.pixel.clear();
             span.z.clear();
+            span.stencil_outcome.clear();
             span.weights.clear();
             for x in x_lo..x_hi {
                 let e = tri.edges.map(|edge| edge.at(x, y));
@@ -1008,17 +1013,27 @@ fn raster_band(
                 let pixel = tiled_offset(x, row, t.width) as usize - base_offset;
                 let z = (depth * max_depth) as u32;
                 let d_at = pixel * dbpp;
-                if has_depth && depth_test {
+                let mut outcome = 2;
+                if stencil_enabled && !stencil.passes(band.depth[d_at + 3]) {
+                    outcome = 0;
+                }
+                if outcome == 2 && has_depth && depth_test {
                     let stored = &band.depth[d_at..d_at + dbpp.min(3)];
                     let old = stored.iter().rev().fold(0u32, |a, &b| a << 8 | u32::from(b));
                     if !compare((depth_mask >> 4) & 7, z, old) {
-                        continue;
+                        outcome = 1;
                     }
+                }
+                if outcome != 2 && (!stencil_enabled || !stencil.changes(outcome)) {
+                    continue;
                 }
                 // perspective-correct weights
                 let iw = w0 * s[0][3] + w1 * s[1][3] + w2 * s[2][3];
                 span.pixel.push(pixel);
                 span.z.push(z);
+                if stencil_enabled {
+                    span.stencil_outcome.push(outcome);
+                }
                 span.weights.push([w0 * s[0][3] / iw, w1 * s[1][3] / iw, w2 * s[2][3] / iw]);
             }
             let n = span.pixel.len();
@@ -1081,6 +1096,15 @@ fn raster_band(
                 if alpha_test & 1 == 1 && !compare((alpha_test >> 4) & 7, (out[3] * 255.0) as u32, (alpha_test >> 8) & 0xFF) {
                     rejected += 1;
                     continue;
+                }
+                if stencil_enabled {
+                    let outcome = span.stencil_outcome[f];
+                    if stencil.changes(outcome) {
+                        band.depth[d_at + 3] = stencil.apply(outcome, band.depth[d_at + 3]);
+                    }
+                    if outcome != 2 {
+                        continue;
+                    }
                 }
                 let c_at = pixel * cbpp;
                 // the stored color matters only to blending and to masked
@@ -1156,7 +1180,8 @@ fn rasterize(p: &mut Pica, mem: &mut Memory, t: &Target, tris: &[Prepared]) -> R
     let color_at = p.pa_to_va(t.color)? + tile_lo * row_pixels * cbpp;
     let span = (tile_hi - tile_lo) * row_pixels;
     let mut color = mem.slice(color_at, span * cbpp).ok_or("color buffer not mapped")?.to_vec();
-    let depth_used = t.depth != 0 && (reg(p, 0x107) & 1 == 1 || reg(p, 0x115) & 2 != 0);
+    let depth_used =
+        t.depth != 0 && (reg(p, 0x107) & 1 == 1 || reg(p, 0x115) & 2 != 0 || (t.depth_format == 3 && reg(p, 0x105) & 1 != 0));
     let depth_at = if depth_used { Some(p.pa_to_va(t.depth)? + tile_lo * row_pixels * dbpp) } else { None };
     let mut depth = match depth_at {
         Some(at) => mem.slice(at, span * dbpp).ok_or("depth buffer not mapped")?.to_vec(),

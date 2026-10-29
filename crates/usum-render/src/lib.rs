@@ -14,7 +14,7 @@ pub use raster::{
     AlphaTest, BlendComponent, BlendFactor, BlendOperation, BlendState, ColorDepthReadback, ColorMask, ColorTarget, CullMode,
     DepthCompare, DepthSnapshot, DepthState, DisplayCopy, FilterMode, FragmentInputs, GpuLighting, LightingLight, LightingState,
     PendingReadback, PicaDrawState, PicaRasterRegisters, RasterBatch, RasterState, RasterVertex, SampledTexture, SamplerState,
-    TevStage, TevState, Viewport, WrapMode,
+    StencilOperation, StencilState, TevStage, TevState, Viewport, WrapMode,
 };
 
 /// A Vulkan device ready to host translated PICA draw calls.
@@ -39,7 +39,11 @@ impl Renderer {
         }))
         .map_err(|e| format!("no Vulkan adapter: {e}"))?;
         let info = adapter.get_info();
-        let optional_features = adapter.features() & wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER;
+        let required = wgpu::Features::DEPTH32FLOAT_STENCIL8;
+        if !adapter.features().contains(required) {
+            return Err(format!("Vulkan adapter {} cannot preserve float depth with stencil", info.name));
+        }
+        let optional_features = required | (adapter.features() & wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER);
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("usum-render"),
             required_features: optional_features,
@@ -143,7 +147,10 @@ impl Renderer {
         if (centre_depth - 0.1).abs() > 1e-6 {
             return Err(format!("Vulkan depth readback returned {centre_depth}, expected 0.1"));
         }
-        let feedback = self.create_d24s8_feedback_texture(&snapshot_target, &[0xA5; 8 * 8], SamplerState::default(), [0; 4])?;
+        let mut stencil_batch = self.begin_batch(&snapshot_target);
+        stencil_batch.seed_stencil(&[0xA5; 8 * 8], 1)?;
+        stencil_batch.submit()?;
+        let feedback = self.create_d24s8_feedback_texture(&snapshot_target, SamplerState::default(), [0; 4])?;
         let feedback_target = self.create_color_target(8, 8)?;
         let feedback_vertices = [
             RasterVertex::new([-1.0, -1.0, 0.0, 1.0], [1.0; 4]).with_texcoord0([0.0, 0.0]),
@@ -178,8 +185,10 @@ impl Renderer {
         // No CPU wait between the depth upload, conversion, and sampling.
         // The final readback must observe ordered queue execution.
         self.begin_batch_from_snapshot(&pattern_target, &snapshot_color, &pattern_depth)?.submit()?;
-        let pattern_texture =
-            self.create_d24s8_feedback_texture(&pattern_target, &pattern_stencil, SamplerState::default(), [0; 4])?;
+        let mut stencil_batch = self.begin_batch(&pattern_target);
+        stencil_batch.seed_stencil(&pattern_stencil, 1)?;
+        stencil_batch.submit()?;
+        let pattern_texture = self.create_d24s8_feedback_texture(&pattern_target, SamplerState::default(), [0; 4])?;
         let pattern_output = self.create_color_target(8, 8)?;
         self.draw_vertices_with_inputs(
             &pattern_output,
