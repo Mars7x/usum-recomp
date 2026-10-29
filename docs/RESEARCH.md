@@ -2926,3 +2926,21 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   9.298 seconds for the intro and 20.448/20.772/20.279/20.017 for the overworld.
   Its small overhead preserves the corrected high-resolution effect chain rather
   than substituting native-resolution intermediate textures.
+
+### R-097 2026-10-29 — Validate experimental deferred readbacks at 6×
+
+- Resolve immutable readback tickets to native dimensions at every internal
+  scale. Reject tickets with the wrong guest dimensions. Already materialized
+  tickets supply a native snapshot identity for full-resolution GPU textures
+  and LCD presentation without introducing a new wait for unused tickets.
+- Hardware tests compare native and full-resolution results at 1× and 6× across
+  multiple lists and partial CPU writes. Resident color and stencil tests also
+  cover deferred 6× generations whose native samples are unchanged, and verify
+  the CPU texture reader actually materializes each lazy snapshot.
+- All 36 recorded intro, overworld and battle native/scaled captures match the
+  corrected synchronous renderer byte for byte, with zero software fallbacks.
+  Same-binary off/on/on/off intro times are 10.029/10.127/10.128/10.068 seconds;
+  overworld times are 18.504/19.609/18.726/18.288 seconds. Deferred mode is about
+  0.8% slower in the intro and 4.2% slower in gameplay, so it remains opt-in.
+  This is validation groundwork, not a default performance improvement. The
+  200-FPS target remains unmet. Captures and game inputs stay private.

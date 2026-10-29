@@ -209,9 +209,14 @@ mod tests {
     fn later_lists_sample_full_resolution_planes_and_refresh_identical_native_results() {
         use usum_render::{ColorMask, DepthCompare, DepthState, StencilState, TevStage, TevState, Viewport};
         let renderer = live_renderer().unwrap();
-        for plane in [Plane::DepthStencil, Plane::Color] {
+        for (plane, defer) in
+            [(Plane::DepthStencil, false), (Plane::Color, false), (Plane::DepthStencil, true), (Plane::Color, true)]
+        {
             let mut pica = Pica::default();
             pica.enable_vulkan_acceleration();
+            if defer {
+                pica.enable_vulkan_deferred_readback();
+            }
             pica.set_vulkan_resolution_scale(6).unwrap();
             pica.regs[0x41] = 0x430000;
             pica.regs[0x43] = 0x430000;
@@ -267,7 +272,12 @@ mod tests {
                 pica.vulkan_snapshots.push(draw);
                 replay_live(&mut pica, &mut mem).unwrap();
                 let source = pica.vulkan_live_target_cache.iter().find(|t| t.info == info).unwrap();
+                assert_eq!(source.pending.is_some(), defer);
+                let materialized = pica.vulkan_live_resources.deferred.get().1;
                 let pixels = pixels(&pica, &mem, info, plane);
+                if defer {
+                    assert_eq!(pica.vulkan_live_resources.deferred.get().1, materialized + 1);
+                }
                 if let Some(prior) = &native_pixels {
                     assert_eq!(&**prior, &*pixels, "native samples deliberately stay identical");
                 }

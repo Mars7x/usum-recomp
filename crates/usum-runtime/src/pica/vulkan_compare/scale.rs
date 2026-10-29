@@ -86,6 +86,7 @@ pub(in crate::pica) fn capture_transfer(
     input: &[u8],
     output: &[u8],
 ) -> Result<(), String> {
+    deferred::hydrate_ready(pica);
     pica.scaled_displays.retain(|d| d.address != output_address);
     let scale = pica.vulkan_resolution_scale;
     trace(|| format!("transfer {input_address:#x} {dims:?} -> {output_address:#x}, flags {flags:#x}, scale {scale}"));

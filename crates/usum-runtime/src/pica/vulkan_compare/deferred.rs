@@ -70,7 +70,6 @@ impl DeferredTarget {
 
 pub(super) fn eligible(pica: &Pica, info: CaptureTarget) -> bool {
     pica.vulkan_defer_readback
-        && pica.vulkan_resolution_scale == 1
         && pica.vulkan_accelerate
         && pica.vulkan_live_depth
         && info.color_format == 0
@@ -113,6 +112,9 @@ pub(super) fn install(
     info: CaptureTarget,
     ticket: Arc<usum_render::PendingReadback>,
 ) -> Result<(), String> {
+    if ticket.dimensions() != (info.width, info.height) {
+        return Err("deferred result must retain native guest dimensions".into());
+    }
     let pending = Arc::new(DeferredTarget {
         info,
         stats: Arc::clone(&pica.vulkan_live_resources.deferred),
@@ -137,6 +139,30 @@ pub(super) fn install(
     Ok(())
 }
 
+/// CPU texture/display readers may already have materialized an immutable
+/// ticket. Publish its native proof for scaled GPU texture/presentation reuse,
+/// without introducing another wait or reading an unused ticket.
+pub(super) fn hydrate_ready(pica: &mut Pica) {
+    for target in &mut pica.vulkan_live_target_cache {
+        if target.contents.is_some() {
+            continue;
+        }
+        let Some(pending) = &target.pending else {
+            continue;
+        };
+        let Some(read) = pending.ticket.ready() else {
+            continue;
+        };
+        target.contents = Some(Arc::new(TargetSnapshot {
+            width: target.info.width,
+            height: target.info.height,
+            color: read.color.clone(),
+            depth: read.depth.clone(),
+            stencil: read.stencil.clone(),
+        }));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,9 +171,10 @@ mod tests {
     #[test]
     #[ignore = "requires a Vulkan hardware adapter"]
     fn deferred_replay_matches_synchronous_lists_and_cpu_partial_writes() {
-        fn run(defer: bool) -> (Vec<u8>, Vec<u8>, u64) {
+        fn run(defer: bool, scale: u32) -> (Vec<u8>, Vec<u8>, u64, Vec<u8>) {
             let mut pica = Pica::default();
             pica.enable_vulkan_acceleration();
+            pica.set_vulkan_resolution_scale(scale).unwrap();
             if defer {
                 pica.enable_vulkan_deferred_readback();
             }
@@ -183,18 +210,26 @@ mod tests {
                     DrawSnapshot::from_shaded_vertices_shared(&pica, &vertices, &[[0, 1, 2]], info, target, textures).unwrap();
                 pica.vulkan_snapshots.push(snapshot);
                 replay_live(&mut pica, &mut mem).unwrap();
+                assert_eq!(pica.vulkan_live_target_cache.iter().find(|t| t.info == info).unwrap().pending.is_some(), defer);
             }
             (
                 mem.read_range(pica.linear_base, 4096).unwrap(),
                 mem.read_range(pica.linear_base + 0x1000, 4096).unwrap(),
                 pica.vulkan_live_resources.target_reuses,
+                live_renderer()
+                    .unwrap()
+                    .read_color_target(&pica.vulkan_live_target_cache.iter().find(|t| t.info == info).unwrap().gpu)
+                    .unwrap(),
             )
         }
-        let sync = run(false);
-        let lazy = run(true);
-        assert_eq!(sync.0, lazy.0);
-        assert_eq!(sync.1, lazy.1);
-        assert!(lazy.2 >= 3, "expected resident reuse around the partial CPU write");
+        for scale in [1, 6] {
+            let sync = run(false, scale);
+            let lazy = run(true, scale);
+            assert_eq!(sync.0, lazy.0);
+            assert_eq!(sync.1, lazy.1);
+            assert_eq!(sync.3, lazy.3);
+            assert!(lazy.2 >= 3, "expected resident reuse around the partial CPU write at scale {scale}");
+        }
     }
 
     #[test]

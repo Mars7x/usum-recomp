@@ -263,8 +263,8 @@ remain native. Unsupported/CPU-rendered presentation uses native output.
 Scaled color/depth targets and viewports are actually rasterized at the higher
 resolution. Guest buffers retain native dimensions; a full-resolution host image
 survives supported LCD transfers and rotation into the play window. Native guest
-snapshots remain suitable for comparison. Resolution scaling currently keeps
-synchronous readback; the deferred-readback experiment below only applies at 1×.
+snapshots remain suitable for comparison. Resolution scaling keeps synchronous readback by default; the deferred-readback
+experiment below supports native and scaled targets.
 Use the same internal scale for gameplay and probe performance measurements.
 
 Scaled targets now accept native-size color/depth uploads, with exact replication
@@ -280,7 +280,8 @@ readback tickets for RGBA8/D24S8 targets with depth buffers. Both exact guest
 plane identities must match before reusing resident GPU contents; CPU writes
 invalidate reuse. Actual CPU readers still receive the frozen result, including
 stencil bytes. Other formats keep synchronous writeback. This path is disabled
-by default pending recorded-gameplay validation. Deferred device failures are
+by default: recorded intro, overworld and battle images match, but 6× timing
+currently regresses slightly. Deferred device failures are
 reported as guest memory faults rather than exposing stale RAM. The probe reports
 queued/materialized tickets and materialization time separately.
 

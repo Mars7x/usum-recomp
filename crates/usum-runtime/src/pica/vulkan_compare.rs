@@ -887,6 +887,7 @@ fn live_renderer() -> Result<&'static Renderer, String> {
 /// experimental deferred writes materialize only when a guest reader needs them.
 pub(crate) fn replay_live(pica: &mut Pica, mem: &mut Memory) -> Result<(usize, usize, FeedbackStats), String> {
     let renderer = live_renderer()?;
+    deferred::hydrate_ready(pica);
     resident::prune(pica);
     let mut snapshots = pica.take_vulkan_snapshots();
     let draws = snapshots.len();
@@ -976,7 +977,7 @@ pub(crate) fn replay_live(pica: &mut Pica, mem: &mut Memory) -> Result<(usize, u
             .ok_or("live target disappeared before readback")?;
         let readback_started = std::time::Instant::now();
         if deferred::eligible(pica, info) {
-            let ticket = Arc::new(renderer.begin_batch(&target.gpu).submit_readback()?);
+            let ticket = Arc::new(renderer.begin_batch(&target.gpu).submit_resolved_readback(pica.vulkan_resolution_scale)?);
             results.push(LiveResult {
                 info,
                 color: Vec::new(),
@@ -1201,7 +1202,7 @@ fn render_live_segment(
         if let Some(results) = final_results.as_deref_mut().filter(|_| final_for_target) {
             let readback_started = std::time::Instant::now();
             if deferred::eligible(pica, target_info) {
-                let ticket = Arc::new(batch.submit_readback()?);
+                let ticket = Arc::new(batch.submit_resolved_readback(pica.vulkan_resolution_scale)?);
                 results.push(LiveResult {
                     info: target_info,
                     color: Vec::new(),

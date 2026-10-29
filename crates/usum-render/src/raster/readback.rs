@@ -80,6 +80,11 @@ impl PendingReadback {
         self.result.get_or_init(|| self.materialize()).as_ref().map_err(Clone::clone)
     }
 
+    /// Inspect a successfully materialized snapshot without polling or mapping.
+    pub fn ready(&self) -> Option<&ColorDepthReadback> {
+        self.result.get()?.as_ref().ok()
+    }
+
     fn materialize(&self) -> Result<ColorDepthReadback, String> {
         let color_slice = self.color.slice(..);
         let depth_slice = self.depth.slice(..);
