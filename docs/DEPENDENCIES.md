@@ -7,7 +7,11 @@ conflict explained. Interfaces to the OS and the graphics driver
 (libc via std, the Vulkan loader, ALSA/PipeWire, udev) are acceptable
 but still listed.
 
-## Current (2026-10-25, `cargo tree -e normal,build`)
+## Dependency inventory (updated 2026-10-29)
+
+The original CLI audit used `cargo tree -e normal,build` on 2026-10-25.
+The table and platform exceptions below also include the subsequently added
+window, Vulkan and controller features; this is not a security advisory scan.
 
 | Crate | Why | Native code? |
 |---|---|---|
@@ -45,8 +49,9 @@ wayland-sys and tiny-xlib) but do nothing in this configuration:
   which is off. The build directory has no object files (checked).
 - With the `dlopen` features, wayland-sys and tiny-xlib do not use
   pkg-config to link anything.
-No `-sys` crate links a C library at build time; `wayland-sys` and
-`x11-dl` only declare symbols that are looked up at run time.
+For these window-system dependencies, `wayland-sys` and `x11-dl` only declare
+symbols looked up at run time. The controller backend additionally links the
+OS libudev through `libudev-sys`, as disclosed above.
 
 | pulseaudio 0.3 (+ mio, futures, byteorder, num-traits, enum-primitive-derive, thiserror) | Sound: the PulseAudio native protocol implemented in Rust, over the session's socket (PipeWire's pulse server speaks it too) | No. No client library is linked or opened: it talks the protocol on the Unix socket itself. In a Flatpak this needs `--socket=pulseaudio` |
 
@@ -54,7 +59,8 @@ cpal was the expected choice. It was not taken: its Linux backend links
 libasound through alsa-sys, which needs ALSA's development files at build
 time, and the native protocol needs no C at all (R-039).
 
-Not added yet, for later: gamepads (gilrs, libudev).
+Gamepads are implemented with gilrs/libudev, including hot plugging. SDL2 and
+SDL3 are not dependencies of the current input/window stack.
 
 ## Test-only tools (M3)
 

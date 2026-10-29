@@ -2,9 +2,26 @@
 
 Each milestone ends only when its exit criteria are demonstrated by tests
 or recorded measurements. Milestone criteria below include historical checkpoints. Current status as of
-2026-10-28: Ultra Sun reaches early gameplay; software graphics are the
-reference, Vulkan is experimental, and packaging is unfinished. See
+2026-10-29: Ultra Sun reaches indoor/outdoor gameplay and early battles.
+Software graphics remain the reference; opt-in Vulkan includes hardware vertex
+shaders, internal scaling and GPU presentation. Controllers support hot plugging.
+Native dynamic FPS and packaging are unfinished. See
 [COMPATIBILITY.md](COMPATIBILITY.md) for the current validation limits.
+
+## Current priorities
+
+1. Preserve compatibility and rendering correctness through identical-input,
+   identical-save replay comparisons, including audio and output captures.
+2. Implement native dynamic FPS as a core runtime/game feature, preserving normal
+   movement, animation, event and audio timing. The target is 200 actual rendered
+   gameplay frames per wall second at 6×, without generated frames or faster
+   simulation. It has not been achieved; presentation caps are only groundwork.
+3. Optimize bottlenecks demonstrated by fresh profiles, retaining comparison
+   paths and rejecting changes without a measured benefit.
+4. Expand compatibility and complete the launcher/Flatpak workflow.
+
+The milestones below retain their original evidence and exit criteria. Their
+historical benchmark times are not estimates for the current renderer or host.
 
 ## M1 — Feasibility and architecture ✅ done
 
@@ -54,7 +71,7 @@ Known limits carried into M4: no VFP, coprocessor (MRC/MCR), exclusive
 unaligned word access semantics unresolved (R-010); no Thumb jump-table
 recognition; emitter output is verbose (358 bytes per instruction).
 
-## M4 — First look inside the real executable (in progress)
+## M4 — Real executable and module translation ✅ done
 
 Exit criteria and status (evidence: RESEARCH.md R-015 to R-021):
 - [x] decoder coverage over the executable, with unknown encodings
@@ -69,15 +86,15 @@ Exit criteria and status (evidence: RESEARCH.md R-015 to R-021):
 - [x] function-level comparison of the two executables (R-021)
 - [x] emitter compaction and multi-crate output (R-022, ADR-0005); the
       whole Ultra Sun executable builds in release in 5 min 49 s
-- [ ] the CRO modules: load, relocate, analyze
-- [ ] written plan for the next path (entry point → first SVC)
+- [x] the CRO modules: load, relocate, analyze (ADR-0007)
+- [x] entry point → first SVC, followed by runtime integration (R-023 onward)
 
 Instruction support added in M4: TLS register, barriers, PLD, CLREX,
 LDREX/STREX (all sizes), the whole of VFPv2 (including short vectors),
 and the ARMv6 media/DSP instructions, each with GNU-as vectors, random
 differential cases and negative controls.
 
-## M5 — Runtime integration
+## M5 — Runtime integration (in progress)
 
 Ordered, each step measured:
 1. ✅ (Ultra Sun) The entry point runs translated code until its first
@@ -93,7 +110,11 @@ Ordered, each step measured:
    (done: the language menu, R-032), to be compared with a capture from
    the user's own console (taken by the user).
 4. Title screen, menus, input, saves, battles: each is a scripted input
-   replay with expected checkpoints.
+   replay with expected checkpoints. Opening, indoor/outdoor movement, early
+   battle and restart fixtures are exercised; full-game validation is incomplete.
+5. Controllers, hot plugging, internal resolution scaling and test timing
+   controls are implemented. Native dynamic FPS and remaining performance/audio/
+   rendering work continue, with explicit comparison paths.
 
 ## M6 — Flatpak and usable workflow
 
@@ -106,5 +127,6 @@ requirements are reviewed then; acceptance is not assumed.
 ## Later
 
 Ultra Moon parity tests (the shared pipeline is designed in from M3),
-other regions and revisions as profiles, updates, enhancements (resolution,
-layouts, remapping), aarch64.
+other regions and revisions as profiles, updates, additional layouts and
+controller remapping, aarch64 host validation. Internal resolution scaling is
+already available on the Vulkan path.

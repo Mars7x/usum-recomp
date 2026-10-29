@@ -5,6 +5,11 @@ the command in [RESEARCH.md](RESEARCH.md)), **[source]** (documented by a
 cited primary source, not re-measured), **[claim]** (reported by a third
 party, not verified) or **[hypothesis]/[unknown]**.
 
+This is the historical milestone-1 assessment. Its statements about what runs
+describe that date. As of 2026-10-29, Ultra Sun reaches gameplay and early
+battles; see [current compatibility](COMPATIBILITY.md), [architecture](ARCHITECTURE.md)
+and the [research log](RESEARCH.md) for subsequent implementation evidence.
+
 ## Verdict
 
 Feasible in principle, and nothing found so far rules out the intended

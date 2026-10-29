@@ -1,5 +1,8 @@
 # Architecture
 
+Status: 2026-10-29. The runtime executes translated Ultra Sun gameplay; launcher
+and Flatpak integration below remain planned. See [compatibility](COMPATIBILITY.md).
+
 ## Pipeline (target)
 
 ```
@@ -26,9 +29,9 @@ launcher ──spawns──▶ game executable:  usum-runtime   GuestMemory, ker
 | `usumctl` | Development CLI over the libraries | `inspect`, `modules`, `analyze` (`--detail`, `--leaves`), `compare`, `translate`, `make-fixture`, `paths`, `doctor` |
 | `usum-guest` | `Cpu`, `Memory` (permission-checked regions), the `Exit`/`Fault` protocol, shared instruction semantics (`ops`, `vfp`), the host run loop. The only interface generated code may use | everything the executables use; FPSCR exception flags not modelled (R-017) |
 | `usum-arm` | ARM and Thumb (ARMv6K + VFPv2) decoding into `Instr`; PC-relative values resolved at decode time | every real instruction control flow reaches in both executables (R-019) |
-| `usum-recomp` | Discovery (recursive descent, calls, jump tables, pointer seeds) and Rust emission | implemented for the M3 subset |
-| `usum-runtime` | Address-space layout from the dump (`boot`), and `probe`: run from the entry point to the first SVC. The kernel and services come next | bring-up |
-| `usum-render` | Vulkan host-GPU backend with an opt-in, immutable runtime comparison handoff | batched persistent RGBA8/depth rendering; snapshot upload, viewport, culling, depth, masks, alpha test, blending, three textures, six TEV stages, full fragment-lighting LUT evaluation and readback; software remains authoritative |
+| `usum-recomp` | Discovery (recursive descent, calls, jump tables, pointer seeds), executable/CRO translation and Rust emission | translates supported executables and modules; missing runtime targets still fail loudly |
+| `usum-runtime` | Checked guest memory integration, kernel/SVCs, services, software PICA, audio, input, saves, deterministic `probe` and interactive `play` | Ultra Sun reaches gameplay and early battles; compatibility remains incomplete |
+| `usum-render` | Opt-in Vulkan rasterization, vertex processing, scaled targets and window presentation | persistent color/depth targets, textures/TEV/lighting, immutable deferred readbacks and GPU-resident display frames; guarded runtime fallback and software reference retained |
 | `usum-difftest` | Test-only: synthetic programs, random-instruction corpora and (game mode) real game functions, run under QEMU and as recompiled Rust, compared byte for byte | 22 programs + random corpora pass; 4 game functions verified |
 
 Planned, created only when their milestone starts (no empty crates):
@@ -37,7 +40,7 @@ Planned, created only when their milestone starts (no empty crates):
 |---|---|---|
 | `usum-launcher` | M6 | UI, import flow, build orchestration |
 
-## Generated code (M3)
+## Generated code
 
 One Rust function per guest function, named `f_XXXXXXXX` (ARM) or
 `t_XXXXXXXX` (Thumb), entered at any of its labels:
@@ -65,8 +68,22 @@ pub fn translated_example(cpu: &mut Cpu, mem: &mut Memory) -> Result<Exit, Fault
   to fall back on.
 - Every block subtracts its instruction count from `cpu.budget` and
   returns `Exit::Budget` when it runs out, so a hang is a reported failure,
-  not a stuck test. This is also the future preemption point for guest
-  threads.
+  not a stuck test. The runtime uses these exits for scheduling guest threads.
+
+## Timing and presentation
+
+The compatibility runtime retains the guest instruction budget, virtual clock,
+VBlank scheduling and service behavior. `play` throttles that execution toward
+normal wall time; an overloaded host can still run behind. Frame images and
+their submission versions travel together through a coalescing mailbox to the
+window thread. Presentation caps limit successful window updates independently
+of guest simulation, input polling and audio.
+
+The testing HUD distinguishes top-screen framebuffer submissions from host
+presents. Neither counter proves unique engine frame completion. Native dynamic
+FPS must produce additional rendered frames while preserving simulation and
+audio timing; that work remains unfinished. No frame interpolation or generated
+frames are implemented. See [R-118](RESEARCH.md#r-118-2026-10-29--core-presentation-policy-timing-measurements-and-testing-hud).
 
 ## Rules
 

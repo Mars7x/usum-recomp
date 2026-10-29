@@ -5,25 +5,30 @@ An experimental static recompilation project for **Pokémon Ultra Sun** and
 own decrypted dump into Rust, then compiles it against a Rust runtime for
 3DS services, graphics, input, and audio.
 
-## Status — 2026-10-28
+## Status — 2026-10-29
 
 **Ultra Sun boots and reaches early gameplay. This is a development project,
-not a finished port.** Recorded tests cover the opening, bedroom movement,
-and early outdoor scenes. Full-game completion has not been verified.
+not a finished port.** Recorded tests cover the opening, menus, bedroom and
+outdoor movement, and early battles. Full-game completion has not been verified.
 Ultra Moon is recognized and analyzed, but equivalent gameplay validation
 has not been completed.
 
 - Software graphics are the reference renderer.
-- Vulkan acceleration is opt-in and experimental. An outdoor black-terrain
-  defect is fixed; a 650-second replay including later grass scenes completes
-  with zero software fallbacks. Small rendering differences and performance
-  work remain; heavy scenes still run below real time in local tests
-  (RESEARCH.md R-071 through R-074).
-- Vulkan acceleration includes hardware vertex shaders; `USUM_VULKAN_VERTEX=0`
-  retains CPU vertex processing for comparison. See BUILDING.md.
-- Keyboard/touch input, audio, and save handling are implemented. Sound and
-  compatibility remain incomplete.
-- Flatpak packaging and gamepad support are planned, not released.
+- Opt-in Vulkan acceleration includes hardware vertex shaders and GPU window
+  presentation, with guarded software fallback. True internal resolution scaling
+  supports 1×–8×; 6× renders the top screen at 2400×1440. Rendering correctness
+  and performance remain under active development.
+- Keyboard, mouse touch and mapped controllers work, including controllers
+  connected after launch. Audio, saves and deterministic input replays are
+  implemented; sound and compatibility remain incomplete.
+- Built-in presentation caps and an optional testing FPS overlay are available.
+  **Native dynamic FPS is still in development; 200 FPS has not been achieved.**
+  Presentation caps do not unlock the game's frame rate. The overlay currently
+  measures framebuffer submissions, which do not prove unique rendered frames.
+- Recent work fixes area/script callback discovery and reuses exited threads'
+  TLS storage while preserving old handles. Individual fixes do not establish
+  full-game compatibility. See the [research log](docs/RESEARCH.md#r-119--recycle-exited-thread-tls-without-reusing-thread-identity).
+- Flatpak packaging and a graphical launcher remain planned.
 - There are no bundled games, translated game executables, or ready-to-play
   downloads. Performance measurements are scene- and hardware-specific.
 
@@ -54,6 +59,19 @@ To translate a supported dump locally:
 Follow [BUILDING.md](docs/BUILDING.md) to build the generated `play` program,
 configure input/audio, or enable experimental Vulkan. Generated files stay
 in your private cache and must not be committed or uploaded.
+
+After building `play` with `usum-runtime/vulkan-compare` in that generated
+workspace, a 6× testing launch is:
+
+```bash
+USUM_VULKAN_ACCELERATE=1 USUM_VULKAN_DEPTH_FEEDBACK=1 \
+USUM_RESOLUTION_SCALE=6 USUM_TEST_FPS=1 \
+./target/release/play /path/to/your/ultra-sun.3ds
+```
+
+F3/F4 change internal resolution, F5 toggles title statistics, F6 cycles the
+window presentation cap, and F7 toggles the testing overlay. The overlay is off
+by default. See [controls and measurement limits](docs/BUILDING.md#playing-in-a-window).
 
 ## Game-data policy
 

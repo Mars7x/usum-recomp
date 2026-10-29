@@ -1,12 +1,27 @@
 # Compatibility
 
-Status as of 2026-10-28. Identification and translation are separate from
+Status as of 2026-10-29. Identification and translation are separate from
 playability. No complete playthrough or broad hardware compatibility is claimed.
 
 | Profile | Import / analysis | Runtime evidence |
 |---|---|---|
-| `ultra-sun-usa-cart` | Recognized; executable and CRO translation implemented | Boots; intro, bedroom movement, and early outdoor gameplay tested. Experimental Vulkan completes a 650-second recorded sequence with zero software fallbacks and close software-reference images (R-071); rendering differences and performance work remain. |
+| `ultra-sun-usa-cart` | Recognized; executable and CRO translation implemented | Boots; opening, menus, indoor/outdoor movement and early battles exercised. Vulkan supports hardware vertex shaders, 1×–8× internal scaling and GPU presentation. Recorded comparisons cover intro, overworld, battle, a longer session and application restart. Rendering, sound, performance and later-game compatibility remain incomplete. |
 | `ultra-moon-usa-cart` | Recognized and analyzed | Equivalent gameplay validation has not been completed. |
+
+Keyboard, mouse touch and controllers are supported; controllers can connect
+after launch. Linux x86-64 is the tested host. An ARM Linux port, other GPUs and
+full-game completion have not received equivalent validation.
+
+Recent fixes include byte-packed script/area callback discovery (R-116) and
+recycling TLS from exited threads (R-119). The latter reproduces the reported
+stop with ten live and 22 exited threads, then successfully retries the failed
+SVC in that same state. It does not claim a completed playthrough beyond it.
+
+Native dynamic FPS remains unfinished. Neither host presentation caps nor
+unthrottled deterministic replay throughput establish normal-speed uncapped
+gameplay. The 200-FPS objective is unmet. See
+[measurement controls](BUILDING.md#playing-in-a-window) and the
+[research evidence](RESEARCH.md).
 
 Evidence for each profile, measured from locally supplied dumps (R-002,
 R-005 in RESEARCH.md): program ID, product code and NCCH version from the
