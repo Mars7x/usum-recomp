@@ -1,3 +1,4 @@
+mod color;
 mod depth;
 mod display;
 mod readback;
@@ -655,6 +656,7 @@ pub(super) struct RasterPipelines {
     depth_upload_pipeline: wgpu::RenderPipeline,
     depth_feedback_layout: wgpu::BindGroupLayout,
     depth_feedback_pipeline: wgpu::RenderPipeline,
+    color_feedback: color::ColorFeedback,
     resolved_readback: readback::ResolvePipeline,
     scaled_seed: seed::SeedPipeline,
     display_copy: display::DisplayPipeline,
@@ -2075,6 +2077,7 @@ pub(super) fn create_pipelines(device: &wgpu::Device, queue: &wgpu::Queue) -> Ra
         depth_upload_pipeline,
         depth_feedback_layout,
         depth_feedback_pipeline,
+        color_feedback: color::ColorFeedback::new(device),
         resolved_readback: readback::ResolvePipeline::new(device),
         scaled_seed: seed::SeedPipeline::new(device),
         display_copy: display::DisplayPipeline::new(device),

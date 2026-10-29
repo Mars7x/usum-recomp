@@ -3,6 +3,7 @@
 //! software framebuffer; execution and replacement remain separate steps.
 
 mod deferred;
+mod resident;
 pub(super) mod scale;
 
 use std::sync::Arc;
@@ -51,7 +52,7 @@ pub(super) struct LiveTarget {
     gpu: Arc<usum_render::ColorTarget>,
     /// Last successful synchronous readback of this GPU allocation. Reuse
     /// requires matching guest bytes, or both immutable pending-plane identities.
-    contents: Option<TargetSnapshot>,
+    contents: Option<Arc<TargetSnapshot>>,
     pending: Option<Arc<deferred::DeferredTarget>>,
     scaled_color: Option<Arc<[u8]>>,
     last_draw: u64,
@@ -137,7 +138,21 @@ struct LiveFeedbackTexture {
     address: u32,
     sampler: SamplerState,
     border: [u8; 4],
+    width: u32,
+    height: u32,
+    format: u32,
     gpu: Arc<SampledTexture>,
+}
+
+impl LiveFeedbackTexture {
+    fn matches(&self, texture: &TextureSnapshot) -> bool {
+        self.address == texture.address
+            && self.sampler == texture.sampler
+            && self.border == texture.border
+            && self.width == texture.width
+            && self.height == texture.height
+            && self.format == texture.format
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -161,6 +176,7 @@ fn same_lighting_state(a: &LightingState, b: &LightingState) -> bool {
 pub(super) struct LiveResources {
     textures: Vec<LiveTexture>,
     lighting: Vec<LiveLighting>,
+    resident_textures: Vec<resident::ResidentTexture>,
     texture_uses: u64,
     texture_uploads: u64,
     lighting_uses: u64,
@@ -176,6 +192,7 @@ impl LiveResources {
     pub(super) fn clear(&mut self) {
         self.textures.clear();
         self.lighting.clear();
+        self.resident_textures.clear();
         self.texture_uses = 0;
         self.texture_uploads = 0;
         self.lighting_uses = 0;
@@ -379,9 +396,7 @@ impl DrawSnapshot {
         let mut feedback_inputs: [Option<&SampledTexture>; 3] = [None, None, None];
         for ((output, direct), snapshot) in texture_indices.iter_mut().zip(&mut feedback_inputs).zip(&self.textures) {
             if let Some(snapshot) = snapshot {
-                if let Some(entry) = feedback.iter().find(|entry| {
-                    entry.address == snapshot.address && entry.sampler == snapshot.sampler && entry.border == snapshot.border
-                }) {
+                if let Some(entry) = feedback.iter().find(|entry| entry.matches(snapshot)) {
                     *direct = Some(entry.gpu.as_ref());
                 } else {
                     *output = Some(resources.texture(renderer, snapshot)?);
@@ -875,6 +890,7 @@ fn live_renderer() -> Result<&'static Renderer, String> {
 /// experimental deferred writes materialize only when a guest reader needs them.
 pub(crate) fn replay_live(pica: &mut Pica, mem: &mut Memory) -> Result<(usize, usize, FeedbackStats), String> {
     let renderer = live_renderer()?;
+    resident::prune(pica);
     let mut snapshots = pica.take_vulkan_snapshots();
     let draws = snapshots.len();
     let feedback = feedback_reads_in(&snapshots, pica)?;
@@ -913,9 +929,7 @@ pub(crate) fn replay_live(pica: &mut Pica, mem: &mut Memory) -> Result<(usize, u
             }
             if let Some(index) = dependency {
                 let info = latest[index];
-                if !feedback_textures.iter().any(|entry| {
-                    entry.address == texture.address && entry.sampler == texture.sampler && entry.border == texture.border
-                }) {
+                if !feedback_textures.iter().any(|entry: &LiveFeedbackTexture| entry.matches(texture)) {
                     let target = pica
                         .vulkan_live_target_cache
                         .iter()
@@ -926,7 +940,23 @@ pub(crate) fn replay_live(pica: &mut Pica, mem: &mut Memory) -> Result<(usize, u
                         address: texture.address,
                         sampler: texture.sampler,
                         border: texture.border,
+                        width: texture.width,
+                        height: texture.height,
+                        format: texture.format,
                         gpu: Arc::new(gpu),
+                    });
+                }
+            }
+            if !feedback_textures.iter().any(|entry| entry.matches(texture)) {
+                if let Some(gpu) = resident::texture(pica, renderer, texture)? {
+                    feedback_textures.push(LiveFeedbackTexture {
+                        address: texture.address,
+                        sampler: texture.sampler,
+                        border: texture.border,
+                        width: texture.width,
+                        height: texture.height,
+                        format: texture.format,
+                        gpu,
                     });
                 }
             }
@@ -993,13 +1023,13 @@ pub(crate) fn replay_live(pica: &mut Pica, mem: &mut Memory) -> Result<(usize, u
                 .iter_mut()
                 .find(|target| target.info == result.info)
                 .ok_or("live target disappeared after readback")?;
-            target.contents = Some(TargetSnapshot {
+            target.contents = Some(Arc::new(TargetSnapshot {
                 width: result.info.width,
                 height: result.info.height,
                 color: result.color,
                 depth,
                 stencil: result.stencil,
-            });
+            }));
         }
     }
     pica.vulkan_live_resources.transfer_times[1] += writeback_started.elapsed();
@@ -1088,7 +1118,7 @@ fn render_live_segment(
         };
         let cached = &pica.vulkan_live_target_cache[target_index];
         let resident_matches =
-            resident_contents_match(cached.contents.as_ref(), initial) || deferred::matches(cached.pending.as_ref(), initial);
+            resident_contents_match(cached.contents.as_deref(), initial) || deferred::matches(cached.pending.as_ref(), initial);
         // Color buffers can change while the guest depth allocation stays the
         // same. Re-expanding its native samples would destroy subpixel depth
         // and make a later surface pass fail between native pixel centers.

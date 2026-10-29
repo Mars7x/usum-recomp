@@ -334,13 +334,13 @@ mod tests {
             depth_detail: true,
             info,
             gpu,
-            contents: Some(TargetSnapshot {
+            contents: Some(Arc::new(TargetSnapshot {
                 width: 256,
                 height: 512,
                 color: result.color,
                 depth: result.depth.unwrap(),
                 stencil: result.stencil,
-            }),
+            })),
             pending: None,
             scaled_color: None,
         });

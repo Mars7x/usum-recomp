@@ -2877,3 +2877,31 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   command lists. Outlines remain enabled by the game's default rendering state;
   the requested future outline-disable setting is not implemented in this change.
   The 200-FPS target remains unmet. Game captures stay private.
+
+### R-095 2026-10-29 — Preserve scaled framebuffer textures across command lists
+
+- Later lists previously decoded framebuffer color or D24S8 textures from native
+  guest bytes, losing subpixel detail from earlier 6× rendering. Keep immutable
+  GPU texture views for compatible RGBA8 color and D24S8 reads. Exact native
+  data, address, dimensions, format, sampler and border checks guard reuse;
+  CPU changes fall back to normal texture decoding.
+- A new immutable snapshot identity distinguishes GPU generations even when
+  their native center samples are byte-identical. Prune obsolete cached views,
+  select the newest compatible source, and distinguish color from depth/stencil.
+  Different texture formats or framebuffer subviews keep the existing path.
+- A GPU regression moves geometry between native pixel centers without changing
+  native bytes. Both color and stencil reads in a later list must still change
+  at full resolution and match a direct GPU reference. CPU writes reject reuse.
+  An asymmetric odd-sized color test independently checks channels, row direction
+  and immutable output after the source is overwritten and destroyed.
+- Recorded overworld and battle replays confirm cleaner 6× outlines; intermediate
+  color reads caused the remaining coarse battle contour. All 82 enabled runtime
+  tests, 16 enabled renderer tests, ten runtime hardware tests, six renderer
+  hardware tests and strict Clippy pass. `USUM_VULKAN_RESIDENT_TEXTURES=0` retains
+  the previous native-upload texture path for diagnosis. Outlines stay on by default.
+- Separately measured R-094 stencil implementation: old/new/new/old intro runs
+  take 9.146/9.368/9.707/9.143 seconds for six game seconds, a 4.3% wall-time
+  regression under investigation. Overworld takes 24.237/20.329/20.754/23.657
+  seconds for 16 game seconds: 16.6% greater update throughput, about 24 versus
+  21 top-screen updates/s. Guest instructions, draws and updates match. These
+  measurements exclude this texture-residency change; 200 FPS remains unmet.
