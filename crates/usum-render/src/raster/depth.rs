@@ -62,7 +62,7 @@ mod tests {
         let expected: Vec<f32> = (0..32).map(|n| n as f32 / 31.0).collect();
         renderer.upload_target(&source, &color, &expected).unwrap();
         let snapshot = renderer.snapshot_depth(&source).unwrap();
-        renderer.upload_target(&source, &color, &vec![1.0; 32]).unwrap();
+        renderer.upload_target(&source, &color, &[1.0; 32]).unwrap();
         let mut batch = renderer.begin_batch(&source);
         batch.restore_depth(&snapshot).unwrap();
         assert_eq!(batch.finish_and_read_color_and_depth().unwrap().1, expected);
