@@ -2788,3 +2788,25 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   trainer and Pokémon models at 6× instead of the reproduced holes.
 - All 78 enabled runtime tests, eight runtime hardware tests, three renderer
   hardware tests and strict Clippy pass. Private game captures remain outside Git.
+
+### R-091 2026-10-28 — Reduce intro dispatch and redundant depth-copy overhead
+
+- User-space CPU sampling identifies guest word reads, writes and region lookup
+  as about 35% of intro cycles, with dispatch resolution and its keyed hash another
+  9%. Replace the dispatch cache's string-oriented hash with a mixed integer hash
+  for its verified code-address keys. Module unload/replacement/relocation and
+  instruction-state validation remain unchanged.
+- Track whether a scaled depth surface contains raster-written detail. Preserve
+  native-seeded depth without an extra full-resolution snapshot when no raster
+  write has occurred; surfaces with subpixel depth still take the battle fix's
+  immutable GPU-copy path. The sloped-depth battle regression test still passes.
+- At 6×, old/new/new/old intro runs take 11.018/10.187/10.227/11.295 seconds for
+  six game seconds: 9.3% greater throughput. Every run executes 1,583,340,348 guest
+  instructions, 344 conversion jobs, 688 draws and 347 top-screen updates. All
+  four native/scaled screen captures match byte-for-byte across all four runs.
+- One 16-game-second overworld pair takes 29.301 versus 28.394 seconds, a modest
+  3.2% throughput increase needing further repetition. Instructions, draws and
+  498 top-screen updates match, as do all four captures. Enabled runtime tests,
+  strict Clippy and the hardware depth-prepass regression pass. These are headless
+  update-throughput measurements; real-time playback and the 200-FPS goal remain
+  unmet. Sampling data, binaries and game captures stay outside the repository.

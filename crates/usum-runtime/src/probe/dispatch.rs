@@ -1,10 +1,33 @@
 //! Cache host dispatch lookups, preserving module identity checks on every hit.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 use usum_guest::{lookup, Code};
 
 use super::{module_code, Kernel, Modules};
+
+// Keys are verified guest code addresses, not attacker-supplied strings. Mix
+// both ends of the address so aligned ARM/Thumb entries use the whole table.
+#[derive(Default)]
+struct AddressHasher(u64);
+
+impl Hasher for AddressHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write_u32(&mut self, value: u32) {
+        let mut value = u64::from(value);
+        value = (value ^ (value >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94d049bb133111eb);
+        self.0 = value ^ (value >> 31);
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+        }
+    }
+}
 
 struct Owner {
     index: usize,
@@ -32,12 +55,12 @@ impl CachedCode {
 
 pub(super) struct CodeCache {
     enabled: bool,
-    entries: HashMap<u32, CachedCode>,
+    entries: HashMap<u32, CachedCode, BuildHasherDefault<AddressHasher>>,
 }
 
 impl CodeCache {
     pub fn new(enabled: bool) -> Self {
-        Self { enabled, entries: HashMap::new() }
+        Self { enabled, entries: HashMap::default() }
     }
 
     pub fn resolve(

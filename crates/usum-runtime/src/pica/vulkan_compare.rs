@@ -54,6 +54,7 @@ pub(super) struct LiveTarget {
     pending: Option<Arc<deferred::DeferredTarget>>,
     scaled_color: Option<Arc<[u8]>>,
     last_draw: u64,
+    depth_detail: bool,
 }
 
 /// One triangle-list draw after PICA vertex and optional geometry shading.
@@ -1034,6 +1035,7 @@ fn render_live_segment(
                     pending: None,
                     scaled_color: None,
                     last_draw: 0,
+                    depth_detail: false,
                 });
                 pica.vulkan_live_target_cache.len() - 1
             }
@@ -1050,7 +1052,8 @@ fn render_live_segment(
                 pica.vulkan_live_target_cache
                     .iter()
                     .filter(|other| {
-                        other.info.depth_address == target_info.depth_address
+                        other.depth_detail
+                            && other.info.depth_address == target_info.depth_address
                             && other.info.depth_format == target_info.depth_format
                             && other.info.width == target_info.width
                             && other.info.height == target_info.height
@@ -1063,12 +1066,14 @@ fn render_live_segment(
                 None
             };
         let cached = &mut pica.vulkan_live_target_cache[target_index];
+        let retained_detail = if initialized || resident_matches { cached.depth_detail } else { saved_depth.is_some() };
         // Once commands touch the target the previous readback no longer
         // describes it. Only a fully successful readback can restore reuse.
         cached.contents = None;
         cached.pending = None;
         cached.scaled_color = None;
         cached.last_draw = draws.last().expect("nonempty target group").draw_number;
+        cached.depth_detail = retained_detail || draws.iter().any(|draw| draw.state.raster.depth.write);
         let target = Arc::clone(&cached.gpu);
         if !initialized {
             if resident_matches {
