@@ -236,6 +236,10 @@ impl LiveResources {
         self.deferred.get()
     }
 
+    pub(super) fn uniform_depth_imports(&self) -> u64 {
+        self.deferred.uniform_depth_imports.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub(super) fn capture_times(&self) -> [std::time::Duration; 3] {
         self.capture_times
     }
@@ -575,9 +579,7 @@ fn target_snapshot(pica: &Pica, mem: &Memory, target: CaptureTarget) -> Result<T
         }
     }
 
-    let mut depth = vec![1.0; pixels as usize];
-    let mut stencil = vec![0; pixels as usize];
-    if depth_address != 0 {
+    let (depth, stencil) = if depth_address != 0 {
         let depth_bpp = match depth_format {
             0 => 2,
             2 => 3,
@@ -587,6 +589,20 @@ fn target_snapshot(pica: &Pica, mem: &Memory, target: CaptureTarget) -> Result<T
         let depth_raw = mem
             .slice(depth_at, pixels.checked_mul(depth_bpp).ok_or("depth framebuffer is too large")?)
             .ok_or("depth framebuffer not mapped")?;
+        if depth_format == 3 && pica.vulkan_uniform_depth {
+            if let Some((depth, stencil)) = uniform_d24s8_target(depth_raw, width, pixels as usize) {
+                pica.vulkan_live_resources.deferred.uniform_depth_imports.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return Ok(TargetSnapshot {
+                    width,
+                    height,
+                    color,
+                    depth: vec![depth; pixels as usize],
+                    stencil: vec![stencil; pixels as usize],
+                });
+            }
+        }
+        let mut depth = vec![1.0; pixels as usize];
+        let mut stencil = vec![0; pixels as usize];
         if depth_format == 3 {
             decode_d24s8_target(depth_raw, &mut depth, &mut stencil, width);
         } else {
@@ -602,8 +618,30 @@ fn target_snapshot(pica: &Pica, mem: &Memory, target: CaptureTarget) -> Result<T
                 }
             }
         }
-    }
+        (depth, stencil)
+    } else {
+        (vec![1.0; pixels as usize], vec![0; pixels as usize])
+    };
     Ok(TargetSnapshot { width, height, color, depth, stencil })
+}
+
+/// Exact repeated D24S8 words represent a uniform plane regardless of Morton
+/// ordering. Check complete tiled dimensions and every byte before specializing.
+fn uniform_d24s8_target(raw: &[u8], width: u32, pixels: usize) -> Option<(f32, u8)> {
+    if width == 0
+        || !width.is_multiple_of(8)
+        || !pixels.is_multiple_of((width as usize).checked_mul(8)?)
+        || raw.len() != pixels.checked_mul(4)?
+    {
+        return None;
+    }
+    let first: [u8; 4] = raw.get(..4)?.try_into().ok()?;
+    let repeated = [first; 4];
+    if !raw.as_chunks::<16>().0.iter().all(|block| block.as_slice() == repeated.as_flattened()) {
+        return None;
+    }
+    let depth = (u32::from_le_bytes(first) & 0xFF_FFFF) as f32 / 0xFF_FFFF as f32;
+    Some((depth, first[3]))
 }
 
 // The common framebuffer formats have fixed four-byte input pixels. Keeping
@@ -1682,6 +1720,32 @@ mod tests {
 
     use super::*;
     use usum_guest::Perm;
+
+    #[test]
+    fn uniform_depth_matches_tiled_decode_and_rejects_nonuniform_or_partial_planes() {
+        for (width, height) in [(8, 8), (16, 24), (256, 512)] {
+            let pixels = (width * height) as usize;
+            for word in [0u32, 0x00FF_FFFF, 0xFFFF_FFFF, 0x7F12_3456, 0x9300_0001] {
+                let raw = word.to_le_bytes().repeat(pixels);
+                let (depth, stencil) = uniform_d24s8_target(&raw, width, pixels).unwrap();
+                let mut reference_depth = vec![0.0; pixels];
+                let mut reference_stencil = vec![0; pixels];
+                decode_d24s8_target(&raw, &mut reference_depth, &mut reference_stencil, width);
+                assert!(reference_depth.iter().all(|v| v.to_bits() == depth.to_bits()));
+                assert!(reference_stencil.iter().all(|&v| v == stencil));
+                for at in [0, raw.len() / 2, raw.len() - 1] {
+                    let mut changed = raw.clone();
+                    changed[at] ^= 1;
+                    assert!(uniform_d24s8_target(&changed, width, pixels).is_none(), "check every depth and stencil byte");
+                }
+                assert!(uniform_d24s8_target(&raw[..raw.len() - 1], width, pixels).is_none());
+                assert!(uniform_d24s8_target(&raw, 0, pixels).is_none());
+                assert!(uniform_d24s8_target(&raw, 7, pixels).is_none());
+            }
+        }
+        assert!(uniform_d24s8_target(&[0; 256], 16, 64).is_none(), "four rows are not a complete tile row");
+        assert!(uniform_d24s8_target(&[], 8, 0).is_none());
+    }
 
     #[test]
     fn fixed_format_writeback_matches_generic_encoding_and_preserves_stencil() {

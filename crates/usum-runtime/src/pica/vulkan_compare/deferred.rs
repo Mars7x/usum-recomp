@@ -9,6 +9,7 @@ pub(super) struct Stats {
     queued: AtomicU64,
     materialized: AtomicU64,
     nanos: AtomicU64,
+    pub(super) uniform_depth_imports: AtomicU64,
 }
 
 impl Stats {

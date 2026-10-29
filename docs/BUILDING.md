@@ -288,6 +288,10 @@ layout. Both planes still come from the same immutable GPU ticket, and reading
 both counts as one materialized target. `USUM_VULKAN_SPLIT_ENCODE=0` restores
 eager conversion of both planes for reference comparisons.
 
+D24S8 imports recognize complete, exactly uniform depth/stencil planes and fill
+their linear buffers with the decoded value. Nonuniform planes retain the tiled
+decoder. `USUM_VULKAN_UNIFORM_DEPTH=0` selects that decoder for every import.
+
 Full-plane framebuffer color and depth/stencil textures also use immutable GPU
 views. Matching dimensions, format and logical device-write identity are required;
 CPU writes, subviews and incompatible layouts use ordinary texture decoding.

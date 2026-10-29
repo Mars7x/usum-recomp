@@ -322,6 +322,7 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
                 );
             }
             let (reused, uploaded) = kernel.pica.vulkan_target_stats();
+            println!("vulkan uniform depth {} imports", kernel.pica.vulkan_uniform_depth_imports());
             println!("vulkan targets {reused} resident reuses, {uploaded} guest uploads");
             let [targets, textures, vertices] = kernel.pica.vulkan_capture_times().map(|time| time.as_secs_f64());
             println!("vulkan capture targets {targets:.3} s, textures {textures:.3} s, vertex packing {vertices:.3} s");

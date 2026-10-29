@@ -3312,3 +3312,71 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   modest headless throughput improvements, not 200 actual normal-speed FPS.
   Full GPU snapshots, remaining framebuffer conversion and guest execution are
   still costs. Evidence and game data remain private.
+
+### R-109 2026-10-29 — Reject direct frozen-plane imports after replay coverage check
+
+- Prototype importing linear color and quantized D24S8 directly from immutable
+  readback tickets instead of encoding to guest tiled layout and decoding again.
+  Exact plane identity, dimensions, format and read permission gate the path;
+  CPU writes and remaps remove it. Preserve D24 rounding and original fault paths,
+  and retain the tiled import behind a reference switch during the experiment.
+- All 42 replay captures, three WAVs, saves and guest counters match across
+  baseline/reference/prototype. The prototype passes 68 CPU runtime tests,
+  93 enabled Vulkan/window tests, 13 hardware GPU tests and strict Clippy.
+  A dedicated GPU check covers quantization, immutable snapshots, permissions,
+  wrong layouts/planes, partial writes, remaps and one-target accounting.
+- Coverage counters find 0/338/901 direct color imports in intro/world/battle,
+  and zero direct depth imports in all three. The profiled depth decode cost
+  therefore remains outside this shortcut. Stop before controlled benchmarks;
+  capture-run elapsed times are not performance evidence. Reject the prototype
+  as insufficiently targeted, retain its patch/evidence privately, and restore
+  the shipped path. Investigate the raw depth buffers that actually reach the
+  decoder instead. This experiment establishes no FPS improvement.
+
+### R-110 2026-10-29 — Specialize exactly uniform D24S8 imports
+
+- Post-R-108 gameplay sampling places tiled depth decoding at about 2.6%.
+  The raw buffers reaching it include whole-plane clears, unlike the opaque
+  providers tested in R-109. Recognize complete 8×8-tiled dimensions containing
+  one repeated D24S8 word: compare every depth and stencil byte in 16-byte blocks,
+  decode its value once, and fill the linear buffers. Nonuniform or incomplete
+  layouts keep the original decoder. The original checked memory slice still
+  controls permissions, bounds and deferred-device failures.
+- USUM_VULKAN_UNIFORM_DEPTH=0 retains per-pixel tiled decoding. Capture this
+  policy when constructing PICA and retain it across process restarts. Diagnostic
+  counters verify 684/991/2348 uniform imports in intro/world/battle, and zero
+  when disabled. No shader, draw, guest instruction, budget, clock or service
+  behavior changes; all existing renderer and CPU vertex fallbacks remain.
+- Controlled 6× replay ordering is old/new/reference/reference/new/old/new/old/
+  old/new, with identical hashed saves and inputs, no capture/call-profile overhead,
+  and encoder/build overlap rejected. Intro old 8.135/8.193/8.036/8.138 seconds,
+  new 7.920/8.029/7.932/7.868; overworld old 17.800/17.488/17.492/17.662,
+  new 17.905/17.753/17.641/16.972; battle old 27.963/28.562/28.053/28.561,
+  new 27.671/26.577/27.168/27.863. Average throughput improves 2.37% intro and
+  3.53% battle. Overworld's +0.24% is inconclusive: three optimized samples are
+  slower than the paired baseline. Do not claim an overworld improvement or
+  exclude a small regression. Same-binary reference pairs are 8.032/8.088,
+  17.673/17.201, and 28.180/27.778; the shipped fce3036 binary is the baseline.
+- Baseline/reference/optimized runs match all 42 native/scaled captures, three
+  WAVs, saves and guest instruction/VBlank/draw/triangle/video/audio/update counts.
+  The longer bag/gameplay and Mystery Gift recordings match 32 additional images,
+  two WAVs, saves and guest counters, including restart at VBlank 3728. Their
+  baseline captures are reused only after verifying the identical binary SHA,
+  starting-save hashes, input hash and audio hash. Functional elapsed times are
+  not controlled performance evidence. All scenes retain zero software fallbacks.
+- All 68 CPU runtime tests, 94 enabled Vulkan/window runtime tests, 12 hardware
+  GPU tests and strict Clippy pass. Compare uniform decoding bit-for-bit with the
+  retained tiled decoder across sizes, depth values and stencil bytes. Changes
+  at the first/middle/last byte, truncated inputs and partial tiles must fall back.
+- An isolated component benchmark with extracted production functions checks the
+  nonuniform scan cost: four interleaved trials of 512 decodes of a 256×512 plane.
+  Uniform average elapsed time is 0.11123 → 0.01116 seconds; an early mismatch
+  remains about 0.1106 seconds; a last-byte mismatch takes 0.11051 → 0.11750
+  seconds (about 6.3% more decoder time). These are component measurements, not
+  a tenfold game speedup. Late nonuniform mismatches are a remaining cost.
+- A fresh gameplay profile puts tiled depth decoding below the 1% reporting
+  threshold, vertex loading at 5.04%, draw encoding 3.89%, GPU ticket materialization
+  1.89%, and deferred encoding 1.83%. Changed attribution and sampling variance
+  cannot establish FPS. Four runs and these recordings do not cover the whole
+  game. These modest headless gains do not change the game's render cadence or
+  establish 200 actual rendered FPS at normal speed; that objective remains open.

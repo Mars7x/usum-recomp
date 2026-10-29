@@ -99,6 +99,8 @@ pub struct Pica {
     #[cfg(feature = "vulkan-compare")]
     vulkan_split_encode: bool,
     #[cfg(feature = "vulkan-compare")]
+    vulkan_uniform_depth: bool,
+    #[cfg(feature = "vulkan-compare")]
     vulkan_resolution_scale: u32,
     #[cfg(feature = "vulkan-compare")]
     scaled_displays: Vec<vulkan_compare::scale::Display>,
@@ -178,6 +180,8 @@ impl Default for Pica {
             vulkan_defer_readback: false,
             #[cfg(feature = "vulkan-compare")]
             vulkan_split_encode: true,
+            #[cfg(feature = "vulkan-compare")]
+            vulkan_uniform_depth: std::env::var("USUM_VULKAN_UNIFORM_DEPTH").as_deref() != Ok("0"),
             #[cfg(feature = "vulkan-compare")]
             vulkan_resolution_scale: 1,
             #[cfg(feature = "vulkan-compare")]
@@ -364,6 +368,11 @@ impl Pica {
     #[cfg(feature = "vulkan-compare")]
     pub fn vulkan_deferred_stats(&self) -> (u64, u64, std::time::Duration) {
         self.vulkan_live_resources.deferred_stats()
+    }
+
+    #[cfg(feature = "vulkan-compare")]
+    pub fn vulkan_uniform_depth_imports(&self) -> u64 {
+        self.vulkan_live_resources.uniform_depth_imports()
     }
 
     #[cfg(feature = "vulkan-compare")]
@@ -880,6 +889,7 @@ mod tests {
             pica.enable_vulkan_acceleration();
             pica.enable_vulkan_deferred_readback();
             pica.enable_vulkan_vertex();
+            pica.vulkan_uniform_depth = false;
             pica.set_vulkan_resolution_scale(6).unwrap();
         }
         pica.restart_process();
@@ -892,6 +902,7 @@ mod tests {
         #[cfg(feature = "vulkan-compare")]
         {
             assert!(pica.vulkan_accelerate && pica.vulkan_vertex && pica.vulkan_defer_readback);
+            assert!(!pica.vulkan_uniform_depth);
             assert_eq!(pica.vulkan_resolution_scale, 6);
         }
     }
