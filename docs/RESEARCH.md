@@ -2905,3 +2905,24 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   seconds for 16 game seconds: 16.6% greater update throughput, about 24 versus
   21 top-screen updates/s. Guest instructions, draws and updates match. These
   measurements exclude this texture-residency change; 200 FPS remains unmet.
+
+### R-096 2026-10-29 — Fuse depth/stencil conversion and avoid reading replaced planes
+
+- Decode native D24S8 depth and stencil in one tiled pass. Encode rendered depth
+  and stencil together, retaining old stencil only when no replacement is
+  supplied. Complete D24S8 overwrites no longer read/copy old guest bytes first.
+  Deferred encoding uses the same combined pass.
+- Golden format tests check depth bits and stencil across tiles. A deferred
+  provider that faults on every read proves a complete rendered overwrite never
+  materializes old data. All 83 enabled runtime tests, ten runtime hardware tests
+  and strict Clippy pass.
+- Frozen old/new/new/old 6× intro runs take 9.659/9.358/9.520/9.496 seconds for
+  six game seconds, about 1.5% more throughput. The 16-game-second overworld runs
+  take 20.894/18.693/20.008/20.421 seconds, about 6.8% more throughput on average,
+  with noticeable variation between the two new runs. Instructions, draws,
+  updates and all native/scaled captures match exactly. The result averages about
+  26 headless top-screen updates/s; it does not establish normal-speed 200 FPS.
+- Separately, R-095's full-resolution texture change measured 9.382/9.463/9.622/
+  9.298 seconds for the intro and 20.448/20.772/20.279/20.017 for the overworld.
+  Its small overhead preserves the corrected high-resolution effect chain rather
+  than substituting native-resolution intermediate textures.

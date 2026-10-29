@@ -61,14 +61,7 @@ impl DeferredTarget {
         let mut color = vec![0; read.color.len()];
         let mut depth = vec![0; read.depth.len() * 4];
         encode_rgba8_target(&read.color, &mut color, self.info.width);
-        for row in 0..self.info.height {
-            for x in 0..self.info.width {
-                let i = (row * self.info.width + x) as usize;
-                let at = tiled_offset(x, row, self.info.width) as usize * 4;
-                depth[at + 3] = read.stencil[i];
-            }
-        }
-        encode_d24s8_target(&read.depth, &mut depth, self.info.width);
+        encode_d24s8_target(&read.depth, Some(&read.stencil), &mut depth, self.info.width);
         self.stats.materialized.fetch_add(1, Ordering::Relaxed);
         self.stats.nanos.fetch_add(started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64, Ordering::Relaxed);
         Ok((color, depth))
@@ -249,7 +242,7 @@ mod tests {
         let mut expected_color = vec![0; 256];
         let mut expected_depth = vec![0x91; 256];
         encode_rgba8_target(&color, &mut expected_color, 8);
-        encode_d24s8_target(&depth, &mut expected_depth, 8);
+        encode_d24s8_target(&depth, None, &mut expected_depth, 8);
         assert_eq!(mem.read_range(pica.linear_base, 256).unwrap(), expected_color);
         assert_eq!(mem.read_range(pica.linear_base + 0x1000, 256).unwrap(), expected_depth);
         // Readback does not invalidate residency, but even a one-byte CPU write

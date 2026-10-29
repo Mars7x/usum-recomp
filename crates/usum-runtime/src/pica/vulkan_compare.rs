@@ -565,12 +565,7 @@ fn target_snapshot(pica: &Pica, mem: &Memory, target: CaptureTarget) -> Result<T
             .slice(depth_at, pixels.checked_mul(depth_bpp).ok_or("depth framebuffer is too large")?)
             .ok_or("depth framebuffer not mapped")?;
         if depth_format == 3 {
-            decode_d24s8_target(depth_raw, &mut depth, width);
-            for row in 0..height {
-                for x in 0..width {
-                    stencil[(row * width + x) as usize] = depth_raw[tiled_offset(x, row, width) as usize * 4 + 3];
-                }
-            }
+            decode_d24s8_target(depth_raw, &mut depth, &mut stencil, width);
         } else {
             let value_bytes = depth_bpp.min(3) as usize;
             let maximum = if depth_format == 0 { 0xFFFF } else { 0xFF_FFFF } as f32;
@@ -603,15 +598,16 @@ fn decode_rgba8_target(raw: &[u8], output: &mut [u8], width: u32) {
     }
 }
 
-fn decode_d24s8_target(raw: &[u8], output: &mut [f32], width: u32) {
+fn decode_d24s8_target(raw: &[u8], output: &mut [f32], stencil: &mut [u8], width: u32) {
     if width == 0 {
         return;
     }
     for (row, destination) in output.chunks_exact_mut(width as usize).enumerate() {
         for (x, pixel) in destination.iter_mut().enumerate() {
             let at = tiled_offset(x as u32, row as u32, width) as usize * 4;
-            let value = u32::from_le_bytes(raw[at..at + 4].try_into().expect("D24S8 pixel")) & 0xFF_FFFF;
-            *pixel = value as f32 / 0xFF_FFFF as f32;
+            let value = u32::from_le_bytes(raw[at..at + 4].try_into().expect("D24S8 pixel"));
+            *pixel = (value & 0xFF_FFFF) as f32 / 0xFF_FFFF as f32;
+            stencil[row * width as usize + x] = (value >> 24) as u8;
         }
     }
 }
@@ -790,13 +786,17 @@ fn write_depth_stencil_result(
         _ => 4,
     };
     let address = pica.pa_to_va(target.depth_address)?;
-    let mut tiled = mem
-        .slice(address, pixels.checked_mul(bytes_per_pixel).ok_or("depth framebuffer is too large")?)
-        .ok_or("depth framebuffer not mapped")?
-        .to_vec();
+    let len = pixels.checked_mul(bytes_per_pixel).ok_or("depth framebuffer is too large")?;
+    // A complete rendered D24S8 result overwrites every byte, including stencil.
+    // Do not materialize or copy the old guest plane before replacing it.
+    let mut tiled = if target.depth_format == 3 && depth.is_some() && stencil.is_some() {
+        vec![0; len as usize]
+    } else {
+        mem.slice(address, len).ok_or("depth framebuffer not mapped")?.to_vec()
+    };
     if let Some(depth) = depth {
         if target.depth_format == 3 {
-            encode_d24s8_target(depth, &mut tiled, target.width);
+            encode_d24s8_target(depth, stencil, &mut tiled, target.width);
         } else {
             let maximum = if target.depth_format == 0 { 0xFFFF } else { 0xFF_FFFF } as f32;
             let value_bytes = bytes_per_pixel.min(3) as usize;
@@ -810,7 +810,7 @@ fn write_depth_stencil_result(
             }
         }
     }
-    if target.depth_format == 3 {
+    if target.depth_format == 3 && depth.is_none() {
         if let Some(stencil) = stencil {
             for y in 0..target.height {
                 for x in 0..target.width {
@@ -834,7 +834,7 @@ fn encode_rgba8_target(color: &[u8], tiled: &mut [u8], width: u32) {
     }
 }
 
-fn encode_d24s8_target(depth: &[f32], tiled: &mut [u8], width: u32) {
+fn encode_d24s8_target(depth: &[f32], stencil: Option<&[u8]>, tiled: &mut [u8], width: u32) {
     if width == 0 {
         return;
     }
@@ -842,11 +842,8 @@ fn encode_d24s8_target(depth: &[f32], tiled: &mut [u8], width: u32) {
         for (x, value) in source.iter().enumerate() {
             let value = (value.clamp(0.0, 1.0) * 0xFF_FFFF as f32) as u32;
             let at = tiled_offset(x as u32, row as u32, width) as usize * 4;
-            let [lo, mid, hi, _] = value.to_le_bytes();
-            // The high byte is guest stencil, not part of normalized depth.
-            tiled[at] = lo;
-            tiled[at + 1] = mid;
-            tiled[at + 2] = hi;
+            let stencil = stencil.map_or(tiled[at + 3], |s| s[row * width as usize + x]);
+            tiled[at..at + 4].copy_from_slice(&(value | (u32::from(stencil) << 24)).to_le_bytes());
         }
     }
 }
@@ -1667,9 +1664,58 @@ mod tests {
                 }
             }
             encode_rgba8_target(&color, &mut actual_color, width);
-            encode_d24s8_target(&depth, &mut actual_depth, width);
+            encode_d24s8_target(&depth, None, &mut actual_depth, width);
             assert_eq!(actual_color, expected_color);
             assert_eq!(actual_depth, expected_depth);
+            let stencil: Vec<u8> = (0..width * height).map(|i| (i * 43 + 17) as u8).collect();
+            for y in 0..height {
+                for x in 0..width {
+                    expected_depth[tiled_offset(x, y, width) as usize * 4 + 3] = stencil[(y * width + x) as usize];
+                }
+            }
+            encode_d24s8_target(&depth, Some(&stencil), &mut actual_depth, width);
+            assert_eq!(actual_depth, expected_depth);
+        }
+    }
+
+    #[test]
+    fn complete_depth_stencil_overwrite_does_not_read_old_device_bytes() {
+        use std::{
+            any::Any,
+            sync::atomic::{AtomicUsize, Ordering},
+        };
+        use usum_guest::{memory::DeferredBytes, Fault, Perm};
+        #[derive(Debug)]
+        struct Unreadable(Arc<AtomicUsize>);
+        impl DeferredBytes for Unreadable {
+            fn len(&self) -> usize {
+                256
+            }
+            fn bytes(&self) -> Result<&[u8], Fault> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Err(Fault::Device { address: 0x30001000 })
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+        }
+        let pica = Pica::default();
+        let mut mem = Memory::new();
+        mem.map(pica.linear_base, vec![0; 0x2000], Perm::RW).unwrap();
+        let reads = Arc::new(AtomicUsize::new(0));
+        mem.defer_device_write(pica.linear_base + 0x1000, Arc::new(Unreadable(Arc::clone(&reads)))).unwrap();
+        let info = CaptureTarget {
+            color_address: 0x20000000,
+            depth_address: 0x20001000,
+            width: 8,
+            height: 8,
+            color_format: 0,
+            depth_format: 3,
+        };
+        write_depth_stencil_result(&pica, &mut mem, info, Some(&[0.25; 64]), Some(&[0x91; 64])).unwrap();
+        assert_eq!(reads.load(Ordering::Relaxed), 0);
+        for i in 0..64 {
+            assert_eq!(mem.read_u32(pica.linear_base + 0x1000 + i * 4).unwrap(), 0x913fffff);
         }
     }
 
@@ -1680,7 +1726,8 @@ mod tests {
             let mut color = vec![0; raw.len()];
             let mut depth = vec![0.0; (width * height) as usize];
             decode_rgba8_target(&raw, &mut color, width);
-            decode_d24s8_target(&raw, &mut depth, width);
+            let mut stencil = vec![0; (width * height) as usize];
+            decode_d24s8_target(&raw, &mut depth, &mut stencil, width);
             for row in 0..height {
                 for x in 0..width {
                     let source = tiled_offset(x, row, width) as usize * 4;
@@ -1690,6 +1737,7 @@ mod tests {
                     bytes[..3].copy_from_slice(&raw[source..source + 3]);
                     let expected = u32::from_le_bytes(bytes) as f32 / 0xFF_FFFF as f32;
                     assert_eq!(depth[destination].to_bits(), expected.to_bits());
+                    assert_eq!(stencil[destination], raw[source + 3]);
                 }
             }
         }
