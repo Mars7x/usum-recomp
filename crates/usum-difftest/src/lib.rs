@@ -49,6 +49,13 @@ pub enum Failure {
 
 /// Runs `program` from its entry and returns what it wrote to stdout.
 pub fn execute(program: &Program) -> Result<Vec<u8>, Failure> {
+    execute_with_indexed_layout(program, false)
+}
+
+/// Also exercise scalar accesses through the full-page region index. The
+/// extra mappings are disjoint from the linked image and its stack; the guest
+/// programs cannot observe them through the harness's write/exit syscalls.
+pub fn execute_with_indexed_layout(program: &Program, indexed: bool) -> Result<Vec<u8>, Failure> {
     if let Some(table) = program.table {
         // only one program uses the table; installing it twice is harmless
         usum_guest::install_functions(table);
@@ -57,6 +64,11 @@ pub fn execute(program: &Program) -> Result<Vec<u8>, Failure> {
     let mut bytes = program.image.to_vec();
     bytes.resize(bytes.len().next_multiple_of(0x1000) + SLACK, 0);
     mem.map(BASE, bytes, Perm::RW).expect("one region cannot overlap");
+    if indexed {
+        for i in 0..7 {
+            mem.map(0x1000 + i * 0x2000, vec![0; 0x1000], Perm::RW).expect("disjoint index fixtures");
+        }
+    }
     let mut cpu = Cpu::default();
     cpu.r[15] = program.entry;
     let mut stdout = Vec::new();

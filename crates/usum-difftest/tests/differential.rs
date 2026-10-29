@@ -1,6 +1,6 @@
 //! Every program's recompiled output must equal QEMU's, byte for byte.
 
-use usum_difftest::{execute, Program, PROGRAMS};
+use usum_difftest::{execute_with_indexed_layout, Program, PROGRAMS};
 
 /// Explains a difference. The first 56 bytes are the harness's register
 /// dump; random programs then hold one record per case (r0-r12 and the
@@ -50,14 +50,16 @@ fn describe(program: &Program, actual: &[u8]) -> String {
 fn recompiled_programs_match_qemu() {
     assert!(PROGRAMS.len() >= 2, "the corpus is missing");
     let mut failures = Vec::new();
-    for program in PROGRAMS {
-        match execute(program) {
-            Ok(output) if output == program.expected => {}
-            Ok(output) => failures.push(describe(program, &output)),
-            Err(failure) => failures.push(format!("{}: {failure:?}", program.name)),
+    for indexed in [false, true] {
+        for program in PROGRAMS {
+            match execute_with_indexed_layout(program, indexed) {
+                Ok(output) if output == program.expected => {}
+                Ok(output) => failures.push(format!("indexed={indexed}: {}", describe(program, &output))),
+                Err(failure) => failures.push(format!("indexed={indexed}: {}: {failure:?}", program.name)),
+            }
         }
     }
     let total: usize = PROGRAMS.iter().map(|p| p.instructions).sum();
-    eprintln!("{} programs, {total} translated instructions, {} failed", PROGRAMS.len(), failures.len());
+    eprintln!("{} programs in two layouts, {total} translated instructions, {} failed", PROGRAMS.len(), failures.len());
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }
