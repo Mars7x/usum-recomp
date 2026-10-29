@@ -177,6 +177,7 @@ cargo build --release -p play
 | Q / W | L / R |
 | Enter / Backspace | Start / Select |
 | Escape | quit |
+| F3 / F4 | lower / raise Vulkan internal resolution scale (1×–8×) |
 | F5 | show/hide frame statistics in the window title |
 | F6 | cycle the host presentation cap: auto / 30 / 60 / 120 / 144 / 240 |
 | F7 | toggle the top-left testing FPS counter (off by default) |

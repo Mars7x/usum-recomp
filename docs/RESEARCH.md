@@ -3924,3 +3924,39 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   faults and reference-policy reproduction. Against ed5d9c1, the same five
   replay/save fixtures match all 74 images, five WAVs, saves and guest counters.
   This is a compatibility fix; no FPS improvement is claimed.
+
+### R-120 2026-10-29 — Reject refreshed field decoding and a cadence-only FPS unlock
+
+- Fresh post-R-118 overworld sampling still places InputPlan::load and
+  element_in at 2.75% and 2.55% exclusive samples. Re-evaluate field-level format
+  selection against the current pipeline, retaining scalar conversion and
+  ordered fault/provider behavior. This repeats the approach rejected in R-114;
+  the newer profile motivates a measurement, not an assumption of improvement.
+- Frozen f1a17a2, candidate and same-binary scalar comparisons use identical
+  saves, input and 6× settings. Across intro, overworld, battle, longer-session
+  and restart fixtures, all 74 images, five WAVs, saves and guest counters agree
+  per path, with zero software fallbacks. The prototype passes 108 enabled
+  window/Vulkan tests and strict Clippy, including format/bit-pattern and memory
+  fault/provider-order comparisons.
+- Four balanced before/after trials per scene, with profiling/captures disabled
+  and observed encoder/Rust-build overlap rejected, yield baseline/candidate
+  means of 6.21225/6.2255 seconds (intro), 13.266/13.2865 (overworld) and
+  20.8385/20.84275 (battle). Throughput changes are -0.21%, -0.15% and -0.02%:
+  no useful gain. Same-binary scalar pairs are 6.146/6.180, 13.332/13.304 and
+  20.923/20.894 seconds. Remove the implementation and comparison flag; retain
+  the patch, executables, replay metadata and measurements privately.
+- Separately locate an application frame-wait controller in the user's private
+  executable. A deterministic known-save diagnostic changes its established
+  cadence selector after VBlank 600, leaving all other state identical. By
+  VBlank 900 the control remains in the overworld while the changed cadence has
+  entered an encounter; audio also differs. This is not timing-preserving native
+  FPS, so no cadence patch is shipped. These virtual-clock diagnostics are not
+  normal-speed performance benchmarks.
+- A nearby float initialized to 1.0 is not established as a timestep. A hardware
+  read/write watchpoint on our own diagnostic child observes only a boot-image
+  clone and two diagnostic range copies during the remaining gameplay window;
+  symbol resolution confirms those callers. It provides no evidence of a game
+  simulation consumer in that interval. Leave the field unchanged. No global
+  debugger/profiling permissions are modified, and no game-derived code or
+  captures are published. True simulation timing and engine completion still
+  need tracing; 200 native normal-speed FPS remains unmet.
