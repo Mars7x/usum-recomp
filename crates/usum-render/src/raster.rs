@@ -1,6 +1,7 @@
 mod color;
 mod depth;
 mod display;
+mod pack;
 mod readback;
 mod seed;
 mod stencil;
@@ -1286,14 +1287,7 @@ impl Renderer {
             }
             VertexSource::Pica(draw) => {
                 draw.validate()?;
-                let mut bytes = Vec::with_capacity(draw.inputs.len() * 256);
-                for input in draw.inputs {
-                    for register in input {
-                        for value in register {
-                            bytes.extend_from_slice(&value.to_ne_bytes());
-                        }
-                    }
-                }
+                let bytes = pack::vertex_inputs(draw.inputs);
                 if bytes.len() as u64 > self.device.limits().max_storage_buffer_binding_size {
                     return Err("PICA vertex input exceeds device storage limit".into());
                 }

@@ -3490,3 +3490,71 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   not a proven optimum for every workload. Four timing trials and these recordings
   leave whole-game performance/correctness uncertain. The 200 actual rendered
   FPS objective at normal speed remains unmet.
+
+### R-113 2026-10-29 — Pack GPU vertex uploads in complete native blocks
+
+- Revisit the R-084/R-085/R-098 CPU investigation after the later optimizations.
+  The R-112 overworld profile puts draw encoding at 4.81%; annotated assembly
+  locates the dominant samples within that function in scalar float appends,
+  including repeated Vec capacity/length work. Each vertex contains 64 floats.
+  Replace those 64 four-byte appends with one 256-byte append, using safe Rust
+  array mapping and native-endian float bytes. Keep the original scalar loop
+  behind USUM_VULKAN_BLOCK_PACK=0, sampled once at first hardware vertex upload.
+- Preserve every float bit, register order, validation, storage-limit check,
+  buffer/bind-group lifetime, shader operation and draw order. CPU geometry and
+  guest execution remain unchanged. The 3DS runtime, instruction budgets and
+  virtual clock remain the compatibility/timing foundation. This is a small
+  host-side helper optimization, not a native movie-decoder replacement.
+- Renderer tests pass in both modes (20 enabled), including varied raw float
+  bits, signed zeros, NaN payloads, register ordering and varied vertex counts.
+  All 99 enabled runtime and 68 CPU tests pass, as do strict renderer/runtime
+  Clippy checks. Six renderer and twelve runtime hardware tests pass with both
+  settings; the game replays exercise the actual hardware upload path.
+- An isolated component check packs 262144 vertices per trial, four trials per
+  mode with interleaved order and batch sizes 4/16/256/4096. The block packer is
+  approximately 7.2–9.0 times faster at packing alone, with identical bytes.
+  This microbenchmark is not a whole-game or normal-speed FPS result.
+- Controlled 6× replay trials use frozen def1ef3 as the primary baseline and
+  legacy/fast/reference/reference/fast/legacy/fast/legacy/legacy/fast ordering.
+  Saves, inputs and executable hashes are recorded. Periodic dumps and call
+  profiling are disabled; encoder/build overlap is rejected without interrupting
+  other processes. Intro old 7.901/8.055/7.928/7.994 seconds, new
+  7.981/8.005/7.943/7.907; overworld old 16.728/17.712/17.331/17.353,
+  new 16.388/16.303/17.015/16.539; battle old 27.438/27.733/27.372/27.363,
+  new 27.553/26.991/27.244/26.929. Average replay throughput changes are
+  +0.13%, +4.35%, +1.09%. Intro is unchanged within noise; battle is inconclusive,
+  including a slower first pair. Overworld is the strongest measured gain.
+- Same-binary scalar pairs are 8.017/7.987, 17.812/17.339 and 26.972/27.691
+  seconds. They retain a policy branch and changed function/binary layout;
+  the frozen executable is the primary baseline rather than assuming reference
+  mode reproduces its performance exactly.
+- Separate isolated overworld user-space counters, ordered legacy/fast/scalar/
+  scalar/fast/legacy, corroborate reduced host work. Legacy instructions are
+  133351424865/133415483555 versus 125485000598/125552020631 block-packed
+  (5.90% fewer). Legacy cycles are 61740133188/62534107637 versus
+  60455099569/60622795914 (2.57% fewer). Same-binary scalar instructions are
+  133485613102/133404497040 and cycles 62516475400/62237551863, giving 5.94%
+  and 2.95% reductions respectively. Both events are 100% scheduled in every
+  run. Counts include setup and driver threads, not just packing, and do not
+  measure normal-speed FPS. All runs retain identical guest work and timing.
+- Baseline/scalar/block modes match 42 native/scaled captures, three PCM WAVs,
+  output saves and guest instruction/VBlank/draw/triangle/video/audio/update
+  counts. Long bag/gameplay and Mystery Gift recordings match another 32 images,
+  two WAVs, saves and counters, including restart at VBlank 3728. Reused long
+  baseline captures verify identical executable, starting-save/input and audio
+  hashes. Functional capture timings are not performance trials. All five scenes
+  retain zero software fallbacks and identical GPU/CPU vertex counts.
+- Fresh candidate overworld samples put packing at 1.04%, InputPlan::load at
+  2.14%, element_in at 2.00%, and GPU ticket materialization at 2.29%. Changed
+  attribution/inlining and the small sample count preclude subtracting these
+  percentages to infer speedup. A fresh isolated six-second intro profile still
+  puts dispatch resolution at 8.94%, the guest call wrapper at 4.93%, MovieLib
+  functions 0x990021c4/0x99002ea8/0x99002548 at 4.89/4.32/3.34%, and executable
+  helper 0x004bed34 at 3.83% exclusive samples. Several separate write_u32
+  instantiations each contribute 1.88–3.93%; some word access is inlined into
+  translated code, so those symbols do not measure total memory-access cost.
+  Movie conversion itself is 1.42%. Profiles stay private with the replay data.
+- No behavior regression was observed in these recordings; broader correctness
+  and performance remain uncertain. Movie helpers/dispatch and checked memory
+  still warrant targeted investigation. This change does not improve the intro
+  measurably or establish 200 actual rendered FPS at normal game speed.

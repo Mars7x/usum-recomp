@@ -259,6 +259,10 @@ their order and checked-memory fallback; CPU shading keeps the reference loader.
 `USUM_VULKAN_INPUT_PLAN=0` restores that loader for GPU draws too. The probe reports
 planned draws and distinct inputs separately from total GPU vertex counts.
 
+GPU vertex uploads pack each complete 256-byte input as one block while preserving
+native-endian float bits. `USUM_VULKAN_BLOCK_PACK=0` retains the scalar float-by-float
+packer; the process captures this policy at its first hardware vertex upload.
+
 The synthetic hardware vertex checks use no game data:
 
 ```bash
