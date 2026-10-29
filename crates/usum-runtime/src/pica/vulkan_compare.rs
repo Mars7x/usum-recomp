@@ -63,7 +63,7 @@ pub(super) struct LiveTarget {
     info: CaptureTarget,
     gpu: Arc<usum_render::ColorTarget>,
     /// Last successful synchronous readback of this GPU allocation. Reuse
-    /// requires matching guest bytes, or both immutable pending-plane identities.
+    /// requires matching guest bytes, or independently proven resident planes.
     contents: Option<Arc<TargetSnapshot>>,
     pending: Option<Arc<deferred::DeferredTarget>>,
     scaled_color: Option<Arc<[u8]>>,
@@ -939,7 +939,8 @@ pub(crate) fn replay_live(pica: &mut Pica, mem: &mut Memory) -> Result<(usize, u
             }
         }
         if depends_on_pending {
-            targets += render_live_segment(pica, renderer, std::mem::take(&mut pending), &mut latest, &feedback_textures, None)?;
+            targets +=
+                render_live_segment(pica, mem, renderer, std::mem::take(&mut pending), &mut latest, &feedback_textures, None)?;
             for target in &written {
                 if target.depth_address != 0 {
                     let address = pica.pa_to_va(target.depth_address)?;
@@ -994,7 +995,7 @@ pub(crate) fn replay_live(pica: &mut Pica, mem: &mut Memory) -> Result<(usize, u
         pending.push(snapshot);
     }
     let mut results = Vec::new();
-    targets += render_live_segment(pica, renderer, pending, &mut latest, &feedback_textures, Some(&mut results))?;
+    targets += render_live_segment(pica, mem, renderer, pending, &mut latest, &feedback_textures, Some(&mut results))?;
     // Do not modify guest buffers until every segment succeeded, so an
     // accelerated list can still rerun in software after a GPU error.
     for &info in &latest {
@@ -1104,6 +1105,7 @@ fn depth_texture_matches(pica: &Pica, texture: &TextureSnapshot, target: Capture
 
 fn render_live_segment(
     pica: &mut Pica,
+    mem: &Memory,
     renderer: &Renderer,
     snapshots: Vec<DrawSnapshot>,
     latest: &mut Vec<CaptureTarget>,
@@ -1146,8 +1148,10 @@ fn render_live_segment(
             }
         };
         let cached = &pica.vulkan_live_target_cache[target_index];
-        let resident_matches =
-            resident_contents_match(cached.contents.as_deref(), initial) || deferred::matches(cached.pending.as_ref(), initial);
+        let native_matches = resident_contents_match(cached.contents.as_deref(), initial);
+        let deferred_color = !native_matches
+            && deferred::matches(cached.pending.as_ref(), initial)
+            && deferred::color_matches(pica, mem, target_info, initial);
         // Color buffers can change while the guest depth allocation stays the
         // same. Re-expanding its native samples would destroy subpixel depth
         // and make a later surface pass fail between native pixel centers.
@@ -1158,7 +1162,7 @@ fn render_live_segment(
         let shared_depth = latest.iter().rev().find_map(|info| {
             pica.vulkan_live_target_cache.iter().find(|other| {
                 other.info == *info
-                    && other.depth_detail
+                    && (other.depth_detail || deferred_color)
                     && target_info.depth_address != 0
                     && other.info.depth_address == target_info.depth_address
                     && other.info.depth_format == target_info.depth_format
@@ -1166,30 +1170,42 @@ fn render_live_segment(
                     && other.info.height == target_info.height
             })
         });
-        let saved_depth = if let Some(source) = shared_depth {
-            (source.info != target_info).then(|| renderer.snapshot_depth(&source.gpu)).transpose()?
-        } else if !initialized && !resident_matches && pica.vulkan_resolution_scale > 1 && target_info.depth_address != 0 {
-            pica.vulkan_live_target_cache
-                .iter()
-                .filter(|other| {
-                    other.depth_detail
-                        && other.info.depth_address == target_info.depth_address
-                        && other.info.depth_format == target_info.depth_format
-                        && other.info.width == target_info.width
-                        && other.info.height == target_info.height
-                        && other
-                            .contents
-                            .as_ref()
-                            .is_some_and(|contents| contents.depth == initial.depth && contents.stencil == initial.stencil)
-                })
-                .max_by_key(|other| other.last_draw)
-                .map(|other| renderer.snapshot_depth(&other.gpu))
-                .transpose()?
-        } else {
-            None
-        };
+        // Memory still names the previous list's depth provider while this
+        // list is executing. Newer same-list writes take priority over it.
+        let deferred_depth =
+            (deferred_color && shared_depth.is_none()).then(|| deferred::depth_source(pica, mem, target_info)).flatten();
+        let resident_matches = native_matches || deferred_color && (shared_depth.is_some() || deferred_depth.is_some());
+        let depth_source = shared_depth.or_else(|| {
+            if !initialized && deferred_color {
+                deferred_depth
+            } else if !initialized && !resident_matches && pica.vulkan_resolution_scale > 1 && target_info.depth_address != 0 {
+                pica.vulkan_live_target_cache
+                    .iter()
+                    .filter(|other| {
+                        other.depth_detail
+                            && other.info.depth_address == target_info.depth_address
+                            && other.info.depth_format == target_info.depth_format
+                            && other.info.width == target_info.width
+                            && other.info.height == target_info.height
+                            && other
+                                .contents
+                                .as_ref()
+                                .is_some_and(|contents| contents.depth == initial.depth && contents.stencil == initial.stencil)
+                    })
+                    .max_by_key(|other| other.last_draw)
+            } else {
+                None
+            }
+        });
+        let saved_depth = depth_source
+            .filter(|source| source.info != target_info || !initialized && !resident_matches)
+            .map(|source| renderer.snapshot_depth(&source.gpu))
+            .transpose()?;
+        // Copying a uniform depth plane must also clear any stale detail flag
+        // on the destination; the existence of a copy does not imply detail.
+        let retained_detail =
+            depth_source.map_or((initialized || resident_matches) && cached.depth_detail, |source| source.depth_detail);
         let cached = &mut pica.vulkan_live_target_cache[target_index];
-        let retained_detail = saved_depth.is_some() || ((initialized || resident_matches) && cached.depth_detail);
         // Once commands touch the target the previous readback no longer
         // describes it. Only a fully successful readback can restore reuse.
         cached.contents = None;

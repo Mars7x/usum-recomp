@@ -3119,3 +3119,42 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   overworld retain exact instruction/draw counts and all eight reference captures.
 - The 200 actual rendered FPS objective is still unmet; this fixes the menu
   correctness regression before continuing performance work.
+
+### R-104 2026-10-29 — Keep independently owned color/depth planes resident
+
+- A color target can still own its exact logical color plane after another
+  color target updates their shared physical depth/stencil allocation. The old
+  all-or-nothing proof mapped native tickets and re-imported color in this case.
+  Prove each plane independently through the actual deferred-memory provider
+  identity, dimensions and format. Retain valid color and copy the current GPU
+  depth/stencil plane. Newer writes in the same command list take precedence.
+- Recheck the color identity during replay. Any partial CPU write removes the
+  affected provider; incompatible or lost proofs retain normal upload/fallback
+  behavior. Uniform copied depth clears stale destination-detail metadata.
+  Short-circuit native/non-opaque targets and avoid looking up a superseded
+  memory provider when the current list already supplies authoritative depth.
+- New hardware coverage switches A/B color targets across lists at 1× and 6×,
+  requires the preceding draw's stencil generation, checks no warm-path ticket
+  materializations, tests partial CPU color/depth writes and a full uniform-depth
+  clear. Native results match synchronous rendering; full-resolution color
+  matches an independent two-color/shared-depth GPU reference. Synchronous native
+  re-expansion is deliberately not the 6× reference: it can lose subpixel color.
+- All 93 enabled runtime tests, 12 hardware GPU tests and strict Clippy pass.
+  Intro and overworld captures remain identical. Battle retains every native
+  capture; two scaled captures change with retained full-resolution detail.
+  The longer 62-second gameplay/bag recording retains all 12 native captures,
+  unchanged instruction/draw counts, and zero fallbacks across 50965 lists;
+  four scaled top-screen captures change, while all bottom-screen captures match.
+  Materialized tickets fall from 6993 to 4644 (33.6%) in that longer replay.
+  Concurrent correctness timings are not performance evidence.
+- Isolated 6× ABBA comparisons, with encoders absent before/after each run and
+  no periodic frame dumping: refined battle baseline 30.680/30.084 seconds versus
+  candidate 28.591/29.823 seconds for the same 973 updates and 2004562830 guest
+  instructions: about 4.0% more replay throughput. Battle materializations fall
+  3050 → 2423 (20.6%). An earlier prototype independently measured about 4.7%.
+- Overworld timings are inconclusive: the prototype's small slowdown was not
+  reproduced after cheaper guards (refined baseline 18.719/18.103 seconds;
+  candidate 18.147/18.212). Do not claim a stable overworld or intro speedup.
+  GPU shaders, 6× scaling, deferred/frozen textures and normal guest time settings
+  were identical in both variants. These headless throughput figures do not
+  prove uncapped, normal-speed rendering or satisfy the 200-FPS objective.

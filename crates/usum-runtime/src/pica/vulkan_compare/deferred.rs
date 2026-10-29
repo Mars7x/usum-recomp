@@ -88,20 +88,47 @@ pub(super) fn eligible(pica: &Pica, info: CaptureTarget) -> bool {
             .is_some_and(|size| !ranges_overlap(info.color_address, size, info.depth_address, size))
 }
 
-pub(super) fn resident_seed(pica: &Pica, mem: &Memory, info: CaptureTarget) -> Option<Arc<TargetSnapshot>> {
+fn resident_color<'a>(pica: &'a Pica, mem: &Memory, info: CaptureTarget) -> Option<&'a Arc<DeferredTarget>> {
     if !eligible(pica, info) {
         return None;
     }
     let pending = pica.vulkan_live_target_cache.iter().find(|t| t.info == info)?.pending.as_ref()?;
     let len = info.width as usize * info.height as usize * 4;
-    for (physical, depth) in [(info.color_address, false), (info.depth_address, true)] {
-        let address = pica.pa_to_va(physical).ok()?;
-        let plane = mem.deferred_source(address, len)?.as_any().downcast_ref::<Plane>()?;
-        if plane.depth != depth || !Arc::ptr_eq(&plane.target, pending) {
-            return None;
-        }
+    let address = pica.pa_to_va(info.color_address).ok()?;
+    let plane = mem.deferred_source(address, len)?.as_any().downcast_ref::<Plane>()?;
+    (!plane.depth && Arc::ptr_eq(&plane.target, pending)).then_some(pending)
+}
+
+/// The current physical depth allocation can belong to a different color
+/// target. Match the actual immutable guest-plane owner, not just its address
+/// or native sample values: those cannot prove the subpixel generation.
+pub(super) fn depth_source<'a>(pica: &'a Pica, mem: &Memory, info: CaptureTarget) -> Option<&'a LiveTarget> {
+    if !eligible(pica, info) {
+        return None;
     }
-    Some(Arc::clone(&pending.seed))
+    let len = info.width as usize * info.height as usize * 4;
+    let address = pica.pa_to_va(info.depth_address).ok()?;
+    let plane = mem.deferred_source(address, len)?.as_any().downcast_ref::<Plane>()?;
+    if !plane.depth {
+        return None;
+    }
+    pica.vulkan_live_target_cache.iter().find(|target| {
+        target.info.depth_address == info.depth_address
+            && target.info.depth_format == info.depth_format
+            && target.info.width == info.width
+            && target.info.height == info.height
+            && target.pending.as_ref().is_some_and(|pending| Arc::ptr_eq(pending, &plane.target))
+    })
+}
+
+pub(super) fn resident_seed(pica: &Pica, mem: &Memory, info: CaptureTarget) -> Option<Arc<TargetSnapshot>> {
+    let color = resident_color(pica, mem, info)?;
+    depth_source(pica, mem, info)?;
+    Some(Arc::clone(&color.seed))
+}
+
+pub(super) fn color_matches(pica: &Pica, mem: &Memory, info: CaptureTarget, seed: &Arc<TargetSnapshot>) -> bool {
+    matches(resident_color(pica, mem, info), seed)
 }
 
 pub(super) fn matches(pending: Option<&Arc<DeferredTarget>>, seed: &Arc<TargetSnapshot>) -> bool {
@@ -289,6 +316,181 @@ pub(super) fn texture_snapshot(pica: &Pica, mem: &Memory, unit: usize, enabled: 
 mod tests {
     use super::*;
     use usum_guest::Perm;
+
+    #[test]
+    #[ignore = "requires a Vulkan hardware adapter"]
+    fn shared_depth_planes_stay_resident_and_cpu_writes_break_the_proof() {
+        use usum_render::{ColorMask, CullMode, DepthCompare, DepthState, StencilOperation, StencilState, TevState};
+        #[derive(Debug, PartialEq, Eq)]
+        struct Output {
+            native: Vec<Vec<u8>>,
+            scaled: Vec<Vec<u8>>,
+        }
+        fn run(defer: bool, scale: u32, cpu_plane: u32) -> Output {
+            let renderer = live_renderer().unwrap();
+            let mut pica = Pica::default();
+            pica.enable_vulkan_acceleration();
+            pica.set_vulkan_resolution_scale(scale).unwrap();
+            if defer {
+                pica.enable_vulkan_deferred_readback();
+            }
+            pica.regs[0x41] = 0x430000;
+            pica.regs[0x43] = 0x430000;
+            pica.regs[0x4d] = 0xbf0000;
+            pica.regs[0x6d] = 1;
+            let first = CaptureTarget {
+                color_address: 0x2000_0000,
+                depth_address: 0x2000_2000,
+                width: 32,
+                height: 32,
+                color_format: 0,
+                depth_format: 3,
+            };
+            let second = CaptureTarget { color_address: 0x2000_1000, ..first };
+            let mut mem = Memory::new();
+            mem.map(pica.linear_base, vec![0; 0x3000], Perm::RW).unwrap();
+            mem.device_write(pica.linear_base + 0x2000, &[0xff; 4096]).unwrap();
+            // Independent full-resolution reference: two color allocations and
+            // one logical shared depth plane, without guest readback/re-upload.
+            let side = 32 * scale;
+            let count = (side * side) as usize;
+            let reference = [0, 1].map(|_| {
+                let gpu = renderer.create_color_target_from_snapshot(side, side, &vec![0; count * 4], &vec![1.0; count]).unwrap();
+                let mut batch = renderer.begin_batch(&gpu);
+                batch.seed_stencil(&[0xff; 1024], scale).unwrap();
+                batch.submit().unwrap();
+                gpu
+            });
+            for step in 0..8 {
+                let info = if step % 2 == 0 { first } else { second };
+                if step == 4 && (cpu_plane == 1 || cpu_plane == 2) {
+                    let address = pica.linear_base + if cpu_plane == 1 { 4 } else { 0x2004 };
+                    mem.write_u8(address, 0x91).unwrap();
+                }
+                if step == 1 && cpu_plane == 3 {
+                    mem.device_write(pica.linear_base + 0x2000, &[0, 0, 0x40, 0x49].repeat(1024)).unwrap();
+                }
+                let before = pica.vulkan_live_resources.deferred.get().1;
+                let color = [step as f32 / 8.0, 0.75, 0.5, 1.0];
+                let vertices = [
+                    Vertex { position: [-0.83, -0.81, -0.25 + step as f32 * 0.015, 1.0], color, ..Default::default() },
+                    Vertex { position: [0.87, -0.79, -0.72, 1.0], color, ..Default::default() },
+                    Vertex { position: [0.03, 0.89, -0.50, 1.0], color, ..Default::default() },
+                ];
+                let (target, textures) = capture_buffers(&mut pica, &mem, info).unwrap();
+                let mut snapshot =
+                    DrawSnapshot::from_shaded_vertices_shared(&pica, &vertices, &[[0, 1, 2]], info, target, textures).unwrap();
+                snapshot.draw_number = step + 1;
+                snapshot.state.lighting = None;
+                snapshot.state.raster.tev = TevState::default();
+                snapshot.state.raster.blend = None;
+                snapshot.state.raster.cull = CullMode::None;
+                snapshot.state.raster.color_mask = ColorMask::ALL;
+                snapshot.state.raster.depth_max = 0xff_ffff;
+                snapshot.state.raster.depth = DepthState { compare: DepthCompare::LessEqual, write: true };
+                snapshot.state.raster.stencil = StencilState {
+                    enabled: true,
+                    write_mask: 0xff,
+                    compare: if step == 0 { DepthCompare::Always } else { DepthCompare::Equal },
+                    reference: if step == 0 { 1 } else { step as u8 },
+                    pass: if step == 0 { StencilOperation::Replace } else { StencilOperation::IncrementClamp },
+                    ..Default::default()
+                };
+                if cpu_plane == 3 && step >= 1 {
+                    snapshot.state.raster.depth = DepthState { compare: DepthCompare::Always, write: false };
+                    snapshot.state.raster.stencil = StencilState::default();
+                }
+                if cpu_plane == 0 || cpu_plane == 3 {
+                    let index = step as usize % 2;
+                    let gpu = &reference[index];
+                    let depth = if step != 0 && !(cpu_plane == 3 && step == 1) {
+                        Some(renderer.snapshot_depth(&reference[1 - index]).unwrap())
+                    } else {
+                        None
+                    };
+                    let mut batch = if cpu_plane == 3 && step == 1 {
+                        // A full CPU clear replaces shared depth and stencil.
+                        let mut batch = renderer
+                            .begin_batch_from_snapshot(
+                                gpu,
+                                &vec![0; count * 4],
+                                &vec![0x40_0000 as f32 / 0xff_ffff as f32; count],
+                            )
+                            .unwrap();
+                        batch.seed_stencil(&[0x49; 1024], scale).unwrap();
+                        batch
+                    } else {
+                        renderer.begin_batch(gpu)
+                    };
+                    if let Some(depth) = depth {
+                        batch.restore_depth(&depth).unwrap();
+                    }
+                    let mut viewport = snapshot.state.viewport;
+                    viewport.x *= scale as f32;
+                    viewport.y *= scale as f32;
+                    viewport.width *= scale as f32;
+                    viewport.height *= scale as f32;
+                    batch.draw(&snapshot.vertices, viewport, snapshot.state.raster).unwrap();
+                    batch.submit().unwrap();
+                }
+                pica.vulkan_snapshots.push(snapshot);
+                replay_live(&mut pica, &mut mem).unwrap();
+                if defer && step >= 2 && !(step == 4 && (cpu_plane == 1 || cpu_plane == 2)) {
+                    assert_eq!(
+                        pica.vulkan_live_resources.deferred.get().1,
+                        before,
+                        "warm shared-depth switch must not map a ticket: scale {scale}, CPU plane {cpu_plane}, step {step}"
+                    );
+                }
+                if cpu_plane == 3 && step >= 1 {
+                    assert!(
+                        !pica.vulkan_live_target_cache.iter().find(|t| t.info == info).unwrap().depth_detail,
+                        "a copied uniform depth plane must clear stale subpixel-detail metadata"
+                    );
+                }
+            }
+            if defer && (cpu_plane == 0 || cpu_plane == 3) {
+                for (info, expected) in [first, second].into_iter().zip(&reference) {
+                    let actual = renderer
+                        .read_color_target(&pica.vulkan_live_target_cache.iter().find(|t| t.info == info).unwrap().gpu)
+                        .unwrap();
+                    let expected = renderer.read_color_target(expected).unwrap();
+                    assert_eq!(
+                        actual.iter().zip(&expected).filter(|(a, b)| a != b).count(),
+                        0,
+                        "independent full-resolution reference: scale {scale}, CPU plane {cpu_plane}, target {info:?}"
+                    );
+                }
+            }
+            Output {
+                native: [0, 0x1000, 0x2000].map(|offset| mem.read_range(pica.linear_base + offset, 4096).unwrap()).into(),
+                scaled: [first, second]
+                    .map(|info| {
+                        renderer
+                            .read_color_target(&pica.vulkan_live_target_cache.iter().find(|t| t.info == info).unwrap().gpu)
+                            .unwrap()
+                    })
+                    .into(),
+            }
+        }
+        for scale in [1, 6] {
+            for cpu_plane in 0..4 {
+                let actual = run(true, scale, cpu_plane);
+                let expected = run(false, scale, cpu_plane);
+                assert!(actual.scaled.iter().all(|color| color.iter().any(|&c| c != 0)));
+                assert_eq!(actual.native, expected.native, "native samples: scale {scale}, CPU plane {cpu_plane}");
+                // Synchronous import may re-expand native color when depth
+                // changes. Only 1× is its full-resolution color reference.
+                for (actual, expected) in actual.scaled.iter().zip(&expected.scaled).filter(|_| scale == 1) {
+                    assert_eq!(
+                        actual.iter().zip(expected).filter(|(a, b)| a != b).count(),
+                        0,
+                        "full-resolution color: scale {scale}, CPU plane {cpu_plane}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     #[ignore = "requires a Vulkan hardware adapter"]
