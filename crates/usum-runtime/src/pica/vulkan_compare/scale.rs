@@ -142,14 +142,17 @@ pub(in crate::pica) fn capture_transfer(
             }
         }
     }
-    // Native guest coherence needs only center samples. Read the full-resolution
-    // color plane once, when the game actually transfers this target to an LCD.
+    // Native guest coherence needs only center samples. Freeze the scaled LCD
+    // copy from this generation; CPU consumers can materialize its RGB later.
     trace(|| format!("scaled LCD hit {input_address:#x} -> {output_address:#x} {ow}x{oh}"));
-    let rgb = if std::env::var("USUM_VULKAN_GPU_DISPLAY_COPY").as_deref() != Ok("0") {
-        live_renderer()?.read_display_rgb(
-            &target.gpu,
-            usum_render::DisplayCopy { origin, size: (ow, oh), scale, downscale: (sx, sy), flip: flags & 1 != 0 },
-        )?
+    let (width, height) = (oh * scale, ow * scale);
+    let copy = usum_render::DisplayCopy { origin, size: (ow, oh), scale, downscale: (sx, sy), flip: flags & 1 != 0 };
+    let frame = if std::env::var("USUM_VULKAN_GPU_DISPLAY_COPY").as_deref() != Ok("0") {
+        if std::env::var("USUM_VULKAN_RESIDENT_DISPLAY").as_deref() != Ok("0") {
+            crate::probe::ScaledFrame::from_gpu(live_renderer()?.freeze_display(&target.gpu, copy)?)
+        } else {
+            crate::probe::ScaledFrame::from_rgb(width, height, live_renderer()?.read_display_rgb(&target.gpu, copy)?.into())
+        }
     } else {
         let color = match &target.scaled_color {
             Some(color) => Arc::clone(color),
@@ -157,9 +160,8 @@ pub(in crate::pica) fn capture_transfer(
         };
         let rgb = lcd_rgb(&color, (target.info.width, target.info.height), (ow, oh), scale, (sx, sy), flags & 1 != 0, origin);
         pica.vulkan_live_target_cache[index].scaled_color = Some(color);
-        rgb
+        crate::probe::ScaledFrame::from_rgb(width, height, rgb.into())
     };
-    let (width, height) = (oh * scale, ow * scale);
     if pica.scaled_displays.len() > 16 {
         pica.scaled_displays.clear();
     }
@@ -167,7 +169,7 @@ pub(in crate::pica) fn capture_transfer(
         address: output_address,
         format: (flags >> 12) & 7,
         expected: output.to_vec().into(),
-        frame: crate::probe::ScaledFrame { width, height, rgb: rgb.into() },
+        frame,
     });
     Ok(())
 }
@@ -270,13 +272,29 @@ mod tests {
             let color: Vec<u8> = (0..width * height * scale * scale * 4).map(|n| (n * 13 + n / 257) as u8).collect();
             let depth = vec![1.0; (width * height * scale * scale) as usize];
             let target = renderer.create_color_target_from_snapshot(width * scale, height * scale, &color, &depth).unwrap();
+            let mut frozen = Vec::new();
             for downscale in [(1, 1), (2, 1), (1, 2), (2, 2)] {
                 for flip in [false, true] {
                     let copy = usum_render::DisplayCopy { origin: (7, 5), size: (19, 23), scale, downscale, flip };
                     let actual = renderer.read_display_rgb(&target, copy).unwrap();
                     let expected = lcd_rgb(&color, (width, height), copy.size, scale, downscale, flip, copy.origin);
                     assert_eq!(actual, expected, "scale {scale}, downscale {downscale:?}, flip {flip}");
+                    let frame = renderer.freeze_display(&target, copy).unwrap();
+                    assert_eq!(frame.dimensions(), (copy.size.1 * scale, copy.size.0 * scale));
+                    assert!(!frame.ready(), "freezing a display never maps its pixels");
+                    frozen.push((frame, expected));
                 }
+            }
+            renderer.upload_target(&target, &vec![0; color.len()], &depth).unwrap();
+            drop(target);
+            for (frame, expected) in frozen {
+                std::thread::scope(|scope| {
+                    let first = scope.spawn(|| frame.read_rgb().unwrap());
+                    let second = scope.spawn(|| frame.read_rgb().unwrap());
+                    let (a, b) = (first.join().unwrap(), second.join().unwrap());
+                    assert_eq!(a.as_ref(), expected);
+                    assert!(Arc::ptr_eq(a, b), "concurrent readers share one immutable result");
+                });
             }
         }
     }
@@ -365,7 +383,8 @@ mod tests {
         let mut raw = crate::probe::RawFrame { bytes: output, format: 1, stride: 720, scaled: None };
         let frame = presented(&pica, &present, 400, &raw).expect("cropped high-resolution frame reaches the window");
         assert_eq!((frame.width, frame.height), (2400, 1440));
-        assert_eq!(frame.rgb.as_ref(), expected_lcd);
+        let rgb = frame.rgb().unwrap();
+        assert_eq!(rgb.as_ref(), expected_lcd);
         assert!(
             pica.vulkan_live_target_cache[0].scaled_color.is_none(),
             "LCD transfer keeps the full-resolution RGBA plane on the GPU"
@@ -373,8 +392,7 @@ mod tests {
         let varied = (0..240).any(|y| {
             (0..400).any(|x| {
                 let at = (y * 6 * 2400 + x * 6) * 3;
-                (0..6)
-                    .any(|dy| (0..6).any(|dx| frame.rgb[((y * 6 + dy) * 2400 + x * 6 + dx) * 3..][..3] != frame.rgb[at..at + 3]))
+                (0..6).any(|dy| (0..6).any(|dx| rgb[((y * 6 + dy) * 2400 + x * 6 + dx) * 3..][..3] != rgb[at..at + 3]))
             })
         });
         assert!(varied, "presented native pixel blocks must retain subpixel raster edges");

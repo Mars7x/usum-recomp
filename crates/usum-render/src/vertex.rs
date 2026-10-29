@@ -534,7 +534,7 @@ impl crate::Renderer {
             pass.dispatch_workgroups((inputs.len() as u32).div_ceil(64), 1, 1);
         }
         encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, size);
-        let submitted = self.queue.submit([encoder.finish()]);
+        let submitted = self.submit([encoder.finish()]);
         let (send, receive) = std::sync::mpsc::sync_channel(1);
         readback.slice(..).map_async(wgpu::MapMode::Read, move |result| {
             let _ = send.send(result);

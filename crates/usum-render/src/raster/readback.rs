@@ -197,7 +197,7 @@ impl RasterBatch<'_> {
         encoder.copy_buffer_to_buffer(&color_output, 0, &color, 0, size);
         encoder.copy_buffer_to_buffer(&depth_output, 0, &depth, 0, size);
         encoder.copy_buffer_to_buffer(&stencil_output, 0, &stencil, 0, size);
-        let submission = self.renderer.queue.submit([encoder.finish()]);
+        let submission = self.renderer.submit([encoder.finish()]);
         check_errors(errors, "resolved raster batch submission")?;
         Ok(PendingReadback {
             device: self.renderer.device.clone(),
@@ -263,7 +263,7 @@ impl RasterBatch<'_> {
             wgpu::TexelCopyBufferInfo { buffer: &stencil, layout },
             extent,
         );
-        let submission = self.renderer.queue.submit([encoder.finish()]);
+        let submission = self.renderer.submit([encoder.finish()]);
         check_errors(errors, "deferred raster batch submission")?;
         Ok(PendingReadback {
             device: self.renderer.device.clone(),

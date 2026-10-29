@@ -230,6 +230,11 @@ fn word_mask(mask: u32) -> u32 {
 }
 
 impl Pica {
+    #[cfg(all(feature = "window", feature = "vulkan-compare"))]
+    pub(crate) fn window_renderer() -> Result<&'static usum_render::Renderer, String> {
+        vulkan_compare::live_renderer()
+    }
+
     /// A new guest process cannot inherit register/upload state or GPU views of
     /// its predecessor's RAM. Keep host policy and cumulative profiling counts.
     pub(crate) fn restart_process(&mut self) {

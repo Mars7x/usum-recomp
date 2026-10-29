@@ -230,6 +230,16 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
     let mut app = App {
         window: None,
         surface: None,
+        #[cfg(feature = "vulkan-compare")]
+        gpu_presenter: None,
+        #[cfg(feature = "vulkan-compare")]
+        gpu_frames: [None, None],
+        #[cfg(feature = "vulkan-compare")]
+        gpu_distinct: [0; 2],
+        #[cfg(feature = "vulkan-compare")]
+        gpu_uploads: 0,
+        #[cfg(feature = "vulkan-compare")]
+        gpu_mapped_uses: 0,
         shared,
         frames,
         pad,
@@ -252,6 +262,13 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
             "window: {} redraws, {:.2} ms each on average",
             app.draws,
             app.draw_time.as_secs_f64() * 1000.0 / app.draws as f64
+        );
+    }
+    #[cfg(feature = "vulkan-compare")]
+    if app.gpu_distinct != [0, 0] || app.gpu_uploads != 0 {
+        eprintln!(
+            "window GPU: {} top / {} bottom distinct resident buffers, {} CPU uploads, {} materialized source uses",
+            app.gpu_distinct[0], app.gpu_distinct[1], app.gpu_uploads, app.gpu_mapped_uses
         );
     }
     quit.store(true, Ordering::Relaxed);
@@ -343,8 +360,36 @@ fn run_game(
             }
         }
     }
-    kernel.live_pad = Some(pad);
-    kernel.live_touch = Some(touch);
+    let replay = std::env::var("USUM_PLAY_REPLAY").as_deref() == Ok("1");
+    if replay {
+        let configure = || -> Result<_, String> {
+            let text = match std::env::var("USUM_INPUT").ok() {
+                Some(text) => text,
+                None => match std::env::var_os("USUM_INPUT_FILE") {
+                    Some(path) => std::fs::read_to_string(&path).map_err(|e| format!("replay input: {e}"))?,
+                    None => String::new(),
+                },
+            };
+            let steps = crate::services::hid::parse_script(&text)?;
+            let seconds = std::env::var("USUM_SECONDS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(10);
+            Ok((steps, seconds))
+        };
+        match configure() {
+            Ok((steps, seconds)) => {
+                kernel.input = steps;
+                kernel.sleep_limit = Some(Duration::from_secs(seconds));
+            }
+            Err(error) => {
+                stop(error);
+                quit.store(true, Ordering::Relaxed);
+                let _ = proxy.send_event(());
+                return;
+            }
+        }
+    } else {
+        kernel.live_pad = Some(pad);
+        kernel.live_touch = Some(touch);
+    }
     kernel.frame_out = Some(frames);
     kernel.use_virtual_clock();
     let start = Instant::now();
@@ -353,7 +398,7 @@ fn run_game(
     kernel.audio.sink = Some((sound.clone(), crate::sound::MAX_QUEUED));
     // USUM_PLAY_SECONDS=n: quit after n seconds (for checks)
     let stop_after = std::env::var("USUM_PLAY_SECONDS").ok().and_then(|v| v.parse().ok()).map(Duration::from_secs);
-    let (outcome, _) = probe::run_with(&mut cpu, &mut mem, &mut kernel, entries, &modules, u64::MAX, &mut |kernel, _mem| {
+    let (outcome, ran) = probe::run_with(&mut cpu, &mut mem, &mut kernel, entries, &modules, u64::MAX, &mut |kernel, _mem| {
         // USUM_SPEED=n, as in the probe
         probe::speed_report(kernel);
         if quit.load(Ordering::Relaxed) || stop_after.is_some_and(|d| start.elapsed() >= d) {
@@ -371,6 +416,15 @@ fn run_game(
         }
         true
     });
+    if replay {
+        eprintln!(
+            "window replay: {ran} instructions, {} VBlanks, {} draws, {} triangles in {:.3} s; {outcome:?}",
+            kernel.vblanks,
+            kernel.pica.draws,
+            kernel.pica.triangles,
+            start.elapsed().as_secs_f64()
+        );
+    }
     #[cfg(feature = "vulkan-compare")]
     {
         let (lists, draws, targets, time) = kernel.pica.vulkan_live_stats();
@@ -393,6 +447,11 @@ fn run_game(
     #[cfg(feature = "vulkan-compare")]
     compare_vulkan_captures(&mut kernel);
     save_recording(&kernel, recording.as_deref(), kernel.vblanks);
+    if replay {
+        quit.store(true, Ordering::Relaxed);
+        let _ = proxy.send_event(());
+        return;
+    }
     // quitting from a paced wait ends the run as "no thread": not an error
     if quit.load(Ordering::Relaxed) {
         return;
@@ -410,6 +469,16 @@ fn run_game(
 struct App {
     window: Option<Arc<Window>>,
     surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
+    #[cfg(feature = "vulkan-compare")]
+    gpu_presenter: Option<usum_render::WindowPresenter>,
+    #[cfg(feature = "vulkan-compare")]
+    gpu_frames: [Option<Arc<usum_render::DisplayFrame>>; 2],
+    #[cfg(feature = "vulkan-compare")]
+    gpu_distinct: [u64; 2],
+    #[cfg(feature = "vulkan-compare")]
+    gpu_uploads: u64,
+    #[cfg(feature = "vulkan-compare")]
+    gpu_mapped_uses: u64,
     shared: Arc<Mutex<Shared>>,
     /// The screens, as the kernel hands them over at each VBlank.
     frames: Arc<crate::kernel::FrameOut>,
@@ -448,6 +517,19 @@ impl ApplicationHandler for App {
                 return;
             }
         };
+        #[cfg(feature = "vulkan-compare")]
+        if std::env::var_os("USUM_VULKAN_ACCELERATE").is_some() && std::env::var("USUM_VULKAN_GPU_PRESENT").as_deref() != Ok("0")
+        {
+            match crate::pica::Pica::window_renderer().and_then(|r| r.create_window_presenter(window.clone())) {
+                Ok(presenter) => {
+                    eprintln!("window: Vulkan resident LCD presentation");
+                    self.gpu_presenter = Some(presenter);
+                    self.window = Some(window);
+                    return;
+                }
+                Err(error) => eprintln!("Vulkan window unavailable, using CPU presentation: {error}"),
+            }
+        }
         let surface = softbuffer::Context::new(window.clone()).and_then(|c| softbuffer::Surface::new(&c, window.clone()));
         match surface {
             Ok(s) => self.surface = Some(s),
@@ -574,6 +656,117 @@ impl App {
     }
 
     fn redraw(&mut self) {
+        #[cfg(feature = "vulkan-compare")]
+        if self.gpu_presenter.is_some() {
+            match self.redraw_gpu() {
+                Ok(()) => return,
+                Err(error) => {
+                    eprintln!("Vulkan window failed, using CPU presentation: {error}");
+                    self.gpu_presenter = None;
+                    // Preserve the last complete immutable screens when changing
+                    // presenter, even if the game has no newer frame queued.
+                    for (screen, frame) in self.gpu_frames.iter().enumerate() {
+                        if let Some(frame) = frame {
+                            if let Ok(rgb) = frame.read_rgb() {
+                                if screen == 0 {
+                                    self.rgb.0 = Arc::clone(rgb);
+                                } else {
+                                    self.rgb.1 = Arc::clone(rgb);
+                                }
+                                self.rgb_dimensions[screen] = frame.dimensions();
+                            }
+                        }
+                    }
+                    if let Some(window) = &self.window {
+                        self.surface = softbuffer::Context::new(window.clone())
+                            .and_then(|c| softbuffer::Surface::new(&c, window.clone()))
+                            .ok();
+                    }
+                }
+            }
+        }
+        self.redraw_cpu();
+    }
+
+    #[cfg(feature = "vulkan-compare")]
+    fn redraw_gpu(&mut self) -> Result<(), String> {
+        let Some(window) = &self.window else {
+            return Ok(());
+        };
+        let size = window.inner_size();
+        if size.width == 0 || size.height == 0 {
+            return Ok(());
+        }
+        let renderer = crate::pica::Pica::window_renderer()?;
+        let new_frames = {
+            let mut frames = self.frames.frames.lock().map_err(|e| e.to_string())?;
+            [frames[0].take(), frames[1].take()]
+        };
+        for (screen, raw) in new_frames.into_iter().enumerate() {
+            let Some(raw) = raw else {
+                continue;
+            };
+            self.gpu_frames[screen] = Some(match &raw.scaled {
+                Some(frame) => match frame.gpu() {
+                    Some(gpu) => {
+                        if self.gpu_frames[screen].as_ref().is_none_or(|old| !Arc::ptr_eq(old, gpu)) {
+                            self.gpu_distinct[screen] += 1;
+                        }
+                        Arc::clone(gpu)
+                    }
+                    None => {
+                        self.gpu_uploads += 1;
+                        Arc::new(renderer.upload_display_rgb(frame.width, frame.height, &frame.rgb()?)?)
+                    }
+                },
+                None => {
+                    self.gpu_uploads += 1;
+                    let (width, height) = if screen == 0 { TOP } else { BOTTOM };
+                    Arc::new(renderer.upload_display_rgb(width, height, &probe::raw_to_rgb(&raw, width))?)
+                }
+            });
+        }
+        let (scale, x0, y0) = Self::layout(size.width, size.height);
+        let screens: Vec<_> = self
+            .gpu_frames
+            .iter()
+            .enumerate()
+            .filter_map(|(screen, frame)| {
+                frame.as_ref().map(|frame| {
+                    let (width, height, cx, cy) =
+                        if screen == 0 { (TOP.0, TOP.1, 0, 0) } else { (BOTTOM.0, BOTTOM.1, (CANVAS.0 - BOTTOM.0) / 2, TOP.1) };
+                    usum_render::DisplayScreen { frame, rect: [x0 + cx * scale, y0 + cy * scale, width * scale, height * scale] }
+                })
+            })
+            .collect();
+        let presenter = self.gpu_presenter.as_mut().ok_or("Vulkan presenter disappeared")?;
+        self.gpu_mapped_uses += screens.iter().filter(|screen| screen.frame.ready()).count() as u64;
+        if !presenter.present(size.width, size.height, &screens)? {
+            return Ok(());
+        }
+        let stopped = self.shared.lock().ok().and_then(|s| s.stopped.clone());
+        if let Some(why) = &stopped {
+            if !self.title_stopped {
+                window.set_title(&format!("usum-recomp — {why}"));
+                self.title_stopped = true;
+            }
+        } else {
+            let internal = self.frames.resolution_scale.load(Ordering::Relaxed);
+            window.set_title(&format!("usum-recomp — {internal}× ({}×{} top) — F3/F4 scale", 400 * internal, 240 * internal));
+        }
+        self.draws += 1;
+        if let Some(path) = std::env::var_os("USUM_PLAY_SNAPSHOT").filter(|_| self.draws.is_multiple_of(60)) {
+            let rgb = presenter.capture_rgb(size.width, size.height, &screens)?;
+            let mut ppm = format!("P6\n{} {}\n255\n", size.width, size.height).into_bytes();
+            ppm.extend_from_slice(&rgb);
+            // Match the software presenter's diagnostic policy: a failed
+            // screenshot write must not change the active display backend.
+            let _ = std::fs::write(path, ppm);
+        }
+        Ok(())
+    }
+
+    fn redraw_cpu(&mut self) {
         let (Some(window), Some(surface)) = (&self.window, &mut self.surface) else { return };
         let size = window.inner_size();
         let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else { return };
@@ -595,7 +788,13 @@ impl App {
         for (screen, raw) in [new_top, new_bottom].into_iter().enumerate() {
             if let Some(raw) = raw {
                 let (pixels, dims) = match &raw.scaled {
-                    Some(frame) => (Arc::clone(&frame.rgb), (frame.width, frame.height)),
+                    Some(frame) => match frame.rgb() {
+                        Ok(rgb) => (rgb, (frame.width, frame.height)),
+                        Err(error) => {
+                            eprintln!("cannot read scaled display: {error}");
+                            continue;
+                        }
+                    },
                     None => (
                         probe::raw_to_rgb(&raw, if screen == 0 { TOP.0 } else { BOTTOM.0 }).into(),
                         if screen == 0 { TOP } else { BOTTOM },

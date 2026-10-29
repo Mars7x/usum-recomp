@@ -794,8 +794,13 @@ fn snapshot(kernel: &mut Kernel, mem: &Memory) {
                 if let Ok(raw) = framebuffer_raw(mem, p, columns) {
                     if let Some(frame) = kernel.pica.scaled_frame(p, columns, &raw) {
                         let mut ppm = format!("P6\n{} {}\n255\n", frame.width, frame.height).into_bytes();
-                        ppm.extend_from_slice(&frame.rgb);
-                        let _ = std::fs::write(dir.join(format!("{:06}-{name}-scaled.ppm", kernel.vblanks)), ppm);
+                        match frame.rgb() {
+                            Ok(rgb) => {
+                                ppm.extend_from_slice(&rgb);
+                                let _ = std::fs::write(dir.join(format!("{:06}-{name}-scaled.ppm", kernel.vblanks)), ppm);
+                            }
+                            Err(error) => eprintln!("cannot capture scaled display: {error}"),
+                        }
                     }
                 }
             }
@@ -821,7 +826,42 @@ fn framebuffer_ppm(mem: &Memory, p: &crate::kernel::Present, columns: u32) -> Re
 pub struct ScaledFrame {
     pub width: u32,
     pub height: u32,
-    pub rgb: std::sync::Arc<[u8]>,
+    pixels: ScaledPixels,
+}
+
+#[derive(Clone, Debug)]
+enum ScaledPixels {
+    Cpu(std::sync::Arc<[u8]>),
+    #[cfg(feature = "vulkan-compare")]
+    Gpu(std::sync::Arc<usum_render::DisplayFrame>),
+}
+
+impl ScaledFrame {
+    pub fn from_rgb(width: u32, height: u32, rgb: std::sync::Arc<[u8]>) -> Self {
+        Self { width, height, pixels: ScaledPixels::Cpu(rgb) }
+    }
+
+    #[cfg(feature = "vulkan-compare")]
+    pub(crate) fn from_gpu(frame: usum_render::DisplayFrame) -> Self {
+        let (width, height) = frame.dimensions();
+        Self { width, height, pixels: ScaledPixels::Gpu(std::sync::Arc::new(frame)) }
+    }
+
+    pub fn rgb(&self) -> Result<std::sync::Arc<[u8]>, String> {
+        match &self.pixels {
+            ScaledPixels::Cpu(rgb) => Ok(std::sync::Arc::clone(rgb)),
+            #[cfg(feature = "vulkan-compare")]
+            ScaledPixels::Gpu(frame) => frame.read_rgb().map(std::sync::Arc::clone),
+        }
+    }
+
+    #[cfg(all(feature = "vulkan-compare", feature = "window"))]
+    pub(crate) fn gpu(&self) -> Option<&std::sync::Arc<usum_render::DisplayFrame>> {
+        match &self.pixels {
+            ScaledPixels::Gpu(frame) => Some(frame),
+            _ => None,
+        }
+    }
 }
 
 pub struct RawFrame {

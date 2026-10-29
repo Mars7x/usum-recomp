@@ -101,7 +101,7 @@ impl Renderer {
             pass.set_bind_group(0, &group, &[]);
             pass.draw(0..3, 0..1);
         }
-        self.queue.submit([encoder.finish()]);
+        self.submit([encoder.finish()]);
         check_errors(errors, "framebuffer color texture")?;
         Ok(SampledTexture { _texture: texture, view, sampler: create_sampler(&self.device, state, Some(border))? })
     }

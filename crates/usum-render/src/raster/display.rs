@@ -2,6 +2,76 @@
 use super::*;
 use wgpu::util::DeviceExt;
 
+/// Immutable, tightly packed display RGB retained on the rendering device.
+/// CPU consumers materialize it once; window presentation can use its buffer
+/// directly. It owns its pixels independently of future target submissions.
+#[derive(Debug)]
+pub struct DisplayFrame {
+    pub(crate) buffer: wgpu::Buffer,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    submission_lock: Arc<Mutex<()>>,
+    identity: Arc<()>,
+    staging: Option<wgpu::Buffer>,
+    submission: wgpu::SubmissionIndex,
+    width: u32,
+    height: u32,
+    rgb: std::sync::OnceLock<Result<Arc<[u8]>, String>>,
+}
+
+impl DisplayFrame {
+    pub(crate) fn belongs_to(&self, renderer: &Renderer) -> bool {
+        Arc::ptr_eq(&self.identity, &renderer.display_identity)
+    }
+    pub fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    pub fn read_rgb(&self) -> Result<&Arc<[u8]>, String> {
+        self.rgb.get_or_init(|| self.materialize().map(Into::into)).as_ref().map_err(Clone::clone)
+    }
+
+    pub fn ready(&self) -> bool {
+        self.rgb.get().is_some()
+    }
+
+    fn materialize(&self) -> Result<Vec<u8>, String> {
+        let (staging, submission) = match &self.staging {
+            Some(staging) => (staging.clone(), self.submission.clone()),
+            None => {
+                let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("on-demand display RGB readback"),
+                    size: self.buffer.size(),
+                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                encoder.copy_buffer_to_buffer(&self.buffer, 0, &staging, 0, self.buffer.size());
+                let submission = {
+                    let _guard = self.submission_lock.lock().unwrap_or_else(|p| p.into_inner());
+                    self.queue.submit([encoder.finish()])
+                };
+                (staging, submission)
+            }
+        };
+        let slice = staging.slice(..);
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = send.send(r);
+        });
+        let result = (|| {
+            self.device
+                .poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: None })
+                .map_err(|e| e.to_string())?;
+            receive.recv().map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+            let mapped = slice.get_mapped_range().map_err(|e| e.to_string())?;
+            Ok(mapped[..self.width as usize * self.height as usize * 3].to_vec())
+        })();
+        staging.unmap();
+        result
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct DisplayCopy {
     pub origin: (u32, u32),
@@ -74,9 +144,46 @@ fn copy(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 
 impl Renderer {
+    /// Native/software LCD fallback for the same GPU window compositor.
+    pub fn upload_display_rgb(&self, width: u32, height: u32, rgb: &[u8]) -> Result<DisplayFrame, String> {
+        let count = u64::from(width) * u64::from(height) * 3;
+        let size = count.div_ceil(4) * 4;
+        if count == 0 || count != rgb.len() as u64 || size > self.device.limits().max_storage_buffer_binding_size {
+            return Err("invalid display upload size".into());
+        }
+        let mut bytes = rgb.to_vec();
+        bytes.resize(size as usize, 0);
+        let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("uploaded LCD RGB"),
+            contents: &bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        });
+        let submission = self.submit([]);
+        Ok(DisplayFrame {
+            buffer,
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+            submission_lock: Arc::clone(&self.submission_lock),
+            identity: Arc::clone(&self.display_identity),
+            staging: None,
+            submission,
+            width,
+            height,
+            rgb: std::sync::OnceLock::new(),
+        })
+    }
+
     /// Return tightly packed RGB for a rotated scaled display rectangle. Work
     /// which previously scanned a large, strided CPU image stays on the GPU.
     pub fn read_display_rgb(&self, target: &ColorTarget, copy: DisplayCopy) -> Result<Vec<u8>, String> {
+        self.display_frame(target, copy, true)?.materialize()
+    }
+
+    pub fn freeze_display(&self, target: &ColorTarget, copy: DisplayCopy) -> Result<DisplayFrame, String> {
+        self.display_frame(target, copy, false)
+    }
+
+    fn display_frame(&self, target: &ColorTarget, copy: DisplayCopy, eager: bool) -> Result<DisplayFrame, String> {
         let DisplayCopy { origin, size, scale, downscale, flip } = copy;
         let (sx, sy) = downscale;
         if scale == 0 || size.0 == 0 || size.1 == 0 || !matches!(sx, 1 | 2) || !matches!(sy, 1 | 2) {
@@ -108,7 +215,7 @@ impl Renderer {
             })
         };
         let output = buffer("packed display RGB", wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC);
-        let staging = buffer("display RGB readback", wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST);
+        let staging = eager.then(|| buffer("display RGB readback", wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST));
         let parameters: Vec<u8> =
             [width, height, scale, sx, origin.0, origin.1, sy, u32::from(flip)].into_iter().flat_map(u32::to_ne_bytes).collect();
         let parameters = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -136,21 +243,22 @@ impl Renderer {
             pass.set_bind_group(0, &group, &[]);
             pass.dispatch_workgroups(groups.div_ceil(64) as u32, 1, 1);
         }
-        encoder.copy_buffer_to_buffer(&output, 0, &staging, 0, buffer_size);
-        let submission = self.queue.submit([encoder.finish()]);
-        let slice = staging.slice(..);
-        let (send, receive) = std::sync::mpsc::sync_channel(1);
-        slice.map_async(wgpu::MapMode::Read, move |r| {
-            let _ = send.send(r);
-        });
-        let result = (|| {
-            self.wait(submission)?;
-            receive.recv().map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
-            check_errors(errors, "display RGB copy")?;
-            let mapped = slice.get_mapped_range().map_err(|e| e.to_string())?;
-            Ok(mapped[..pixels as usize * 3].to_vec())
-        })();
-        staging.unmap();
-        result
+        if let Some(staging) = &staging {
+            encoder.copy_buffer_to_buffer(&output, 0, staging, 0, buffer_size);
+        }
+        let submission = self.submit([encoder.finish()]);
+        check_errors(errors, "display RGB copy")?;
+        Ok(DisplayFrame {
+            buffer: output,
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+            submission_lock: Arc::clone(&self.submission_lock),
+            identity: Arc::clone(&self.display_identity),
+            staging,
+            submission,
+            width,
+            height,
+            rgb: std::sync::OnceLock::new(),
+        })
     }
 }

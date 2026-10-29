@@ -23,7 +23,7 @@ impl Renderer {
             aspect: wgpu::TextureAspect::All,
         };
         encoder.copy_texture_to_texture(image(&source.depth), image(&texture), extent);
-        self.queue.submit([encoder.finish()]);
+        self.submit([encoder.finish()]);
         check_errors(errors, "GPU depth snapshot")?;
         Ok(DepthSnapshot { texture, width: source.width, height: source.height })
     }

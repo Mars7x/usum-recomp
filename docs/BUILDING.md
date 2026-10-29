@@ -286,11 +286,34 @@ Use the same internal scale for gameplay and probe performance measurements.
 
 Scaled targets now accept native-size color/depth uploads, with exact replication
 performed on the GPU. Native guest readbacks likewise sample the scaled target
-on the GPU; full-resolution color is read only for an actual LCD transfer.
+on the GPU; full-resolution color stays resident through supported LCD transfers
+and Vulkan window presentation.
 `USUM_VULKAN_SCALED_UPLOAD=0` and `USUM_VULKAN_NATIVE_READBACK=0` select the older
 CPU expansion/full-readback paths for reference comparisons. Display cropping,
 rotation and RGB packing also execute on the GPU;
 `USUM_VULKAN_GPU_DISPLAY_COPY=0` restores the CPU display transform.
+
+Scaled LCD transfers freeze immutable packed RGB buffers on the GPU. The Vulkan
+window samples those buffers directly with the CPU presenter's integer nearest
+sampling, layout and clipping. Captures and the software window fallback request
+an exact, cached CPU copy on demand. Unsupported window surfaces automatically
+use software presentation. `USUM_VULKAN_RESIDENT_DISPLAY=0` restores eager RGB
+readback, and `USUM_VULKAN_GPU_PRESENT=0` selects the software window compositor;
+set both to `0` to compare the previous display path.
+
+`USUM_PLAY_REPLAY=1` runs a bounded window replay from `USUM_INPUT` /
+`USUM_INPUT_FILE` and exits at `USUM_SECONDS`, with normal virtual-clock pacing
+retained. It uses the normal play save directory: automated comparisons set
+`XDG_DATA_HOME` to an isolated directory containing the starting save fixture.
+Window redraws and distinct resident buffers are diagnostic counts, not proof of
+unique game frames or uncapped normal-speed FPS.
+
+The synthetic resize check opens and closes its own window while a second thread
+submits raster work. It needs no game data or manual input:
+
+```bash
+cargo run --release -p usum-runtime --example display-window-smoke --features window,vulkan-compare
+```
 
 Compatible RGBA8/D24S8 targets with depth buffers use immutable readback tickets
 by default. Exact guest plane identities guard resident target reuse; CPU writes

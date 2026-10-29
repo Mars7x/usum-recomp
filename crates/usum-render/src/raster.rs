@@ -7,7 +7,7 @@ mod seed;
 mod stencil;
 pub use stencil::{StencilOperation, StencilState};
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32FloatStencil8;
-pub use display::DisplayCopy;
+pub use display::{DisplayCopy, DisplayFrame};
 pub use readback::{ColorDepthReadback, PendingReadback};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -1009,7 +1009,7 @@ impl Renderer {
                 multiview_mask: None,
             });
         }
-        let submitted = self.queue.submit([encoder.finish()]);
+        let submitted = self.submit([encoder.finish()]);
         self.wait(submitted)?;
         check_errors(errors, "create color target")?;
         Ok(ColorTarget {
@@ -1079,7 +1079,7 @@ impl Renderer {
             pass.set_bind_group(0, &group, &[]);
             pass.draw(0..3, 0..1);
         }
-        self.queue.submit([encoder.finish()]);
+        self.submit([encoder.finish()]);
         check_errors(errors, "depth feedback conversion")?;
         let sampler = create_sampler(&self.device, sampler_state, Some(border))?;
         Ok(SampledTexture { _texture: texture, view, sampler })
@@ -1154,7 +1154,7 @@ impl Renderer {
             pass.set_bind_group(0, &depth_group, &[]);
             pass.draw(0..3, 0..1);
         }
-        let submitted = self.queue.submit([encoder.finish()]);
+        let submitted = self.submit([encoder.finish()]);
         self.wait(submitted)?;
         check_errors(errors, "target upload")
     }
@@ -1250,7 +1250,7 @@ impl Renderer {
         let mut encoder =
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("PICA raster commands") });
         self.encode_vertices(&mut encoder, target, vertices, viewport, state, inputs)?;
-        let submitted = self.queue.submit([encoder.finish()]);
+        let submitted = self.submit([encoder.finish()]);
         self.wait(submitted)?;
         check_errors(errors, "raster draw")
     }
@@ -1554,7 +1554,7 @@ impl Renderer {
             },
             extent,
         );
-        let submitted = self.queue.submit([encoder.finish()]);
+        let submitted = self.submit([encoder.finish()]);
         let slice = readback.slice(..);
         let (send, receive) = std::sync::mpsc::sync_channel(1);
         slice.map_async(wgpu::MapMode::Read, move |result| {
@@ -1599,7 +1599,7 @@ impl Renderer {
             },
             extent,
         );
-        let submitted = self.queue.submit([encoder.finish()]);
+        let submitted = self.submit([encoder.finish()]);
         let slice = readback.slice(..);
         let (send, receive) = std::sync::mpsc::sync_channel(1);
         slice.map_async(wgpu::MapMode::Read, move |result| {
@@ -1647,7 +1647,7 @@ impl Renderer {
             wgpu::TexelCopyBufferInfo { buffer: depth_readback, layout },
             extent,
         );
-        let submitted = self.queue.submit([encoder.finish()]);
+        let submitted = self.submit([encoder.finish()]);
         let color_slice = color_readback.slice(..);
         let depth_slice = depth_readback.slice(..);
         let (color_send, color_receive) = std::sync::mpsc::sync_channel(1);
@@ -1735,7 +1735,7 @@ impl RasterBatch<'_> {
     pub fn submit(mut self) -> Result<u32, String> {
         let encoder = self.encoder.take().ok_or("Vulkan raster batch was already submitted")?;
         let errors = self.errors.take().ok_or("Vulkan raster batch has no validation scope")?;
-        self.renderer.queue.submit([encoder.finish()]);
+        self.renderer.submit([encoder.finish()]);
         check_errors(errors, "raster batch submission")?;
         Ok(self.draws)
     }
@@ -1745,7 +1745,7 @@ impl RasterBatch<'_> {
     pub fn finish(mut self) -> Result<u32, String> {
         let encoder = self.encoder.take().ok_or("Vulkan raster batch was already submitted")?;
         let errors = self.errors.take().ok_or("Vulkan raster batch has no validation scope")?;
-        let submitted = self.renderer.queue.submit([encoder.finish()]);
+        let submitted = self.renderer.submit([encoder.finish()]);
         self.renderer.wait(submitted)?;
         check_errors(errors, "raster batch")?;
         Ok(self.draws)
@@ -1779,7 +1779,7 @@ impl RasterBatch<'_> {
             extent,
         );
 
-        let submitted = self.renderer.queue.submit([encoder.finish()]);
+        let submitted = self.renderer.submit([encoder.finish()]);
         let color_slice = color_readback.slice(..);
         let depth_slice = depth_readback.slice(..);
         let (color_send, color_receive) = std::sync::mpsc::sync_channel(1);

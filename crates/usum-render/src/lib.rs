@@ -6,19 +6,25 @@
 //! and readback. The runtime handoff remains; the software renderer stays
 //! active until output can be compared draw-for-draw.
 
+mod present;
 mod raster;
 mod vertex;
+pub use present::{DisplayScreen, WindowPresenter};
 pub use vertex::{PicaVertexDraw, VertexProgram};
 
 pub use raster::{
     AlphaTest, BlendComponent, BlendFactor, BlendOperation, BlendState, ColorDepthReadback, ColorMask, ColorTarget, CullMode,
-    DepthCompare, DepthSnapshot, DepthState, DisplayCopy, FilterMode, FragmentInputs, GpuLighting, LightingLight, LightingState,
-    PendingReadback, PicaDrawState, PicaRasterRegisters, RasterBatch, RasterState, RasterVertex, SampledTexture, SamplerState,
-    StencilOperation, StencilState, TevStage, TevState, Viewport, WrapMode,
+    DepthCompare, DepthSnapshot, DepthState, DisplayCopy, DisplayFrame, FilterMode, FragmentInputs, GpuLighting, LightingLight,
+    LightingState, PendingReadback, PicaDrawState, PicaRasterRegisters, RasterBatch, RasterState, RasterVertex, SampledTexture,
+    SamplerState, StencilOperation, StencilState, TevStage, TevState, Viewport, WrapMode,
 };
 
 /// A Vulkan device ready to host translated PICA draw calls.
 pub struct Renderer {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+    submission_lock: std::sync::Arc<std::sync::Mutex<()>>,
+    display_identity: std::sync::Arc<()>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     info: wgpu::AdapterInfo,
@@ -51,7 +57,22 @@ impl Renderer {
         }))
         .map_err(|e| format!("cannot open Vulkan device {}: {e}", info.name))?;
         let raster_pipelines = raster::create_pipelines(&device, &queue);
-        Ok(Self { device, queue, info, raster_pipelines })
+        Ok(Self {
+            instance,
+            adapter,
+            submission_lock: Default::default(),
+            display_identity: Default::default(),
+            device,
+            queue,
+            info,
+            raster_pipelines,
+        })
+    }
+
+    // Surface reconfiguration must exclude submissions from the game thread.
+    fn submit(&self, buffers: impl IntoIterator<Item = wgpu::CommandBuffer>) -> wgpu::SubmissionIndex {
+        let _guard = self.submission_lock.lock().unwrap_or_else(|p| p.into_inner());
+        self.queue.submit(buffers)
     }
 
     pub fn adapter_info(&self) -> &wgpu::AdapterInfo {

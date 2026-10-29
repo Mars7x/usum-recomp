@@ -946,7 +946,7 @@ fn d24s8_rgba8_texture(pica: &Pica, mem: &Memory, target: CaptureTarget, depth: 
     Ok(decoded.into())
 }
 
-fn live_renderer() -> Result<&'static Renderer, String> {
+pub(super) fn live_renderer() -> Result<&'static Renderer, String> {
     static RENDERER: std::sync::OnceLock<Result<Renderer, String>> = std::sync::OnceLock::new();
     RENDERER.get_or_init(Renderer::new).as_ref().map_err(Clone::clone)
 }

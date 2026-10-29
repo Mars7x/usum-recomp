@@ -33,5 +33,9 @@ required-features = ["vulkan-compare"]
 name = "vertex-shader-smoke"
 required-features = ["vulkan-compare"]
 
+[[example]]
+name = "display-window-smoke"
+required-features = ["window", "vulkan-compare"]
+
 [lints]
 workspace = true

@@ -3618,3 +3618,113 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
 - Rebuild the restored source and compare both probe and play executables
   byte-for-byte with the validated R-113 binaries: both match. No experimental
   decoder or runtime policy remains in the working source or runnable build.
+
+### R-115 2026-10-29 — Keep scaled LCD images resident through window presentation
+
+- After rejecting R-114, inspect the display/readback path. Every supported LCD
+  transfer synchronously maps a full scaled RGB image on the game thread; the
+  software window then copies/scales those CPU pixels for presentation. At 6×,
+  the top image alone contains 10368000 RGB bytes. Keep the existing GPU crop,
+  rotation, downscale averaging and RGB packing, but freeze their output in an
+  immutable GPU buffer. CPU captures/fallbacks materialize it once on demand.
+  The Vulkan window samples that buffer directly, preserving integer nearest
+  sampling, screen layout, clipping, channel values and black margins.
+- Keep the instance/adapter for window surfaces, require byte-preserving
+  RGBA8/BGRA8 UNORM swapchains, and fall back to the software window if unsupported.
+  Serialize surface configuration against every queue submission, including
+  game rendering and lazy display readbacks. Frozen buffers own their generation
+  independently of later target writes/destruction. Renderer ownership uses an
+  explicit shared identity rather than trusting GPU handle equality across
+  independently created contexts. Native/software LCDs can upload their RGB to
+  the same compositor. Guest shaders, memory semantics, instruction budgets,
+  virtual clock and normal pacing remain unchanged.
+- USUM_VULKAN_RESIDENT_DISPLAY=0 restores eager RGB readback;
+  USUM_VULKAN_GPU_PRESENT=0 restores the software window compositor. Both zero
+  select the previous display flow. The CPU rendering reference/fallback and
+  CPU display transform remain available. USUM_PLAY_REPLAY=1 is a diagnostic:
+  it loads the recorded input, disables live input only for that run and exits
+  at the configured game-time limit, retaining normal real-time pacing.
+- All 99 enabled window/Vulkan runtime, 68 CPU and 20 renderer tests pass, with
+  strict all-target runtime/renderer Clippy and formatting checks. Seven renderer
+  hardware tests and twelve runtime hardware tests pass. Exact compositor checks
+  cover RGBA/BGRA, all channel values, odd source sizes/RGB tail padding,
+  overlapping screens, clipping, nearest sampling and absent screens. They verify
+  composition never materializes source pixels and rejects foreign renderer
+  frames/overflowing rectangles. Existing display-oracle checks now also verify
+  frozen results at scales 1/2/3/6/8, all downscale axes, flips and cropped origins,
+  after target reuse/destruction, with concurrent readers sharing one result.
+- A synthetic real-window check presents 48 times at five actual sizes
+  (800×960, 400×480, 1024×768, 129×77, 825×998), while another thread completes
+  nine raster submissions. It closes automatically, uses no game data, and
+  verifies no source materialization. A 6× gameplay window capture is also
+  visually checked; its pixels come from the same GPU compositor.
+- Paced, 800×960 window comparisons use the same executable, isolated identical
+  starting saves/inputs and CPU/GPU/GPU/CPU order. Sound output is disconnected
+  consistently; guest audio generation continues. Final-build intro takes
+  8.569/8.560 seconds with eager CPU presentation versus 6.878/6.889 resident
+  (24.42% higher replay throughput). Overworld takes 18.278/18.241 versus
+  16.452/16.385 (11.21%). Battle takes 30.049/30.065 versus 30.019/30.019:
+  both are limited by normal
+  pacing, so claim no meaningful battle speed increase. These are game-thread
+  elapsed times, including initialization work within that interval; renderer
+  initialization can occur earlier on the GPU window's main thread. They do not
+  isolate steady-state pixel-copy cost or represent end-to-end process timings.
+- Average window redraw time falls from 1.85/1.87 to 0.25/0.25 ms in the intro,
+  2.06/2.09 to 0.25/0.25 ms in the overworld, and 1.98/1.96 to 0.24/0.25 ms
+  in battle. GPU runs report 341/492/967 distinct resident buffers per screen
+  respectively, 26 initial/native CPU uploads and zero materialized display-source
+  uses. Window redraws/buffer counts are not unique-game-frame FPS evidence.
+  All runs retain identical guest instruction/VBlank/draw/triangle counts and
+  output saves; those saves also match the frozen probe baseline.
+- Separately, initial isolated headless 6× trials compare frozen 9206db7 with resident
+  display output, in legacy/fast/reference/reference/fast/legacy/fast/legacy/
+  legacy/fast order, without dumps/call profiling. Reject encoder/build/replay
+  overlap without interrupting other processes. Intro baseline
+  8.004/7.966/7.964/7.975 seconds, new 6.597/6.630/6.673/6.697; overworld
+  16.819/16.931/17.238/15.820, new 13.484/13.490/13.412/13.586; battle
+  26.763/27.764/26.970/26.841, new 21.269/21.248/21.254/21.283.
+  Average throughput gains are 19.97%, 23.78% and 27.38%. Same-binary eager
+  reference pairs are 8.064/7.963, 16.917/16.526 and 25.799/27.106; the frozen
+  executable remains the primary baseline. Headless consumers no longer request
+  unused high-resolution pixels; these throughput gains are not window FPS.
+- Final review makes failed diagnostic screenshot-file writes nonfatal, matching
+  the CPU window policy. The changed binary layout warrants fresh validation:
+  all five final-build recordings and short eager comparisons match again.
+  Additional final-build legacy/fast/fast/legacy headless trials take
+  7.998/7.926 seconds baseline versus 6.658/6.648 intro; 16.234/16.189 versus
+  13.433/13.467 overworld; 27.791/27.638 versus 21.225/21.252 battle. Gains
+  are 19.68%, 20.53%, 30.49%; variation across the two matrices is not an
+  independent improvement. A bounded final gameplay replay with a directory as
+  screenshot destination verifies write failures leave GPU presentation active,
+  with identical guest work and zero materialized display-source uses.
+- Final-build isolated overworld native counters, in legacy/fast/reference/reference/fast/
+  legacy order, corroborate lower CPU cost. Baseline user instructions are
+  125469333004/125466284941 versus 123495436146/123490140067 (1.57% fewer).
+  Baseline user cycles are 60122812080/60501522485 versus
+  53464079650/53235227078 (11.54% fewer). Same-binary eager instructions are
+  125070706126/125048763707 and cycles 59874361445/59944542464, giving 1.25%
+  and 10.95% reductions respectively. Both events run 100% scheduled throughout.
+  Counts include process setup/driver threads and do not by themselves explain
+  the larger elapsed-time improvement or establish normal-speed FPS.
+- Baseline/eager/resident replays match 42 native/scaled captures, three PCM WAVs,
+  saves and guest instruction/VBlank/draw/triangle/video/audio/update counts.
+  Long bag/gameplay and Mystery Gift recordings match 32 more captures, two WAVs,
+  saves and counters, including restart at VBlank 3728. Reused baseline captures
+  verify identical executable, starting-save/input and audio hashes. Functional
+  capture timings are not extra performance trials. All five scenes retain zero
+  software fallbacks and unchanged GPU/CPU vertex counts.
+- Fresh final-build overworld samples put native ticket materialization (now
+  attributed through OnceLock initialization) at 2.68%, InputPlan::load at 2.90%,
+  dispatch at 1.77%, element_in at 2.16% and deferred encoding at 1.52%. Fresh
+  intro samples put dispatch at 9.92%, the guest call wrapper at 4.72%, MovieLib
+  0x990021c4 at 6.73% and executable helper 0x004bed34 at 3.21%. Other MovieLib
+  helpers and separately instantiated/inlined checked memory operations remain
+  substantial. Changed attribution and small samples prevent interpreting these
+  percentages as independent per-function speedups.
+- No regression is observed in these recordings. Fullscreen/multi-monitor
+  presentation, other adapters and broader game scenes remain unverified;
+  ordinary system background load is not fully eliminated. All captures, binaries
+  and profiles remain private. This removes a substantial display bottleneck and
+  improves the intro, but the intro still falls short of real-time playback in
+  these trials. Uncapped 200 actual rendered FPS at normal game speed is not
+  achieved; the goal remains active.
