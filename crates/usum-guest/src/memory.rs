@@ -8,6 +8,7 @@
 use crate::Fault;
 
 mod deferred;
+mod index;
 use deferred::DeferredRanges;
 pub use deferred::{DeferredBytes, MemorySpan};
 use std::sync::{Arc, OnceLock};
@@ -39,10 +40,23 @@ impl Region {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Memory {
     regions: Vec<Region>,
     deferred: DeferredRanges,
+    page_index: Option<index::PageIndex>,
+    use_page_index: bool,
+}
+
+impl Default for Memory {
+    fn default() -> Self {
+        Self {
+            regions: Vec::new(),
+            deferred: DeferredRanges::default(),
+            page_index: None,
+            use_page_index: std::env::var("USUM_GUEST_PAGE_INDEX").as_deref() != Ok("0"),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -66,10 +80,27 @@ impl Memory {
         }
         self.regions.push(Region { base, perm, bytes, logical: OnceLock::new() });
         self.regions.sort_by_key(|r| r.base);
+        self.refresh_page_index();
         Ok(())
     }
 
+    fn refresh_page_index(&mut self) {
+        // Tiny synthetic address spaces are cheaper to search directly and
+        // should not allocate a whole guest page table.
+        self.page_index = (self.use_page_index && self.regions.len() >= 8).then(|| index::PageIndex::new(&self.regions));
+    }
+
     fn find(&self, address: u32) -> Option<(usize, usize)> {
+        if let Some(pages) = &self.page_index {
+            match pages.lookup(address) {
+                index::UNMAPPED => return None,
+                index::PARTIAL => {}
+                entry => {
+                    let i = (entry - 1) as usize;
+                    return Some((i, address.wrapping_sub(self.regions[i].base) as usize));
+                }
+            }
+        }
         // regions are sorted: the candidate is the last one starting at or below
         let index = self.regions.partition_point(|r| r.base <= address).checked_sub(1)?;
         self.regions[index].offset(address).map(|offset| (index, offset))
@@ -176,6 +207,7 @@ impl Memory {
             self.regions = saved;
             self.regions.push(r);
             self.regions.sort_by_key(|r| r.base);
+            self.refresh_page_index();
             return Err(Overlap);
         }
         self.coalesce();
@@ -196,6 +228,7 @@ impl Memory {
             }
         }
         self.regions = merged;
+        self.refresh_page_index();
     }
 
     /// Copies `bytes` in (for host services such as file reads). Every

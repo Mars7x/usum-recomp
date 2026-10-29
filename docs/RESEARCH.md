@@ -2730,3 +2730,23 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   top-screen updates. All native/scaled captures at VBlank 180 are byte-identical.
   Including R-086, intro throughput is 4.78× the original 65.991/66.806-second
   reference. It still runs below real time, and the 200-FPS goal remains unmet.
+
+### R-088 2026-10-28 — Index full guest pages without weakening memory checks
+
+- Add an immutable, cloneable 4-KiB-page-to-region index for address spaces with
+  at least eight regions. Partial pages retain the original region search, so
+  adjacent subpage mappings, holes, permissions and wraparound accesses keep
+  their checked semantics. Mapping, remap rollback and coalescing rebuild the
+  index; memory clones retain independent region layouts and a shared immutable
+  index. No raw host pointers or unsafe code are introduced.
+- `USUM_GUEST_PAGE_INDEX=0` selects the original region lookup. A lifecycle test
+  compares indexed/reference byte and word accesses across partial/full pages,
+  permissions, cross-page writes, relocation, failed remaps, coalescing, a new
+  lowest region, clone independence and the top of the 32-bit address space.
+  All 27 guest tests and strict Clippy pass.
+- Repeated 6× intro off/on/on/off runs took 15.676/10.818/10.568/15.216 seconds
+  for six game seconds: 44.4% greater throughput versus disabled indexing in the
+  same binary. The 16-game-second 6× overworld replay took 27.701 seconds off and
+  25.367 on (17.98 versus 19.63 top-screen updates/s). Instructions, video jobs,
+  draws and VBlanks match, and every native/scaled capture is byte-identical.
+  Intro playback and gameplay remain below real time; 200 FPS is not achieved.
