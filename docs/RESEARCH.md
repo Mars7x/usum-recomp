@@ -2992,3 +2992,27 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   advance the verified FPS result; it redirects work toward larger framebuffer
   readback costs. Private binaries, profiles and a rejected patch remain outside
   Git. The normal-speed 200-FPS goal is still active and unmet.
+
+### R-100 2026-10-29 — Unblock opening the bag in battle
+
+- The user's recorded session stopped at VBlank 2263 on unimplemented HID
+  command `0x00110000`, EnableAccelerometer. Implement the documented enable /
+  disable pairs for accelerometer and gyroscope on hid:USER and hid:SPVR.
+- Track sensor state and publish neutral six-byte vectors in the documented
+  8-entry accelerometer and 32-entry gyroscope rings. Advance timestamps on
+  entry-zero updates and signal only enabled sensor events. Disable stops
+  updates; re-enable initializes a fresh entry-zero sample. Physical host motion
+  input is not connected; this supplies neutral simulated samples.
+- Independent service facts: [libctru HID commands](https://github.com/devkitPro/libctru/blob/master/libctru/source/services/hid.c)
+  and [3dbrew shared-memory layout](https://3dbrew.org/wiki/HID_Shared_Memory).
+  No emulator implementation was used.
+- Regression tests cover malformed requests, read-only shared mappings, both
+  ring sizes and wrapping timestamps, adjacent memory, disable/re-enable and
+  correct per-sensor event signaling. All 86 enabled runtime tests and strict
+  Clippy pass.
+- Replay of the exact input/save reaches 45 game seconds, past the original
+  stop, with the bag visibly rendered at 6×. A second replay adds B to close the
+  menu and A to reopen it, reaches 50 seconds and captures the reopened bag.
+  Both stop at their configured sleep/time budget, with no unsupported command
+  and zero software rendering fallbacks. Game data and captures remain private.
+  This fixes a gameplay stop; it does not establish the 200-FPS goal.

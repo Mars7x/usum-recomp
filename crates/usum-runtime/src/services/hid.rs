@@ -15,6 +15,58 @@ pub fn ipc_handles_reply(memory: u32, events: [u32; 5]) -> Vec<u32> {
     w
 }
 
+/// Host motion input is not wired yet. Enabled sensors publish neutral samples
+/// and normal ring timestamps/events rather than leaving a stale shared page.
+#[derive(Clone, Debug, Default)]
+pub struct Motion {
+    enabled: [bool; 2],
+    initialized: [bool; 2],
+}
+
+impl Motion {
+    /// libctru HIDUSER command IDs: enable/disable accelerometer, then gyro.
+    pub fn request(&mut self, header: u32) -> Option<Vec<u32>> {
+        let (sensor, enabled) = match header {
+            0x0011_0000 => (0, true),
+            0x0012_0000 => (0, false),
+            0x0013_0000 => (1, true),
+            0x0014_0000 => (1, false),
+            _ => return None,
+        };
+        if self.enabled[sensor] != enabled {
+            self.initialized[sensor] = false;
+        }
+        self.enabled[sensor] = enabled;
+        Some(super::result_reply((header >> 16) as u16))
+    }
+
+    pub fn enabled(&self, sensor: usize) -> bool {
+        self.enabled[sensor]
+    }
+
+    /// 3dbrew HID shared memory: six-byte vectors, 8 accel / 32 gyro entries.
+    /// The two timestamps describe consecutive updates of entry zero.
+    pub fn update(&mut self, mem: &mut usum_guest::Memory, base: u32, ticks: u64) -> Result<(), usum_guest::Fault> {
+        for (sensor, (offset, entries)) in [(0x108, 8), (0x158, 32)].into_iter().enumerate() {
+            if !self.enabled[sensor] {
+                continue;
+            }
+            let at = base + offset;
+            let index = if self.initialized[sensor] { mem.read_u32(at + 0x10)?.wrapping_add(1) % entries } else { 0 };
+            if index == 0 {
+                let old = mem.read_range(at, 8)?;
+                mem.device_write(at + 8, &old)?;
+                mem.device_write(at, &ticks.to_le_bytes())?;
+            }
+            mem.device_write(at + 0x18, &[0; 6])?;
+            mem.device_write(at + 0x20 + 6 * index, &[0; 6])?;
+            mem.device_write(at + 0x10, &index.to_le_bytes())?;
+            self.initialized[sensor] = true;
+        }
+        Ok(())
+    }
+}
+
 /// PAD bits (3dbrew "HID Shared Memory"). The circle pad directions
 /// (bits 28-31) also set the stick position (`circle_pad`).
 pub const BUTTONS: [(&str, u32); 16] = [
@@ -157,6 +209,43 @@ pub fn unpack_touch(packed: u32) -> Option<(u16, u16)> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn motion_requests_publish_bounded_rings_and_stop_when_disabled() {
+        use super::Motion;
+        use usum_guest::{memory::Perm, Memory};
+        let mut motion = Motion::default();
+        let mut mem = Memory::new();
+        let base = 0x1000;
+        mem.map(base, vec![0; 4096], Perm::R).unwrap();
+        mem.device_write(base + 0x238, &[0x93; 8]).unwrap();
+        assert!(motion.request(0x0011_0040).is_none());
+        motion.update(&mut mem, base, 1).unwrap();
+        assert_eq!(mem.read_u32(base + 0x108).unwrap(), 0);
+        for (enable, disable, offset, count, sensor) in
+            [(0x0011_0000, 0x0012_0000, 0x108, 8, 0), (0x0013_0000, 0x0014_0000, 0x158, 32, 1)]
+        {
+            assert_eq!(motion.request(enable).unwrap(), super::super::result_reply((enable >> 16) as u16));
+            assert!(motion.enabled(sensor));
+            for step in 0..=count {
+                motion.update(&mut mem, base, 10 + u64::from(step)).unwrap();
+                assert_eq!(mem.read_u32(base + offset + 0x10).unwrap(), step % count);
+            }
+            assert_eq!(mem.read_u32(base + offset).unwrap(), 10 + count);
+            assert_eq!(mem.read_u32(base + offset + 8).unwrap(), 10);
+            assert_eq!(mem.read_range(base + offset + 0x18, 6).unwrap(), vec![0; 6]);
+            let before = mem.read_range(base + offset, 0x20 + 6 * count).unwrap();
+            motion.request(disable).unwrap();
+            motion.update(&mut mem, base, 100).unwrap();
+            assert!(!motion.enabled(sensor));
+            assert_eq!(mem.read_range(base + offset, 0x20 + 6 * count).unwrap(), before);
+            motion.request(enable).unwrap();
+            motion.update(&mut mem, base, 200).unwrap();
+            assert_eq!(mem.read_u32(base + offset + 0x10).unwrap(), 0);
+            motion.request(disable).unwrap();
+        }
+        assert_eq!(mem.read_range(base + 0x238, 8).unwrap(), vec![0x93; 8]);
+    }
     use super::*;
 
     #[test]

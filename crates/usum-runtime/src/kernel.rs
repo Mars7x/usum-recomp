@@ -270,6 +270,7 @@ pub struct Kernel {
     pad: u32,
     /// HID's shared memory and its five events.
     pub hid: Option<(u32, [u32; 5])>,
+    hid_motion: hid::Motion,
     /// The DSP's per-frame source processing (timing only, no mixing yet).
     pub audio: crate::audio::Dsp,
     /// Local wireless, once initialized.
@@ -877,7 +878,11 @@ impl Kernel {
                 mem.device_write(at + 0x20 + 8 * index, &entry).map_err(fault)?;
             }
         }
-        for event in &events[..2] {
+        self.hid_motion.update(mem, base, ticks as u64).map_err(fault)?;
+        for (index, event) in events.iter().enumerate() {
+            if index >= 2 && !(index == 2 && self.hid_motion.enabled(0) || index == 3 && self.hid_motion.enabled(1)) {
+                continue;
+            }
             if let Some(Object::Event { signaled, .. }) = self.handles.get_mut(event) {
                 *signaled = true;
             }
@@ -1576,6 +1581,9 @@ impl Kernel {
                     }
                 };
                 Some(hid::ipc_handles_reply(memory, events))
+            }
+            "hid:USER" | "hid:SPVR" if matches!(header, 0x0011_0000 | 0x0012_0000 | 0x0013_0000 | 0x0014_0000) => {
+                self.hid_motion.request(header)
             }
             // InitializeWithVersion(shared memory size, NodeInfo, version,
             // shared memory): result, 0, a copy descriptor, the event
@@ -2532,6 +2540,32 @@ impl Kernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hid_motion_signals_only_enabled_sensor_updates() {
+        let mut k = Kernel { next_handle: 0x8000, virtual_clock: Some(1_000_000_000), ..Kernel::default() };
+        let mut mem = Memory::new();
+        let base = 0x1000;
+        mem.map(base, vec![0; hid::SHARED_MEMORY_SIZE as usize], Perm::R).unwrap();
+        let memory = k.open(Object::SharedMemory { size: hid::SHARED_MEMORY_SIZE, mapped: Some(base) });
+        let events = [0; 5].map(|_| k.open(Object::Event { signaled: false, reset: 0 }));
+        k.hid = Some((memory, events));
+        let states = |k: &Kernel| events.map(|event| matches!(k.object(event), Some(Object::Event { signaled: true, .. })));
+        k.hid_update(&mut mem).unwrap();
+        assert_eq!(states(&k), [true, true, false, false, false]);
+        k.hid_motion.request(0x0011_0000).unwrap();
+        k.hid_update(&mut mem).unwrap();
+        assert_eq!(states(&k), [true, true, true, false, false]);
+        for event in events {
+            if let Some(Object::Event { signaled, .. }) = k.handles.get_mut(&event) {
+                *signaled = false;
+            }
+        }
+        k.hid_motion.request(0x0012_0000).unwrap();
+        k.hid_motion.request(0x0013_0000).unwrap();
+        k.hid_update(&mut mem).unwrap();
+        assert_eq!(states(&k), [true, true, false, true, false]);
+    }
 
     #[test]
     fn creates_address_arbiters_with_distinct_handles() {
