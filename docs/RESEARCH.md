@@ -2974,3 +2974,21 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   word access around 11%, vertex loading 4.2%, draw encoding 3.9%, and combined
   depth/stencil conversion 5.5%. These identify remaining CPU work, not an FPS
   result. Profiles and game data stay private. The 200-FPS objective is unmet.
+
+### R-099 2026-10-29 — Reject shared module-identity dispatch experiment
+
+- Tested immutable shared CRO metadata and SHA strings, guarded by weak
+  allocation identities in the dispatch cache. Copy-on-write edits, replacement,
+  unload, relocation and instruction-state changes invalidate the guard; weak
+  references release removed module tables. All 84 runtime tests and strict
+  Clippy passed, and 28 battle captures matched the corrected renderer.
+- Old/new/new/old intro times were 9.613/9.101/9.179/9.160 seconds; overworld
+  times were 18.993/20.006/20.216/19.768 seconds. New gameplay averaged about
+  3.8% slower. Separate retired-instruction measurements dropped from 123.686
+  to 122.402 billion in the intro and 186.400 to 186.183 billion in gameplay,
+  only about 1% and 0.1% respectively. Gameplay cycles and wall time increased.
+- Discarded the implementation rather than ship a gameplay regression. The
+  existing module name/hash/size/base guards remain. This experiment does not
+  advance the verified FPS result; it redirects work toward larger framebuffer
+  readback costs. Private binaries, profiles and a rejected patch remain outside
+  Git. The normal-speed 200-FPS goal is still active and unmet.
