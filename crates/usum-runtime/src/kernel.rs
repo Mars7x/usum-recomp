@@ -9,6 +9,8 @@
 //! execution with a report; nothing is guessed.
 
 mod restart;
+#[cfg(test)]
+mod thread_tls_tests;
 pub(crate) use restart::BootImage;
 
 use std::collections::BTreeMap;
@@ -235,6 +237,8 @@ pub struct Kernel {
     pub calls: Vec<Call>,
     pub requests: Vec<Request>,
     pub threads: Vec<Thread>,
+    /// Diagnostic reference: retain the old lifetime-based TLS allocation cap.
+    pub thread_lifetime_reference: bool,
     /// The APT lock (a mutex, created on first GetLockHandle).
     apt_lock: Option<u32>,
     /// The HLE DSP's pipes.
@@ -418,6 +422,7 @@ impl Kernel {
             next_handle: 0x0000_8000,
             pica: crate::pica::Pica::with_linear_base(process.linear_base),
             threads: vec![main],
+            thread_lifetime_reference: std::env::var("USUM_THREAD_LIFETIME_REFERENCE").as_deref() == Ok("1"),
             current: 0,
             next_thread_id: MAIN_THREAD_ID + 1,
             ..Kernel::default()
@@ -2282,12 +2287,33 @@ impl Kernel {
     /// CreateThread(r0 = priority, r1 = entry, r2 = argument, r3 = stack
     /// top, r4 = processor): r1 = handle. The new thread's FPSCR is 0, an
     /// open question (RESEARCH.md R-017).
-    fn create_thread(&mut self, cpu: &mut Cpu) -> Outcome {
+    fn create_thread(&mut self, cpu: &mut Cpu, mem: &mut Memory) -> Outcome {
         let (priority, entry, arg, stack, processor) = (cpu.r[0], cpu.r[1], cpu.r[2], cpu.r[3], cpu.r[4] as i32);
-        if priority > 0x3F || self.threads.len() as u32 >= TLS_SLOTS || !(-2..=1).contains(&processor) {
+        if priority > 0x3F || !(-2..=1).contains(&processor) {
             return Outcome::Unimplemented(format!("CreateThread(priority {priority:#x}, processor {processor})"));
         }
-        let slot = self.threads.len() as u32;
+        // Preserve initial placement. After every pristine slot has been used,
+        // an exited thread releases its TLS storage, not its handle identity.
+        // Keeping old thread records preserves joins on retained handles.
+        let slot = if self.threads.len() < TLS_SLOTS as usize {
+            self.threads.len() as u32
+        } else if self.thread_lifetime_reference {
+            return Outcome::Unimplemented(format!("CreateThread(priority {priority:#x}, processor {processor})"));
+        } else {
+            let free = (0..TLS_SLOTS).find(|slot| {
+                let address = TLS + slot * TLS_SLOT;
+                !self.threads.iter().enumerate().any(|(index, thread)| {
+                    thread.state != ThreadState::Exited && (thread.cpu.tls == address || (index == 0 && *slot == 0))
+                })
+            });
+            let Some(slot) = free else {
+                return Outcome::Unimplemented("CreateThread: all TLS slots are owned by live threads".into());
+            };
+            if let Err(fault) = mem.write_range(TLS + slot * TLS_SLOT, &[0; TLS_SLOT as usize]) {
+                return Outcome::Unimplemented(format!("CreateThread: cannot initialize recycled TLS: {fault}"));
+            }
+            slot
+        };
         let mut context = Cpu::default();
         context.r[0] = arg;
         context.r[13] = stack & !7;
@@ -2424,7 +2450,7 @@ impl Kernel {
                     }
                 }
             }
-            0x08 => self.create_thread(cpu),
+            0x08 => self.create_thread(cpu, _mem),
             // ExitThread()
             0x09 => {
                 self.threads[self.current].state = ThreadState::Exited;

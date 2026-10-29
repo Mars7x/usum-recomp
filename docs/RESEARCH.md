@@ -3896,3 +3896,31 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   limit of 32, despite exited entries; the argument values themselves are in
   the supported range. Preserve that recording for follow-up resource-lifetime
   work. No successful replay beyond that stop or fix is claimed here.
+
+### R-119 — Recycle exited-thread TLS without reusing thread identity
+
+- Reproduce the user's recorded CreateThread stop at VBlank 39517 with the
+  original allocation policy: 32 historical threads comprise only ten live
+  threads and 22 exited threads. Priority 0x30 and processor -2 are supported;
+  the failure comes from treating historical entries as simultaneous TLS owners.
+- Preserve initial TLS placement and retain exited thread records, IDs and
+  handles. Once pristine slots are exhausted, select storage not owned by a
+  live thread and clear its 512 bytes before publishing the new thread. Reserve
+  the main thread's slot even before its first saved CPU context. Allocation
+  faults and genuine simultaneous exhaustion leave thread identity unchanged.
+  `USUM_THREAD_LIFETIME_REFERENCE=1` retains the old policy for comparison.
+- This follows the TLS lifetime model documented by
+  [3dbrew](https://3dbrew.org/wiki/Thread_Local_Storage) and corroborated by
+  [Azahar's thread lifecycle](https://github.com/azahar-emu/azahar/blob/master/src/core/hle/kernel/thread.cpp).
+  No emulator implementation code is copied. Clearing recycled storage restores
+  this runtime's fresh-block behavior; it is not a claim about hardware clearing.
+- Retry only the failed SVC in the exact stopped state with recycling enabled:
+  it succeeds with TLS 0x1ff83200 and a new handle. Guest clock and VBlank count
+  do not advance, and no guest gameplay is executed beyond the failed call.
+  This validates the resource failure, not every later area transition.
+- All 107 enabled window/Vulkan tests and 75 non-window tests pass, with strict
+  Clippy and formatting checks. New tests cover 128 sequential thread lifetimes,
+  retained joins, simultaneous exhaustion, exact-slot reuse, read-only storage
+  faults and reference-policy reproduction. Against ed5d9c1, the same five
+  replay/save fixtures match all 74 images, five WAVs, saves and guest counters.
+  This is a compatibility fix; no FPS improvement is claimed.
