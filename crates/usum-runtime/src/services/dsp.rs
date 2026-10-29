@@ -66,26 +66,61 @@ pub const PIPE_INTERRUPT: u32 = 2;
 #[derive(Debug, Default)]
 pub struct Pipes {
     from_dsp: [VecDeque<u8>; 8],
+    running: bool,
+    shutdown_ack: Option<u16>,
 }
 
 impl Pipes {
     /// The application wrote `bytes` to `channel`. Returns true if the
     /// DSP answers (data is now readable, so the pipe's event fires).
     ///
-    /// Audio pipe: a u16 state, 0 initialize (the game's write at
-    /// 0x0025E624; 3dbrew does not list the states). The answer to
-    /// initialize is the structure count, then the addresses, as u16s.
+    /// Audio pipe u16 state (libctru NDSP protocol): 0 initialize / 2 resume
+    /// return the structure count and addresses; 1 shutdown / 3 suspend stop
+    /// processing and acknowledge completion through receive register zero.
     pub fn write(&mut self, channel: u32, bytes: &[u8]) -> Result<bool, String> {
         match (channel, bytes) {
-            (AUDIO_PIPE, [0, 0, ..]) => {
+            (AUDIO_PIPE, [0 | 2, 0, ..]) => {
+                self.running = true;
+                self.shutdown_ack = None;
                 let words = structure_words();
                 let pipe = &mut self.from_dsp[AUDIO_PIPE as usize];
+                pipe.clear();
                 pipe.extend((words.len() as u16).to_le_bytes());
                 pipe.extend(words.iter().flat_map(|w| w.to_le_bytes()));
                 Ok(true)
             }
+            // libctru ndspFinalize: 1 shuts down, 3 suspends; register 0
+            // returns 1 when complete. The upper two bytes are not command data.
+            (AUDIO_PIPE, [1 | 3, 0, ..]) => {
+                self.running = false;
+                self.shutdown_ack = Some(1);
+                self.from_dsp[AUDIO_PIPE as usize].clear();
+                Ok(false)
+            }
             _ => Err(format!("DSP pipe {channel} write {bytes:02x?}")),
         }
+    }
+
+    pub fn running(&self) -> bool {
+        self.running
+    }
+
+    pub fn recv_ready(&self, register: u32) -> Result<bool, String> {
+        if register != 0 {
+            return Err(format!("DSP receive register {register}"));
+        }
+        Ok(self.shutdown_ack.is_some())
+    }
+
+    pub fn recv(&mut self, register: u32) -> Result<u16, String> {
+        if register != 0 {
+            return Err(format!("DSP receive register {register}"));
+        }
+        self.shutdown_ack.take().ok_or_else(|| "DSP receive register 0 is empty".into())
+    }
+
+    pub fn unload(&mut self) {
+        *self = Self::default();
     }
 
     /// Up to `size` bytes the DSP has written to `channel`.
@@ -154,6 +189,33 @@ pub fn load_component_reply(size: u32, buffer: u32) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audio_shutdown_suspend_and_resume_use_mailbox_acknowledgements() {
+        let mut pipes = Pipes::default();
+        assert!(!pipes.running());
+        assert!(!pipes.recv_ready(0).unwrap());
+        pipes.write(AUDIO_PIPE, &[0, 0, 0x6b, 0]).unwrap();
+        assert!(pipes.running());
+        let init = pipes.read(AUDIO_PIPE, 4096);
+        assert_eq!(init.len(), 32);
+        for command in [1, 3] {
+            assert!(!pipes.write(AUDIO_PIPE, &[command, 0, 0x6b, 0]).unwrap());
+            assert!(!pipes.running());
+            assert!(pipes.recv_ready(0).unwrap());
+            assert_eq!(pipes.recv(0).unwrap(), 1);
+            assert!(!pipes.recv_ready(0).unwrap());
+            assert!(pipes.recv(0).is_err());
+            assert!(pipes.read(AUDIO_PIPE, 4096).is_empty());
+            pipes.write(AUDIO_PIPE, &[2, 0, 0, 0]).unwrap();
+            assert!(pipes.running());
+            assert_eq!(pipes.read(AUDIO_PIPE, 4096), init);
+        }
+        assert!(pipes.recv_ready(3).is_err());
+        pipes.unload();
+        assert!(!pipes.running());
+        assert!(!pipes.recv_ready(0).unwrap());
+    }
 
     #[test]
     fn the_structures_fit_one_region_in_order() {

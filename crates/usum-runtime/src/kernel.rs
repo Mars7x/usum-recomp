@@ -271,7 +271,7 @@ pub struct Kernel {
     /// HID's shared memory and its five events.
     pub hid: Option<(u32, [u32; 5])>,
     hid_motion: hid::Motion,
-    /// The DSP's per-frame source processing (timing only, no mixing yet).
+    /// The HLE audio mixer and per-frame guest source processing.
     pub audio: crate::audio::Dsp,
     /// Local wireless, once initialized.
     pub uds: Option<uds::Uds>,
@@ -657,7 +657,8 @@ impl Kernel {
     /// When the next hardware event is due, if any is scheduled.
     fn next_hardware_event(&self) -> Option<u64> {
         let vblank = self.gsp.map(|_| self.next_vblank);
-        let audio = self.dsp_events.contains_key(&(dsp::PIPE_INTERRUPT, dsp::AUDIO_PIPE)).then_some(self.next_audio_frame);
+        let audio = (self.dsp_pipes.running() && self.dsp_events.contains_key(&(dsp::PIPE_INTERRUPT, dsp::AUDIO_PIPE)))
+            .then_some(self.next_audio_frame);
         vblank.into_iter().chain(audio).min()
     }
 
@@ -677,7 +678,7 @@ impl Kernel {
                 signaled = true;
             }
         }
-        if let Some(&event) = self.dsp_events.get(&(dsp::PIPE_INTERRUPT, dsp::AUDIO_PIPE)) {
+        if let Some(&event) = self.dsp_events.get(&(dsp::PIPE_INTERRUPT, dsp::AUDIO_PIPE)).filter(|_| self.dsp_pipes.running()) {
             while self.next_audio_frame <= now {
                 self.next_audio_frame += AUDIO_FRAME_NS;
                 self.audio_frames += 1;
@@ -1381,6 +1382,23 @@ impl Kernel {
                 cfg::Request::Other(_) => None,
             },
             "dsp::DSP" => match dsp::parse(&message) {
+                dsp::Request::Other(header @ (0x0001_0040 | 0x0002_0040)) => {
+                    let value = if header == 0x0001_0040 {
+                        self.dsp_pipes.recv(message.words[1]).map(u32::from)
+                    } else {
+                        self.dsp_pipes.recv_ready(message.words[1]).map(u32::from)
+                    };
+                    match value {
+                        Ok(value) => Some(vec![services::header((header >> 16) as u16, 2, 0), 0, value]),
+                        Err(error) => return Outcome::Unimplemented(error),
+                    }
+                }
+                dsp::Request::Other(0x0012_0000) => {
+                    self.dsp_firmware = None;
+                    self.dsp_pipes.unload();
+                    Some(services::result_reply(0x12))
+                }
+
                 dsp::Request::LoadComponent { size, buffer: at } => match mem.read_range(at, size.min(0x10_0000)) {
                     Ok(firmware) => {
                         self.dsp_firmware = Some((firmware.len(), usum_import::sha256_hex(&firmware)));
@@ -1388,7 +1406,7 @@ impl Kernel {
                     }
                     Err(f) => return Outcome::Unimplemented(format!("DSP component at {at:#x}: {f}")),
                 },
-                // recorded; nothing signals these until audio is emulated
+                // Audio frames signal the pipe event while the DSP is running.
                 dsp::Request::RegisterInterruptEvents { interrupt, channel, event } => {
                     if event == 0 {
                         self.dsp_events.remove(&(interrupt, channel));
@@ -1417,6 +1435,9 @@ impl Kernel {
                         self.dsp_pipe_writes.push((channel, bytes.clone()));
                         match self.dsp_pipes.write(channel, &bytes) {
                             Ok(answered) => {
+                                if channel == dsp::AUDIO_PIPE && self.dsp_pipes.running() && self.next_audio_frame <= self.now() {
+                                    self.next_audio_frame = self.now() + AUDIO_FRAME_NS;
+                                }
                                 // data to read: the pipe's interrupt event fires
                                 if let Some(&event) = self.dsp_events.get(&(dsp::PIPE_INTERRUPT, channel)).filter(|_| answered) {
                                     if let Some(Object::Event { signaled, .. }) = self.handles.get_mut(&event) {
@@ -1697,6 +1718,8 @@ impl Kernel {
                 reply.extend(words);
                 Some(reply)
             }
+            // FRD_Logout (libctru command 4): the console is already offline.
+            "frd:u" | "frd:a" if header == 0x0004_0000 => Some(services::result_reply(0x4)),
             // GetMyFriendKey: no account, all zero (a choice)
             "frd:u" | "frd:a" if header == 0x0005_0000 => Some(vec![services::header(0x5, 5, 0), 0, 0, 0, 0, 0]),
             // GetFriendKeyList(offset, count): no friends, 0 entries
@@ -2540,6 +2563,74 @@ impl Kernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn friend_logout_is_idempotent_and_replies_through_guest_ipc() {
+        let mut kernel = Kernel::default();
+        let mut cpu = Cpu { tls: 0x1000, ..Cpu::default() };
+        let mut mem = Memory::new();
+        mem.map(cpu.tls, vec![0; 0x1000], Perm::RW).unwrap();
+        for service in ["frd:u", "frd:a"] {
+            for _ in 0..2 {
+                mem.write_u32(cpu.tls + services::COMMAND_BUFFER, 0x0004_0000).unwrap();
+                assert!(matches!(kernel.request(&mut cpu, &mut mem, service.into()), Outcome::Continue));
+                assert_eq!(mem.read_range(cpu.tls + services::COMMAND_BUFFER, 8).unwrap(), [0x40, 0, 4, 0, 0, 0, 0, 0]);
+                assert_eq!(cpu.r[0], RESULT_SUCCESS);
+            }
+        }
+    }
+
+    #[test]
+    fn awake_shell_records_sleep_acknowledgements_without_suspending_threads() {
+        let mut kernel = Kernel::default();
+        let mut cpu = Cpu { tls: 0x1000, ..Cpu::default() };
+        let mut mem = Memory::new();
+        mem.map(cpu.tls, vec![0; 0x1000], Perm::RW).unwrap();
+        for service in ["APT:A", "APT:U", "APT:S"] {
+            for (header, words) in [(0x003e_0080, vec![0x300, 1]), (0x003f_0040, vec![0x300])] {
+                let buffer = cpu.tls + services::COMMAND_BUFFER;
+                mem.write_u32(buffer, header).unwrap();
+                for (i, word) in words.iter().enumerate() {
+                    mem.write_u32(buffer + 4 + 4 * i as u32, *word).unwrap();
+                }
+                assert!(matches!(kernel.request(&mut cpu, &mut mem, service.into()), Outcome::Continue));
+                assert_eq!(kernel.settings.get(&(service.into(), header)), Some(&words));
+                assert_eq!(mem.read_u32(buffer + 4).unwrap(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn dsp_shutdown_mailbox_round_trips_through_ipc_and_stops_audio_timer() {
+        let mut kernel = Kernel { next_handle: 0x8000, virtual_clock: Some(1_000_000_000), ..Kernel::default() };
+        let mut cpu = Cpu { tls: 0x1000, ..Cpu::default() };
+        let mut mem = Memory::new();
+        mem.map(cpu.tls, vec![0; 0x1000], Perm::RW).unwrap();
+        let event = kernel.open(Object::Event { signaled: false, reset: 0 });
+        kernel.dsp_events.insert((dsp::PIPE_INTERRUPT, dsp::AUDIO_PIPE), event);
+        let buffer = cpu.tls + services::COMMAND_BUFFER;
+        let send = |kernel: &mut Kernel, cpu: &mut Cpu, mem: &mut Memory, words: &[u32]| {
+            for (i, word) in words.iter().enumerate() {
+                mem.write_u32(buffer + 4 * i as u32, *word).unwrap();
+            }
+            assert!(matches!(kernel.request(cpu, mem, "dsp::DSP".into()), Outcome::Continue));
+            assert_eq!(mem.read_u32(buffer + 4).unwrap(), 0);
+        };
+        mem.write_u32(0x1300, 0).unwrap();
+        send(&mut kernel, &mut cpu, &mut mem, &[0x000d_0082, 2, 4, (4 << 14) | 0x402, 0x1300]);
+        assert!(kernel.next_hardware_event().is_some());
+        mem.write_u32(0x1300, 0x006b_0001).unwrap();
+        send(&mut kernel, &mut cpu, &mut mem, &[0x000d_0082, 2, 4, (4 << 14) | 0x402, 0x1300]);
+        assert!(kernel.next_hardware_event().is_none());
+        send(&mut kernel, &mut cpu, &mut mem, &[0x0002_0040, 0]);
+        assert_eq!(mem.read_u32(buffer + 8).unwrap(), 1);
+        send(&mut kernel, &mut cpu, &mut mem, &[0x0001_0040, 0]);
+        assert_eq!(mem.read_u32(buffer + 8).unwrap(), 1);
+        send(&mut kernel, &mut cpu, &mut mem, &[0x0002_0040, 0]);
+        assert_eq!(mem.read_u32(buffer + 8).unwrap(), 0);
+        send(&mut kernel, &mut cpu, &mut mem, &[0x0012_0000]);
+        assert!(!kernel.dsp_pipes.running());
+    }
 
     #[test]
     fn hid_motion_signals_only_enabled_sensor_updates() {

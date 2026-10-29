@@ -9,6 +9,14 @@
 
 /// (service, request header, 3dbrew name).
 pub const RESULT_ONLY: &[(&str, u32, &str)] = &[
+    // Sleep acknowledgements: the virtual shell remains open/awake. Record
+    // the application's reply; there is no host sleep transition to perform.
+    ("APT:A", 0x003E_0080, "ReplySleepQuery"),
+    ("APT:U", 0x003E_0080, "ReplySleepQuery"),
+    ("APT:S", 0x003E_0080, "ReplySleepQuery"),
+    ("APT:A", 0x003F_0040, "ReplySleepNotificationComplete"),
+    ("APT:U", 0x003F_0040, "ReplySleepNotificationComplete"),
+    ("APT:S", 0x003F_0040, "ReplySleepNotificationComplete"),
     // 3dbrew "NS and APT Services", available since 7.0.0-13
     ("APT:A", 0x0055_0040, "SetScreenCapturePostPermission"),
     ("APT:U", 0x0055_0040, "SetScreenCapturePostPermission"),

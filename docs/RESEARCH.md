@@ -3054,3 +3054,34 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   earlier presence-based readback option. Rendering correctness and the CPU
   fallback remain required. Game data stays private. Normal-speed 200 FPS has
   not been reached; the goal remains active.
+
+### R-102 2026-10-29 — Handle offline cleanup and DSP shutdown/suspend
+
+- One recent menu session stopped on FRD Logout (`0x00040000`). Reply success
+  for the already-offline console on both friend service names. Handle the next
+  APT sleep-query and sleep-complete acknowledgements by recording their values;
+  the virtual shell stays open and awake. Real IPC tests cover repeated logout
+  and acknowledgements on all three APT service names.
+- Implement the documented NDSP audio lifecycle: state 1 shutdown / 3 suspend
+  stops audio processing and exposes acknowledgement 1 in receive register zero.
+  State 0 initialization / 2 resume publishes fresh structure addresses. Treat
+  the command as u16, accepting the observed nonzero upper padding bytes. Register
+  reads consume the acknowledgement; component unload clears pipe state.
+  Disabled processing no longer schedules or emits audio frames. Preserve the
+  existing frame deadline when ordinary initialization occurs before it.
+- Protocol facts: [libctru friend service](https://github.com/devkitPro/libctru/blob/master/libctru/source/services/frd.c),
+  [APT commands](https://github.com/devkitPro/libctru/blob/master/libctru/source/services/apt.c),
+  [NDSP lifecycle](https://github.com/devkitPro/libctru/blob/master/libctru/source/ndsp/ndsp.c).
+  No emulator implementation was used.
+- All 90 enabled runtime tests and strict Clippy pass. The normal intro and
+  overworld retain identical guest instruction/draw counts and all eight native /
+  scaled captures, with zero renderer fallbacks. These concurrent correctness
+  replays are not performance measurements.
+- The previously stopped recording now passes these calls and reaches
+  `APT:PrepareToDoApplicationJump`, flags 2: restart the current title. Actual
+  application restart remains unsupported and is the next correctness task;
+  this change does not claim the whole menu-return path is fixed. See the
+  [documented jump flags](https://www.3dbrew.org/wiki/APT%3APrepareToDoApplicationJump).
+- Separately, the latest manual 6× test closed normally after 11969 VBlanks,
+  719680 draws and 134566 Vulkan lists, with zero software fallbacks. Recordings
+  and game data stay private. The normal-speed 200-FPS objective remains active.
