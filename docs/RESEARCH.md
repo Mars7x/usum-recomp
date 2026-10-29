@@ -2810,3 +2810,19 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   strict Clippy and the hardware depth-prepass regression pass. These are headless
   update-throughput measurements; real-time playback and the 200-FPS goal remain
   unmet. Sampling data, binaries and game captures stay outside the repository.
+
+### R-092 2026-10-29 — Inline checked guest region lookup into memory access
+
+- CPU samples showed an out-of-line region lookup on the hot guest load/store
+  path. Inline that private helper so callers can eliminate its tagged-pair return
+  and combine region access with the page lookup. Page bounds, permissions,
+  partial mappings and deferred visibility keep their existing checks.
+- Frozen pre/post binaries at 6× run the same six-game-second intro in
+  10.644/9.476/9.064/10.232 seconds (old/new/new/old), a 12.6% throughput gain.
+  All runs execute 1,583,340,348 instructions, 344 conversion jobs, 688 draws and
+  347 top-screen updates. Every native and scaled capture matches exactly.
+- A single overworld pair measures 24.917 versus 24.392 seconds for 16 game
+  seconds, only 2.2% greater throughput, with matching instructions, draw counts
+  and all four images. This small gameplay difference needs repetition; GPU
+  timing also varies. All 27 guest tests and strict Clippy pass. Intro and gameplay
+  remain below real time at 6×; this does not achieve 200 FPS.

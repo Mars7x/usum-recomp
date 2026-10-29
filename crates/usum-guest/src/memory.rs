@@ -2,8 +2,8 @@
 //! permissions. Accesses are little-endian and checked. Alignment rules
 //! belong to the instructions (see `ops`), not to memory.
 //!
-//! This is the simple, obviously correct version. A faster one (page
-//! table of slices) must keep the same interface and pass the same tests.
+//! Full pages use a checked region index; partial pages search the mappings.
+//! Both paths preserve permissions and deferred-memory visibility.
 
 use crate::Fault;
 
@@ -90,6 +90,9 @@ impl Memory {
         self.page_index = (self.use_page_index && self.regions.len() >= 8).then(|| index::PageIndex::new(&self.regions));
     }
 
+    // Keep the page lookup and the caller's region access together. Otherwise
+    // every guest load/store calls out and transfers a tagged pair via memory.
+    #[inline(always)]
     fn find(&self, address: u32) -> Option<(usize, usize)> {
         if let Some(pages) = &self.page_index {
             match pages.lookup(address) {
