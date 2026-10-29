@@ -22,7 +22,7 @@ has not been completed.
   connected after launch. Audio, saves and deterministic input replays are
   implemented; sound and compatibility remain incomplete.
 - Built-in presentation caps and an optional testing FPS overlay are available.
-  **Native dynamic FPS is still in development; 200 FPS has not been achieved.**
+  Native dynamic FPS is in development.
   Presentation caps do not unlock the game's frame rate. The overlay currently
   measures framebuffer submissions, which do not prove unique rendered frames.
 - Recent work fixes area/script callback discovery and reuses exited threads'

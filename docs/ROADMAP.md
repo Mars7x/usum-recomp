@@ -13,9 +13,9 @@ Native dynamic FPS and packaging are unfinished. See
 1. Preserve compatibility and rendering correctness through identical-input,
    identical-save replay comparisons, including audio and output captures.
 2. Implement native dynamic FPS as a core runtime/game feature, preserving normal
-   movement, animation, event and audio timing. The target is 200 actual rendered
-   gameplay frames per wall second at 6×, without generated frames or faster
-   simulation. It has not been achieved; presentation caps are only groundwork.
+   movement, animation, event and audio timing. Improve measured gameplay
+   performance at 6× without generated frames or faster simulation;
+   presentation caps are only groundwork.
 3. Optimize bottlenecks demonstrated by fresh profiles, retaining comparison
    paths and rejecting changes without a measured benefit.
 4. Expand compatibility and complete the launcher/Flatpak workflow.

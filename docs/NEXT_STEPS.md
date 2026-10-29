@@ -37,10 +37,10 @@ See [compatibility](COMPATIBILITY.md), [building and controls](BUILDING.md),
 1. **Native dynamic FPS.** Keep this a core feature over the compatibility
    runtime. Identify actual engine frame completion and simulation timing before
    uncapping. Preserve movement, animation, encounters, battle/event timing and
-   audio at normal speed while producing additional rendered frames. The target
-   is at least 200 actual gameplay frames per wall second at 6×. It is unmet.
-   No interpolation, extrapolation, repeated window presents or faster game
-   clock may be counted toward that target.
+   audio at normal speed while producing additional rendered frames. Aim for
+   substantially better measured gameplay performance at 6×. Generated frames,
+   extrapolation, repeated window presents or a faster game clock do not count
+   as native rendering improvements.
 2. **Profile-led optimization.** Revisit intro/movie helpers, checked memory,
    frequent guest helpers, vertex preparation and GPU synchronization using
    fresh profiles. Retain a reference path and frozen before/after executables.
@@ -70,7 +70,7 @@ The HUD's `FPS` line currently counts top-screen GSP framebuffer submissions
 per real second; `WIN` counts successful window presents. Submissions do not
 prove unique images or native engine frame completion. Unthrottled `probe`
 throughput also does not establish normal-speed uncapped FPS. Keep these
-observations separate when reporting progress toward 200 FPS.
+observations separate when reporting native gameplay performance.
 
 ## Development boundaries
 

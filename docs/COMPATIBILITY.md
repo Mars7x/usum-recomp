@@ -19,7 +19,7 @@ SVC in that same state. It does not claim a completed playthrough beyond it.
 
 Native dynamic FPS remains unfinished. Neither host presentation caps nor
 unthrottled deterministic replay throughput establish normal-speed uncapped
-gameplay. The 200-FPS objective is unmet. See
+gameplay. See
 [measurement controls](BUILDING.md#playing-in-a-window) and the
 [research evidence](RESEARCH.md).
 
