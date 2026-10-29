@@ -3757,3 +3757,74 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   and the rebuilt play executable includes it. Input/save artifacts remain
   private. Optimization resumes, with no FPS improvement attributed to this
   discovery fix and the normal-speed 200-FPS goal still active.
+
+### R-117 2026-10-29 — Batch checked RAM accesses for register-list transfers
+
+- Revisited R-084/R-085/R-098 after the resident-display improvements. The fresh
+  intro profile still shows MovieLib 0x990021c4/0x99002548, guest calls and checked
+  word stores among the hottest CPU work. These movie functions save/restore
+  nine/five registers at entry/exit. Target that repeated memory overhead rather
+  than replacing movie decoding or changing guest timing.
+- Translate ARM/Thumb general-register LDM/STM lists of at least four words
+  through checked block helpers. One full-page index lookup, region permission
+  and whole-span bounds check can establish ordinary RAM; the span must also be
+  nonwrapping and outside the deferred-device hull. Other cases retain ordered
+  scalar accesses, including provider calls, first faults and earlier completed
+  STM stores. LDM still reads everything before committing registers/writeback.
+  Stores invalidate the region's logical view as before. No unsafe memory access,
+  guest function override, instruction-budget change or clock change is added.
+- `USUM_GUEST_BLOCK_WORDS=0` retains the scalar transfer path in the candidate;
+  disabling inline words or the page index also prevents the block fast path.
+  Lists below four words keep the original generated call sites: a component
+  benchmark found two-word batching slower. Four/nine/sixteen-word component
+  transfers improve about 1.47/4.78/6.40 times; these are memory-helper results,
+  not gameplay FPS. The pre-change executable is separately frozen for the
+  actual before/after comparison because the candidate's scalar helper loops
+  have their own overhead.
+- All 32 guest-memory tests, eleven recompilation tests, 99 enabled runtime
+  tests, formatting and strict Clippy for the changed crates pass. Memory tests
+  compare values, permissions, alignment, page/region boundaries, address wrap,
+  partial fault effects, deferred-provider order/failures and logical views.
+  The independent QEMU corpus passes with batching enabled and disabled:
+  35 programs in two memory layouts, 319988 translated instructions per corpus,
+  zero failures. The added assembly covers wide transfers in all four addressing
+  modes, writeback, base-in-list stores and loading all registers including PC.
+- At 6× Vulkan resolution, the same five starting-save/input fixtures produce
+  74 byte-identical images and five identical WAVs against commit 51b4118.
+  Final saves, guest instructions, VBlanks, draws, triangles, screen updates,
+  movie jobs and audio counts agree. Short fixtures also match the candidate's
+  scalar switch. Every replay reports zero software fallbacks. Longer fixtures
+  include battle/menu use and the recorded restart; game data stays private.
+- Controlled headless trials use identical settings and frozen binaries, with
+  old/new/reference/reference/new/old/new/old/old/new ordering. Four trials per
+  old/new path give these mean elapsed times; the reference column is the mean
+  of two same-binary scalar trials. Builds and encoders finish before timing;
+  no profiling or periodic captures run during these measurements.
+
+  | Fixture | Previous executable | Batched | Candidate scalar | Throughput gain over previous |
+  |---|---:|---:|---:|---:|
+  | Intro, 6 game seconds | 6.6355 s | 6.1775 s | 6.8690 s | 7.41% |
+  | Overworld, 16 game seconds | 13.8848 s | 13.5660 s | 14.0785 s | 2.35% |
+  | Battle, 30 game seconds | 21.6078 s | 21.0650 s | 21.8745 s | 2.58% |
+
+- Normal-speed 800×960 window trials retain 6× internal resolution and resident
+  Vulkan presentation, in old/new/new/old order. Mean game-thread elapsed time
+  changes from 6.8880 to 6.3870 seconds for the intro (+7.84% throughput),
+  16.7465 to 16.5640 for overworld (+1.10%), and 30.0200 to 30.0185 for battle
+  (pacing-limited, no meaningful FPS gain). Guest counters and saves agree;
+  presentation has no materialized source uses or software fallbacks. Host
+  audio is disconnected consistently for these window benchmarks; generated
+  guest audio was compared separately. These elapsed times exclude some window
+  initialization and do not isolate steady-state rendering.
+- Alternating old/new/new/old overworld hardware-counter runs retire
+  123536535123/123562778617 native user instructions before versus
+  120056246966/120066475213 after: 2.82% less work. Mean user cycles fall 1.24%,
+  a smaller/noisier effect; counters are scheduled at 100%. Separate fresh intro
+  profiles still show dispatch resolution, guest calls, MovieLib and scalar word
+  accesses as substantial costs; the new block lookup itself remains visible.
+  Sampling percentages alone are not used to claim a speedup.
+- No image/audio/save or guest-timing regression was found in these fixtures.
+  Gains outside them remain uncertain; the intro is still slightly below real
+  time in the window, and normal-speed 200 rendered FPS remains unachieved.
+  No further replay beyond the reported new-area stop was requested. Pause
+  optimization after this validated change, as the user requested.

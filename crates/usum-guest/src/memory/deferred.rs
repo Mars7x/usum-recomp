@@ -53,6 +53,14 @@ fn segments(address: u32, len: usize) -> [(u64, u64); 2] {
 }
 
 impl DeferredRanges {
+    /// Conservative whole-span proof. Gaps inside the hull deliberately fail.
+    #[inline]
+    pub(super) fn span_uncovered(&self, address: u32, len: usize) -> bool {
+        let start = u64::from(address);
+        let Some(end) = start.checked_add(len as u64) else { return false };
+        end <= 1 << 32 && (end <= self.low || start >= self.high)
+    }
+
     /// Conservative constant-time test for an ordinary, nonwrapping word.
     /// Holes inside the device-range hull use the original checked path.
     #[inline(always)]

@@ -279,8 +279,13 @@ fn block_transfer(out: &mut Out, pc: u32, thumb: bool, instr: &Op) {
     let regs: Vec<u8> = (0..16u8).filter(|i| list & (1 << i) != 0).collect();
     if load {
         // read everything first: a fault leaves the registers untouched
-        for (k, reg) in regs.iter().enumerate() {
-            line!(out, "let l{reg} = read_aligned(mem, start.wrapping_add({}))?;", 4 * k);
+        if regs.len() >= 4 {
+            let names = regs.iter().map(|reg| format!("l{reg}")).collect::<Vec<_>>().join(", ");
+            line!(out, "let [{names}] = mem.read_aligned_words::<{}>(start)?;", regs.len());
+        } else {
+            for (k, reg) in regs.iter().enumerate() {
+                line!(out, "let l{reg} = read_aligned(mem, start.wrapping_add({}))?;", 4 * k);
+            }
         }
         if writeback {
             line!(out, "cpu.r[{rn}] = {new_base};");
@@ -298,10 +303,14 @@ fn block_transfer(out: &mut Out, pc: u32, thumb: bool, instr: &Op) {
             );
         }
     } else {
-        for (k, &reg) in regs.iter().enumerate() {
-            // a base in the list stores its original value (decoder ensures it is lowest)
-            let value = if reg == rn { "base".to_owned() } else { r(reg, pc) };
-            line!(out, "write_aligned(mem, start.wrapping_add({}), {value})?;", 4 * k);
+        // A base in the list stores its original value (decoder ensures it is lowest).
+        let values: Vec<_> = regs.iter().map(|&reg| if reg == rn { "base".to_owned() } else { r(reg, pc) }).collect();
+        if regs.len() >= 4 {
+            line!(out, "mem.write_aligned_words(start, [{}])?;", values.join(", "));
+        } else {
+            for (k, value) in values.iter().enumerate() {
+                line!(out, "write_aligned(mem, start.wrapping_add({}), {value})?;", 4 * k);
+            }
         }
         if writeback {
             line!(out, "cpu.r[{rn}] = {new_base};");

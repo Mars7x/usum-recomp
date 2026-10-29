@@ -7,6 +7,7 @@
 
 use crate::Fault;
 
+mod block;
 mod deferred;
 mod index;
 mod scalar_reference;
@@ -48,6 +49,7 @@ pub struct Memory {
     page_index: Option<index::PageIndex>,
     use_page_index: bool,
     inline_words: bool,
+    block_words: bool,
 }
 
 impl Default for Memory {
@@ -58,6 +60,7 @@ impl Default for Memory {
             page_index: None,
             use_page_index: std::env::var("USUM_GUEST_PAGE_INDEX").as_deref() != Ok("0"),
             inline_words: std::env::var("USUM_GUEST_INLINE_WORDS").as_deref() != Ok("0"),
+            block_words: std::env::var("USUM_GUEST_BLOCK_WORDS").as_deref() != Ok("0"),
         }
     }
 }
