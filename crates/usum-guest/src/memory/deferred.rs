@@ -53,6 +53,15 @@ fn segments(address: u32, len: usize) -> [(u64, u64); 2] {
 }
 
 impl DeferredRanges {
+    /// Conservative constant-time test for an ordinary, nonwrapping word.
+    /// Holes inside the device-range hull use the original checked path.
+    #[inline(always)]
+    pub(super) fn word_uncovered(&self, address: u32) -> bool {
+        let start = u64::from(address);
+        let end = start + 4;
+        end <= 1 << 32 && (end <= self.low || start >= self.high)
+    }
+
     #[inline]
     pub(super) fn overlaps(&self, address: u32, len: usize) -> bool {
         if len == 0 {
@@ -323,6 +332,7 @@ mod tests {
     fn mixed_device_cpu_operations_match_eager_memory() {
         let mut lazy = memory();
         let mut eager = memory();
+        eager.inline_words = false;
         let mut random = 0x851a_923bu32;
         for step in 0..2000 {
             random = random.wrapping_mul(1664525).wrapping_add(1013904223);

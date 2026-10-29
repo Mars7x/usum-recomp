@@ -9,6 +9,7 @@ use crate::Fault;
 
 mod deferred;
 mod index;
+mod scalar_reference;
 use deferred::DeferredRanges;
 pub use deferred::{DeferredBytes, MemorySpan};
 use std::sync::{Arc, OnceLock};
@@ -46,6 +47,7 @@ pub struct Memory {
     deferred: DeferredRanges,
     page_index: Option<index::PageIndex>,
     use_page_index: bool,
+    inline_words: bool,
 }
 
 impl Default for Memory {
@@ -55,6 +57,7 @@ impl Default for Memory {
             deferred: DeferredRanges::default(),
             page_index: None,
             use_page_index: std::env::var("USUM_GUEST_PAGE_INDEX").as_deref() != Ok("0"),
+            inline_words: std::env::var("USUM_GUEST_INLINE_WORDS").as_deref() != Ok("0"),
         }
     }
 }
@@ -159,16 +162,55 @@ impl Memory {
         self.read_bytes(address).map(u16::from_le_bytes)
     }
 
+    /// The common indexed, non-device RAM path stays small enough to inline.
+    /// All other accesses retain the original out-of-line implementation.
+    #[inline]
     pub fn read_u32(&self, address: u32) -> Result<u32, Fault> {
-        self.read_bytes(address).map(u32::from_le_bytes)
+        if let Some((i, o)) = self.word_location(address, false) {
+            return Ok(u32::from_le_bytes(self.regions[i].bytes[o..o + 4].try_into().expect("word")));
+        }
+        self.read_u32_reference(address)
     }
 
     pub fn write_u16(&mut self, address: u32, value: u16) -> Result<(), Fault> {
         self.write_bytes(address, value.to_le_bytes())
     }
 
+    #[inline]
     pub fn write_u32(&mut self, address: u32, value: u32) -> Result<(), Fault> {
-        self.write_bytes(address, value.to_le_bytes())
+        if let Some((i, o)) = self.word_location(address, true) {
+            // A cached logical region is uncommon for stack/heap stores. Keep
+            // its invalidation and destructor out of every inlined store.
+            let region = &mut self.regions[i];
+            if region.logical.get().is_some() {
+                Self::clear_word_logical(region);
+            }
+            region.bytes[o..o + 4].copy_from_slice(&value.to_le_bytes());
+            return Ok(());
+        }
+        self.write_u32_reference(address, value)
+    }
+
+    #[inline(always)]
+    fn word_location(&self, address: u32, write: bool) -> Option<(usize, usize)> {
+        if !self.inline_words || !self.deferred.word_uncovered(address) {
+            return None;
+        }
+        let entry = self.page_index.as_ref()?.lookup(address);
+        if entry == index::UNMAPPED || entry == index::PARTIAL {
+            return None;
+        }
+        let i = (entry - 1) as usize;
+        let region = &self.regions[i];
+        let o = address.wrapping_sub(region.base) as usize;
+        let permitted = if write { region.perm.write } else { region.perm.read };
+        (permitted && o.checked_add(4).is_some_and(|end| end <= region.bytes.len())).then_some((i, o))
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn clear_word_logical(region: &mut Region) {
+        region.logical.take();
     }
 
     /// The mapped regions, in address order: base, bytes, permission. For

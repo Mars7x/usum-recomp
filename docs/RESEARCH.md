@@ -3158,3 +3158,85 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   GPU shaders, 6× scaling, deferred/frozen textures and normal guest time settings
   were identical in both variants. These headless throughput figures do not
   prove uncapped, normal-speed rendering or satisfy the 200-FPS objective.
+
+### R-105 2026-10-29 — Fresh CPU profiles; reject broad word-access inlining
+
+- Re-read R-084/R-085/R-098 and profiled the R-104 renderer with isolated 6×
+  intro/overworld runs and no encoders active. Intro user-cycle samples: checked
+  word reads 22.87%, writes 10.76%, dispatch resolution 8.85%, guest call wrapper
+  4.02%. Overworld: reads 7.99%, writes 3.98%, draw encoding 4.14%, vertex loading
+  3.75%. Individual MovieLib routines have about 2.50/1.24/1.02% exclusive samples;
+  their callees are accounted separately, so these are not inclusive costs.
+- A separate six-game-second movie call-count diagnostic finds 6,363,255 calls
+  from 0x001076c8 to 0x00108bf8 and 6,309,128 from 0x00544db8 to 0x004bed34,
+  plus millions of MovieLib helper calls. Compilation overlaps that diagnostic;
+  only deterministic counts, not its wall time, are evidence. These support
+  testing the shared checked-word path before porting a whole decoder routine.
+- First experiment force-inlined word access and outlined rare slow paths.
+  Retained the original checked implementation behind USUM_GUEST_INLINE_WORDS=0,
+  with the pre-change executable also frozen to avoid bias from switch overhead.
+  All 42 image captures, three audio WAVs, output saves, guest instruction counts,
+  VBlanks, draw/triangle counts, video conversions and audio-frame counts match
+  across legacy/reference/fast modes. Both modes pass unit/GPU/QEMU checks.
+- Controlled legacy/fast/reference/reference/fast/legacy runs at 6×, without
+  periodic captures or call profiling and with encoder/compiler overlap rejected:
+  intro legacy 9.310/9.069 seconds, fast 11.040/11.074; overworld legacy
+  17.588/18.885, fast 19.879/20.429; battle legacy 29.817/29.865, fast
+  32.948/32.535. Replay throughput drops about 16.9%, 9.5%, and 8.9% respectively.
+  The executable .text grows 261099133 → 1006150125 bytes (3.85×).
+- Reject the broad prototype. Code growth and measured regressions motivate a
+  smaller indexed-RAM fast path; instruction-cache causality is not established
+  by these timings alone. The active revision excludes the entire deferred-range
+  hull conservatively, uses the original path for partial pages / boundaries /
+  permissions / device reads, and keeps logical-cache invalidation out of ordinary
+  stores. R-106 records the completed rebuild and controlled comparisons.
+- Extend the differential harness to run each program with both one-region and
+  indexed layouts, so the new RAM path is exercised rather than only its fallback.
+  The 3DS runtime, translated game logic, instruction budgets and virtual clock
+  remain the compatibility/timing foundation. No FPS improvement or 200-FPS
+  completion is claimed from the rejected experiment or unmeasured revision.
+
+### R-106 2026-10-29 — Small indexed-RAM word path improves movie replay throughput
+
+- Select one low-level native shortcut: checked 32-bit reads/writes wholly within
+  a fully indexed RAM region. Check read/write permission and all four bytes;
+  reject the entire deferred-provider hull conservatively. Partial pages,
+  boundaries, wraparound and device data use the original implementation.
+  Keep cached logical-region destruction in a cold helper. Ordinary compiler
+  inlining replaces the force-inline policy rejected in R-105. Translation,
+  service behavior, instruction budgets and virtual-clock accounting are unchanged.
+- USUM_GUEST_INLINE_WORDS=0 retains the original word implementation in the same
+  binary. The frozen pre-change executable is the performance baseline: same-binary
+  reference mode also pays selection/layout overhead and is not an unbiased proxy
+  for the old binary. Hash source saves, input scripts and binaries per run.
+- At 6×, controlled legacy/fast/reference/reference/fast/legacy trials without
+  frame dumping or call profiling: intro old 9.289/9.239 seconds, new 8.376/8.353
+  (10.75% more throughput); overworld old 18.573/18.366, new 18.088/17.753 (3.06%);
+  battle old 29.432/29.379, new 29.115/28.955 (1.28%). Both sides execute identical
+  guest instruction, VBlank, draw, triangle, video-conversion and screen-update
+  counts. Check for encoders/builds before and during each run, discarding overlap.
+- The three-mode correctness matrix matches all 42 native/scaled image captures,
+  three exported PCM WAVs, output save hashes, and audio-frame counts. Counts are
+  1583340348/1170300377/2004562830 guest instructions for intro/world/battle,
+  with 344/28/142 video conversions and 1226/3272/6136 audio frames. All renderer
+  lists retain zero software fallbacks. A separate 62-second gameplay/bag replay
+  matches 26 further captures, its WAV and saves, with 5117853423 instructions,
+  3708 VBlanks and 165848 draws. The 78-second Mystery Gift recording matches
+  six further captures, WAV/saves, 15903540758 instructions and 4664 VBlanks,
+  including the same self-restart at VBlank 3728. These longer functional replay
+  timings are not additional controlled performance claims.
+- Both modes pass the 34-program, 292714-instruction QEMU corpus in both simple
+  and indexed layouts, as well as 29 guest tests, 93 runtime tests, 12 hardware
+  GPU tests and strict Clippy. New memory checks exercise real indexed fast-path
+  hits, read-only/write-only mappings, overlap fallback, region boundaries and
+  cached logical-view invalidation. Existing randomized deferred-memory checks
+  also remain byte-exact with the retained reference configuration.
+- A fresh post-change intro profile puts dispatch around 8.9% of user-cycle
+  samples and MovieLib routines around 5.15/3.01/2.72%. Those routines now include
+  inlined word-access work: changing attribution is not proof that the former
+  33.6% memory cost disappeared. Keep the replay timings as the performance result.
+- Cost: .text is 524895629 bytes versus 261099133 before (2.01×), despite being
+  much smaller than the rejected 1.006-GB prototype. Small gameplay improvements
+  rest on two interleaved runs per variant and are less certain than the intro
+  gain. These are headless update-throughput results, not 200 normal-speed FPS;
+  the full-game objective remains unmet. Game data and evidence stay private.

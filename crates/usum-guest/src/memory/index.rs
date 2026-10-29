@@ -64,7 +64,7 @@ mod tests {
     #[test]
     fn page_index_matches_reference_through_partial_pages_remap_rollback_and_clone() {
         let mut fast = Memory { use_page_index: true, ..Memory::new() };
-        let mut reference = Memory { use_page_index: false, ..Memory::new() };
+        let mut reference = Memory { use_page_index: false, inline_words: false, ..Memory::new() };
         for m in [&mut fast, &mut reference] {
             for i in 0..8 {
                 m.map(0x10000 + i * 0x2000, vec![i as u8; 0x1000], Perm::RW).unwrap();
