@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/usum-import", "crates/usumctl", "crates/usum-guest", "crates/usum-arm", "crates/usum-recomp", "crates/usum-runtime", "crates/usum-render", "crates/usum-difftest"]
-# The differential tests need external ARM tools (docs/BUILDING.md); run
+# The differential tests need external ARM tools (docs/DEVELOPMENT.md); run
 # them with `cargo test -p usum-difftest`.
 default-members = ["crates/usum-import", "crates/usumctl", "crates/usum-guest", "crates/usum-arm", "crates/usum-recomp", "crates/usum-runtime", "crates/usum-render"]
 

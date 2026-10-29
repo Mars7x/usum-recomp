@@ -14,7 +14,7 @@ Ultra Moon is recognized and analyzed, but equivalent gameplay validation
 has not been completed.
 
 - Software graphics are the reference renderer.
-- Opt-in Vulkan acceleration includes hardware vertex shaders and GPU window
+- Vulkan is the default renderer for `play`, including hardware vertex shaders and GPU window
   presentation, with guarded software fallback. True internal resolution scaling
   supports 1×–8×; 6× renders the top screen at 2400×1440. Rendering correctness
   and performance remain under active development.
@@ -56,15 +56,13 @@ To translate a supported dump locally:
 ./target/release/usumctl translate /path/to/your/ultra-sun.3ds
 ```
 
-Follow [BUILDING.md](docs/BUILDING.md) to build the generated `play` program,
-configure input/audio, or enable experimental Vulkan. Generated files stay
+Follow [BUILDING.md](docs/BUILDING.md) for Debian/Fedora dependencies, building
+the generated `play` program and running the game. Generated files stay
 in your private cache and must not be committed or uploaded.
 
-After building `play` with `usum-runtime/vulkan-compare` in that generated
-workspace, a 6× testing launch is:
+After building `play` in that generated workspace, a 6× testing launch is:
 
 ```bash
-USUM_VULKAN_ACCELERATE=1 USUM_VULKAN_DEPTH_FEEDBACK=1 \
 USUM_RESOLUTION_SCALE=6 USUM_TEST_FPS=1 \
 ./target/release/play /path/to/your/ultra-sun.3ds
 ```
@@ -72,6 +70,7 @@ USUM_RESOLUTION_SCALE=6 USUM_TEST_FPS=1 \
 F3/F4 change internal resolution, F5 toggles title statistics, F6 cycles the
 window presentation cap, and F7 toggles the testing overlay. The overlay is off
 by default. See [controls and measurement limits](docs/BUILDING.md#playing-in-a-window).
+Use `USUM_VULKAN_ACCELERATE=0` at 1× for the software reference.
 
 ## Game-data policy
 
@@ -102,6 +101,7 @@ credentials, see [SECURITY.md](SECURITY.md).
 - [Roadmap](docs/ROADMAP.md) and [next steps](docs/NEXT_STEPS.md)
 - [Research log](docs/RESEARCH.md) and [feasibility](docs/FEASIBILITY.md)
 - [Dependency audit](docs/DEPENDENCIES.md)
+- [Developer tests and profiling](docs/DEVELOPMENT.md)
 
 ## License
 

@@ -16,12 +16,14 @@ See [compatibility](COMPATIBILITY.md), [building and controls](BUILDING.md),
 - The 3DS compatibility runtime supplies checked memory, threads and kernel
   objects, services, input, audio, save handling, module loading and restart.
   Software PICA rendering remains the comparison reference.
-- Opt-in Vulkan acceleration executes vertex and fragment work, keeps supported
+- Vulkan is the default in generated `play` builds. Acceleration executes vertex and fragment work, keeps supported
   color/depth and display data resident, and presents through the GPU with
   fallback. Internal resolution scaling is 1×–8×; 6× is 2400×1440 for the top
   screen. Scaling changes rasterization resolution, rather than only enlarging
   the window. Original low-resolution textures and 2D elements remain limited
   by their source assets.
+- `USUM_VULKAN_ACCELERATE=0` selects the software reference at 1×. The
+  deterministic probe keeps explicit renderer selection for comparisons.
 - Keyboard, mouse touch and mapped controllers work. Controllers connected
   after launch are discovered; disconnect and focus loss release inputs.
 - F3/F4 adjust resolution; F5 toggles title statistics; F6 changes the host

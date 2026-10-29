@@ -34,8 +34,9 @@ avoided.
 
 ## The play window (usum-runtime feature `window`, 2026-10-26)
 
-Off by default: tests, the probe and the tools build without it. Only
-the generated `play` program enables it.
+The runtime's window/Vulkan features are off by default for tools and ordinary
+tests. The generated `play` program requests both features and uses Vulkan by
+default; the probe can enable Vulkan explicitly for comparisons.
 
 | Crate | Why | Native code? |
 |---|---|---|

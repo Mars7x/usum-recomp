@@ -218,10 +218,10 @@ pub fn translate(
     )?;
     members.push("probe".to_owned());
     // play: the same code in a window with live input (usum-runtime's
-    // `window` feature)
+    // window and Vulkan features)
     write(
         &out.join("play/Cargo.toml"),
-        "[package]\nname = \"play\"\nversion = \"0.0.0\"\nedition = \"2021\"\npublish = false\n\n[dependencies]\nusum-runtime = { workspace = true, features = [\"window\"] }\nusum_game = { path = \"../usum_game\" }\n",
+        "[package]\nname = \"play\"\nversion = \"0.0.0\"\nedition = \"2021\"\npublish = false\n\n[dependencies]\nusum-runtime = { workspace = true, features = [\"window\", \"vulkan-compare\"] }\nusum_game = { path = \"../usum_game\" }\n",
     )?;
     write(
         &out.join("play/src/main.rs"),

@@ -3960,3 +3960,71 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   debugger/profiling permissions are modified, and no game-derived code or
   captures are published. True simulation timing and engine completion still
   need tracing; 200 native normal-speed FPS remains unmet.
+
+### R-121 2026-10-29 — Reject temporary GPU seed pooling without gameplay gains
+
+- Fresh overworld sampling places scaled snapshot initialization at 1.77% of
+  exclusive CPU samples and GPU allocation at 1.61%. Test a renderer-owned pool
+  of native seed textures, views, scale parameters and bind groups. Hold a lease
+  until its batch is submitted or abandoned, separating overlapping encoders;
+  cap retained entries at eight and nominal pixel payload at 32 MiB.
+- Real Vulkan tests cover reverse submission order, reuse before immutable
+  readback materialization, abandoned batches, scale/dimension separation,
+  actual payload/entry eviction and oversized-resource rejection. Nine hardware
+  renderer tests, 20 ordinary renderer tests, 107 enabled window/Vulkan runtime
+  tests and strict Clippy pass for the prototype.
+- Intro, overworld, battle, longer-session and restart replays match the frozen
+  f1a17a2 executable and same-binary unpooled reference: 74 images and five WAVs
+  per path, saves and guest counters agree, with zero software fallbacks. The
+  overworld allocates three temporary seed sets and reuses them 1326 times,
+  versus 1329 allocations with pooling disabled.
+- Four balanced baseline/candidate trials per scene yield throughput changes
+  of +1.33% intro, -0.57% overworld and +0.05% battle. The intro baseline includes
+  a slow first trial (6.381 seconds versus 6.093/6.195/6.186), while candidate
+  times are 6.152/6.066/6.140/6.170. Overworld means are 13.20675/13.28275
+  seconds; battle means are 20.84725/20.8375. Dumps/profiling are disabled;
+  observed encoder/Rust-build overlap is rejected without interrupting encoders.
+- Allocation reduction does not demonstrate a gameplay improvement. Remove
+  the prototype, comparison switch and counters; retain the patch, frozen
+  executables, fixtures and measurements privately. Omit the queued window
+  matrix once the primary gameplay result rejects the change. No window
+  performance gain or shipped allocation pool is claimed.
+
+### R-122 2026-10-29 — Default Vulkan play builds and clean Linux build instructions
+
+- Newly generated `play` manifests request both window and Vulkan support.
+  Plain `cargo +stable build --release -j 2 -p play` includes the renderer;
+  normal launches default to guarded acceleration, hardware vertex processing,
+  depth feedback, deferred readback and GPU presentation. No guest instructions,
+  clock charging, simulation timing or frame-rate unlock are changed.
+- `USUM_VULKAN_ACCELERATE=0` selects the software reference at native scale.
+  Use the same selection policy for launch validation, rendering, presentation
+  and resolution controls. Explicit live-comparison modes keep their existing
+  software-active behavior unless acceleration is explicitly requested.
+  `USUM_VULKAN_DEPTH_FEEDBACK=0` disables that default; the older alias remains
+  accepted, with the primary setting taking precedence. The deterministic probe
+  retains explicit renderer selection and its existing diagnostic semantics.
+- Rewrite BUILDING.md around Debian/Fedora dependencies, stable Rust, tool
+  compilation, private translation, the generated game build, ordinary launch,
+  controls, saves, updates and troubleshooting. Move differential testing,
+  profiling/replays and experimental renderer switches into DEVELOPMENT.md.
+  Check distribution package names against primary inventories, including
+  Fedora's split libwayland-client/libwayland-cursor packages. Document the
+  generated workspace's separate lockfile and the need to regenerate after
+  translator changes. Do not claim clean-install validation on both distros:
+  the available local build host is Ubuntu, with no container runner installed.
+- All 218 enabled default-workspace tests with window/Vulkan features pass,
+  as do strict all-target Clippy, formatting, CPU-window-only checking and the
+  publication-guard tests. Documentation links/anchors and shell block syntax
+  pass. Regenerating the private Ultra Sun workspace leaves all 269 Rust source
+  files byte-identical and updates only the intended play dependency features;
+  its ordinary build succeeds without explicit feature arguments.
+- Fixed-save/input intro, overworld and battle window runs compare frozen
+  f1a17a2 with explicit acceleration against the candidate with all renderer
+  switches unset and with acceleration explicitly enabled. Game instruction,
+  VBlank, draw/triangle/submission counts and saves agree; candidate guest-clock
+  stamps also agree. All hardware runs use resident GPU presentation, with zero
+  software fallbacks and zero materialized display-source uses. Explicit software
+  and an unavailable-ICD fallback both complete the intro with matching guest
+  counters and saves. This establishes default selection and fallback, not a
+  new rendering speedup or native dynamic FPS implementation.

@@ -8,6 +8,11 @@ playability. No complete playthrough or broad hardware compatibility is claimed.
 | `ultra-sun-usa-cart` | Recognized; executable and CRO translation implemented | Boots; opening, menus, indoor/outdoor movement and early battles exercised. Vulkan supports hardware vertex shaders, 1×–8× internal scaling and GPU presentation. Recorded comparisons cover intro, overworld, battle, a longer session and application restart. Rendering, sound, performance and later-game compatibility remain incomplete. |
 | `ultra-moon-usa-cart` | Recognized and analyzed | Equivalent gameplay validation has not been completed. |
 
+Vulkan is the default in newly generated `play` builds; set
+`USUM_VULKAN_ACCELERATE=0` for the 1× software reference. The renderer remains
+experimental, with guarded fallback. `probe` retains explicit renderer selection
+for developer comparisons.
+
 Keyboard, mouse touch and controllers are supported; controllers can connect
 after launch. Linux x86-64 is the tested host. An ARM Linux port, other GPUs and
 full-game completion have not received equivalent validation.

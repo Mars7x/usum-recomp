@@ -157,6 +157,31 @@ fn compare_vulkan_captures(kernel: &mut crate::kernel::Kernel) {
     }
 }
 
+// Explicit live-comparison modes keep software rendering active. Otherwise a
+// normal Vulkan-capable build accelerates by default, with 0 as the opt-out.
+fn acceleration_policy(setting: Option<&str>, live_comparison: bool) -> bool {
+    setting.map_or(!live_comparison, |value| value != "0")
+}
+
+#[cfg(test)]
+#[test]
+fn default_acceleration_preserves_explicit_software_and_live_comparison_modes() {
+    assert!(acceleration_policy(None, false));
+    assert!(!acceleration_policy(Some("0"), false));
+    assert!(!acceleration_policy(None, true));
+    assert!(!acceleration_policy(Some("0"), true));
+    assert!(acceleration_policy(Some("1"), false));
+    assert!(acceleration_policy(Some("1"), true));
+}
+
+fn vulkan_enabled() -> bool {
+    cfg!(feature = "vulkan-compare")
+        && acceleration_policy(
+            std::env::var("USUM_VULKAN_ACCELERATE").ok().as_deref(),
+            std::env::var_os("USUM_VULKAN_LIVE").is_some() || std::env::var_os("USUM_VULKAN_LIVE_DEPTH").is_some(),
+        )
+}
+
 /// The `main` of a generated play program: `play <dump>`.
 pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules: Modules) -> ExitCode {
     let frontend_started = Instant::now();
@@ -177,9 +202,7 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
         eprintln!("cannot select container controller discovery: {error}; using default discovery");
     }
     let resolution_scale = match crate::pica::resolution_scale_env() {
-        Ok(scale) if scale == 1 || (cfg!(feature = "vulkan-compare") && std::env::var_os("USUM_VULKAN_ACCELERATE").is_some()) => {
-            scale
-        }
+        Ok(scale) if scale == 1 || vulkan_enabled() => scale,
         Ok(_) => {
             eprintln!("resolution scaling requires Vulkan acceleration");
             return ExitCode::FAILURE;
@@ -353,7 +376,7 @@ fn run_game(
         eprintln!("capturing {draws} draws for Vulkan comparison after skipping {skip}");
     }
     #[cfg(feature = "vulkan-compare")]
-    if std::env::var_os("USUM_VULKAN_ACCELERATE").is_some() {
+    if vulkan_enabled() {
         kernel.pica.enable_vulkan_acceleration();
         let scale = crate::pica::resolution_scale_env().expect("validated resolution scale");
         if let Err(error) = kernel.pica.set_vulkan_resolution_scale(scale) {
@@ -369,9 +392,9 @@ fn run_game(
             eprintln!("experimental hardware PICA vertex shaders enabled");
         }
         eprintln!("guarded Vulkan raster acceleration enabled; dependent or failed lists rerun in software");
-        if std::env::var_os("USUM_VULKAN_DEPTH_FEEDBACK").is_some()
-            || std::env::var_os("USUM_VULKAN_CPU_DEPTH_FEEDBACK").is_some()
-        {
+        let depth_feedback =
+            std::env::var("USUM_VULKAN_DEPTH_FEEDBACK").or_else(|_| std::env::var("USUM_VULKAN_CPU_DEPTH_FEEDBACK"));
+        if depth_feedback.as_deref() != Ok("0") {
             kernel.pica.enable_vulkan_cpu_depth_feedback();
             eprintln!("experimental Vulkan depth-feedback barriers enabled");
         }
@@ -565,8 +588,7 @@ impl ApplicationHandler for App {
             }
         };
         #[cfg(feature = "vulkan-compare")]
-        if std::env::var_os("USUM_VULKAN_ACCELERATE").is_some() && std::env::var("USUM_VULKAN_GPU_PRESENT").as_deref() != Ok("0")
-        {
+        if vulkan_enabled() && std::env::var("USUM_VULKAN_GPU_PRESENT").as_deref() != Ok("0") {
             match crate::pica::Pica::window_renderer().and_then(|r| r.create_window_presenter(window.clone())) {
                 Ok(presenter) => {
                     eprintln!("window: Vulkan resident LCD presentation");
@@ -658,7 +680,7 @@ impl ApplicationHandler for App {
                 if event.state == ElementState::Pressed
                     && matches!(key, KeyCode::F3 | KeyCode::F4)
                     && cfg!(feature = "vulkan-compare")
-                    && std::env::var_os("USUM_VULKAN_ACCELERATE").is_some()
+                    && vulkan_enabled()
                 {
                     let scale = self.frames.resolution_scale.load(Ordering::Relaxed);
                     let scale = if key == KeyCode::F3 { scale.saturating_sub(1).max(1) } else { (scale + 1).min(8) };

@@ -31,7 +31,7 @@ launcher ──spawns──▶ game executable:  usum-runtime   GuestMemory, ker
 | `usum-arm` | ARM and Thumb (ARMv6K + VFPv2) decoding into `Instr`; PC-relative values resolved at decode time | every real instruction control flow reaches in both executables (R-019) |
 | `usum-recomp` | Discovery (recursive descent, calls, jump tables, pointer seeds), executable/CRO translation and Rust emission | translates supported executables and modules; missing runtime targets still fail loudly |
 | `usum-runtime` | Checked guest memory integration, kernel/SVCs, services, software PICA, audio, input, saves, deterministic `probe` and interactive `play` | Ultra Sun reaches gameplay and early battles; compatibility remains incomplete |
-| `usum-render` | Opt-in Vulkan rasterization, vertex processing, scaled targets and window presentation | persistent color/depth targets, textures/TEV/lighting, immutable deferred readbacks and GPU-resident display frames; guarded runtime fallback and software reference retained |
+| `usum-render` | Vulkan rasterization, vertex processing, scaled targets and window presentation; default in generated `play` builds | persistent color/depth targets, textures/TEV/lighting, immutable deferred readbacks and GPU-resident display frames; guarded runtime fallback and explicit software reference retained |
 | `usum-difftest` | Test-only: synthetic programs, random-instruction corpora and (game mode) real game functions, run under QEMU and as recompiled Rust, compared byte for byte | 22 programs + random corpora pass; 4 game functions verified |
 
 Planned, created only when their milestone starts (no empty crates):

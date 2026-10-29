@@ -29,7 +29,7 @@ tools/check-no-game-data.sh --staged
 ```
 
 The full differential suite additionally needs QEMU and ARM binutils; see
-[BUILDING.md](docs/BUILDING.md). CI uses a smaller deterministic corpus to fit
+[DEVELOPMENT.md](docs/DEVELOPMENT.md). CI uses a smaller deterministic corpus to fit
 hosted-runner memory. Run the default full corpus locally for decoder or
 recompiler changes. GPU smoke tests require a Vulkan-capable host and are
 not claimed by ordinary headless unit-test results.

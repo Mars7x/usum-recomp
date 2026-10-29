@@ -3,7 +3,7 @@
 Each milestone ends only when its exit criteria are demonstrated by tests
 or recorded measurements. Milestone criteria below include historical checkpoints. Current status as of
 2026-10-29: Ultra Sun reaches indoor/outdoor gameplay and early battles.
-Software graphics remain the reference; opt-in Vulkan includes hardware vertex
+Software graphics remain the reference; default Vulkan in `play` includes hardware vertex
 shaders, internal scaling and GPU presentation. Controllers support hot plugging.
 Native dynamic FPS and packaging are unfinished. See
 [COMPATIBILITY.md](COMPATIBILITY.md) for the current validation limits.
