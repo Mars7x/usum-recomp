@@ -1,3 +1,4 @@
+mod depth;
 mod display;
 mod readback;
 mod seed;
@@ -282,6 +283,13 @@ pub struct ColorTarget {
     depth_view: wgpu::TextureView,
     color_readback: wgpu::Buffer,
     depth_readback: wgpu::Buffer,
+    width: u32,
+    height: u32,
+}
+
+/// An immutable GPU-only depth snapshot, independent of a mutable framebuffer.
+pub struct DepthSnapshot {
+    texture: wgpu::Texture,
     width: u32,
     height: u32,
 }
@@ -932,7 +940,10 @@ impl Renderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Depth32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());

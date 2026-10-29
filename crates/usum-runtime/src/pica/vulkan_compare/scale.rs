@@ -323,6 +323,7 @@ mod tests {
         let mut tiled = vec![0; 256 * 512 * 4];
         encode_rgba8_target(&result.color, &mut tiled, 256);
         pica.vulkan_live_target_cache.push(LiveTarget {
+            last_draw: 0,
             info,
             gpu,
             contents: Some(TargetSnapshot { width: 256, height: 512, color: result.color, depth: result.depth.unwrap() }),

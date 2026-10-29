@@ -235,6 +235,7 @@ mod tests {
         renderer.upload_target(&gpu, &color, &depth).unwrap();
         let ticket = Arc::new(renderer.begin_batch(&gpu).submit_readback().unwrap());
         pica.vulkan_live_target_cache.push(LiveTarget {
+            last_draw: 0,
             info,
             gpu: Arc::clone(&gpu),
             contents: None,

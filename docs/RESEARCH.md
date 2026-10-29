@@ -2768,3 +2768,23 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   analog/keyboard merging tests pass. The container bootstrap self-exec and
   usage path were smoke-tested without opening a window. Physical post-launch
   reconnection remains a user-hardware retest, not a claimed automated result.
+
+### R-090 2026-10-28 — Preserve scaled depth across battle color-buffer switches
+
+- The reported striped/translucent battle models reproduce at 6× with either
+  CPU or GPU vertex shading; native-resolution captures remain solid. The battle
+  changes color attachments while reusing a guest depth allocation. Expanding
+  its native center samples back to 6× loses the depth prepass between native
+  pixel centers, causing later model fragments to fail depth tests in a grid.
+- Before replacing a scaled target's color seed, find the most recent compatible
+  GPU depth whose native snapshot still matches the guest's depth. Freeze it in
+  a GPU-only depth texture, then restore it after seeding and before drawing.
+  Dimensions, depth address/format and exact native-depth comparisons guard reuse;
+  changed CPU depth falls back to the normal seed path. No depth tests are disabled.
+- A synthetic sloped-depth prepass/color-buffer-switch test failed before the
+  fix (7,739 filled pixels versus 13,220 expected), and now matches the complete
+  reference image exactly. A separate hardware test verifies frozen depth survives
+  source overwrite, reuse and destruction. The recorded battle now shows solid
+  trainer and Pokémon models at 6× instead of the reproduced holes.
+- All 78 enabled runtime tests, eight runtime hardware tests, three renderer
+  hardware tests and strict Clippy pass. Private game captures remain outside Git.

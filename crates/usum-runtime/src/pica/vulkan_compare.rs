@@ -53,6 +53,7 @@ pub(super) struct LiveTarget {
     contents: Option<TargetSnapshot>,
     pending: Option<Arc<deferred::DeferredTarget>>,
     scaled_color: Option<Arc<[u8]>>,
+    last_draw: u64,
 }
 
 /// One triangle-list draw after PICA vertex and optional geometry shading.
@@ -1032,18 +1033,42 @@ fn render_live_segment(
                     contents: None,
                     pending: None,
                     scaled_color: None,
+                    last_draw: 0,
                 });
                 pica.vulkan_live_target_cache.len() - 1
             }
         };
-        let cached = &mut pica.vulkan_live_target_cache[target_index];
+        let cached = &pica.vulkan_live_target_cache[target_index];
         let resident_matches =
             resident_contents_match(cached.contents.as_ref(), initial) || deferred::matches(cached.pending.as_ref(), initial);
+        // Color buffers can change while the guest depth allocation stays the
+        // same. Re-expanding its native samples would destroy subpixel depth
+        // and make a later surface pass fail between native pixel centers.
+        // Freeze the most recent compatible GPU depth before any seed upload.
+        let saved_depth =
+            if !initialized && !resident_matches && pica.vulkan_resolution_scale > 1 && target_info.depth_address != 0 {
+                pica.vulkan_live_target_cache
+                    .iter()
+                    .filter(|other| {
+                        other.info.depth_address == target_info.depth_address
+                            && other.info.depth_format == target_info.depth_format
+                            && other.info.width == target_info.width
+                            && other.info.height == target_info.height
+                            && other.contents.as_ref().is_some_and(|contents| contents.depth == initial.depth)
+                    })
+                    .max_by_key(|other| other.last_draw)
+                    .map(|other| renderer.snapshot_depth(&other.gpu))
+                    .transpose()?
+            } else {
+                None
+            };
+        let cached = &mut pica.vulkan_live_target_cache[target_index];
         // Once commands touch the target the previous readback no longer
         // describes it. Only a fully successful readback can restore reuse.
         cached.contents = None;
         cached.pending = None;
         cached.scaled_color = None;
+        cached.last_draw = draws.last().expect("nonempty target group").draw_number;
         let target = Arc::clone(&cached.gpu);
         if !initialized {
             if resident_matches {
@@ -1068,6 +1093,9 @@ fn render_live_segment(
             };
             renderer.begin_batch_from_snapshot(&target, &initial.color, &initial.depth)?
         };
+        if let Some(depth) = saved_depth {
+            batch.restore_depth(&depth)?;
+        }
         for draw in &draws {
             draw.record_live(renderer, &mut batch, &mut pica.vulkan_live_resources, feedback)?;
         }
@@ -1252,6 +1280,67 @@ fn feedback_supported_in(snapshots: &[DrawSnapshot], pica: &Pica) -> Result<bool
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "requires a Vulkan hardware adapter"]
+    fn scaled_depth_prepass_survives_a_color_target_change() {
+        use usum_render::{ColorMask, CullMode, DepthCompare, DepthState, TevState, Viewport};
+        let renderer = live_renderer().unwrap();
+        let mut pica = Pica::default();
+        pica.enable_vulkan_acceleration();
+        pica.set_vulkan_resolution_scale(6).unwrap();
+        pica.regs[0x41] = 0x430000;
+        pica.regs[0x43] = 0x430000;
+        pica.regs[0x4d] = 0xbf0000;
+        pica.regs[0x6d] = 1;
+        let first = CaptureTarget {
+            color_address: 0x2000_0000,
+            depth_address: 0x2000_2000,
+            width: 32,
+            height: 32,
+            color_format: 0,
+            depth_format: 3,
+        };
+        let second = CaptureTarget { color_address: 0x2000_1000, ..first };
+        let mut mem = Memory::new();
+        mem.map(pica.linear_base, vec![0; 0x4000], usum_guest::Perm::RW).unwrap();
+        mem.device_write(pica.linear_base + 0x2000, &[0xFF; 4096]).unwrap();
+        let vertices = [
+            Vertex { position: [-0.83, -0.81, -0.25, 1.0], color: [1.0; 4], ..Vertex::default() },
+            Vertex { position: [0.87, -0.79, -0.72, 1.0], color: [1.0; 4], ..Vertex::default() },
+            Vertex { position: [0.03, 0.89, -0.50, 1.0], color: [1.0; 4], ..Vertex::default() },
+        ];
+        let mut reference_vertices = Vec::new();
+        let mut reference_state = usum_render::RasterState::default();
+        for (info, prepass) in [(first, true), (second, false)] {
+            let (target, textures) = capture_buffers(&mut pica, &mem, info).unwrap();
+            let mut snapshot =
+                DrawSnapshot::from_shaded_vertices_shared(&pica, &vertices, &[[0, 1, 2]], info, target, textures).unwrap();
+            snapshot.state.lighting = None;
+            snapshot.state.raster.tev = TevState::default();
+            snapshot.state.raster.blend = None;
+            snapshot.state.raster.cull = CullMode::None;
+            snapshot.state.raster.depth_max = 0xFF_FFFF;
+            snapshot.state.raster.depth = DepthState { compare: DepthCompare::LessEqual, write: prepass };
+            snapshot.state.raster.color_mask = if prepass { ColorMask::from_bits(0) } else { ColorMask::ALL };
+            if !prepass {
+                reference_vertices = snapshot.vertices.clone();
+                reference_state = snapshot.state.raster;
+            }
+            pica.vulkan_snapshots.push(snapshot);
+            replay_live(&mut pica, &mut mem).unwrap();
+        }
+        let actual =
+            renderer.read_color_target(&pica.vulkan_live_target_cache.iter().find(|t| t.info == second).unwrap().gpu).unwrap();
+        let expected_target = renderer.create_color_target(192, 192).unwrap();
+        let mut batch = renderer.begin_batch(&expected_target);
+        batch.draw(&reference_vertices, Viewport::full(&expected_target), reference_state).unwrap();
+        let expected = batch.finish_and_read_color_and_depth().unwrap().0;
+        let count = |bytes: &[u8]| bytes.as_chunks::<4>().0.iter().filter(|p| p[0] != 0).count();
+        assert!(count(&expected) > 1000);
+        assert_eq!(count(&actual), count(&expected), "a native-depth reseed must not punch stripes into the color pass");
+        assert_eq!(actual, expected);
+    }
+
     #[test]
     #[ignore = "requires a Vulkan hardware adapter"]
     fn negative_zero_and_small_negative_lighting_slopes_do_not_create_bands() {
