@@ -3558,3 +3558,63 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   and performance remain uncertain. Movie helpers/dispatch and checked memory
   still warrant targeted investigation. This change does not improve the intro
   measurably or establish 200 actual rendered FPS at normal game speed.
+
+### R-114 2026-10-29 — Reject generic vertex-field block decoding
+
+- Follow the R-113 overworld profile: element_in has 2.00% exclusive samples,
+  alongside 2.14% in InputPlan::load. Annotated element_in assembly shows repeated
+  kind dispatch and bounds checks, and four byte loads/shifts/ORs for each float.
+  Test decoding an entire attribute field from an already checked contiguous
+  loader slice, selecting the format once for all components. Keep the original
+  scalar decoder as a same-binary comparison and leave CPU shading unchanged.
+  Failed slices retain the original ordered per-element reads, including discarded
+  fields, deferred-provider calls, partial faults and wrapping addresses.
+- Both modes pass 94 enabled Vulkan runtime tests and twelve hardware tests;
+  the window/Vulkan configuration passes 100 enabled tests. All 68 CPU tests and
+  strict all-target runtime Clippy pass. Differential checks compare all four
+  formats, component counts 1–4, unaligned byte offsets, varied raw bits, signed
+  zero and NaN payloads. Existing randomized layouts and fault/provider-order
+  checks explicitly exercise both field modes against the scalar CPU oracle.
+- Frozen 9206db7, same-binary scalar and candidate replays match all 42 native/
+  scaled captures, three PCM WAVs, output saves and guest instruction/VBlank/
+  draw/triangle/video/audio/update counts. There are zero software fallbacks and
+  unchanged GPU/CPU vertex counts. Reused baseline captures verify executable,
+  starting-save, input and WAV hashes. No new long/restart candidate runs are
+  claimed: the short performance results do not justify shipping this prototype.
+- Isolated 6× legacy/fast/scalar/scalar/fast/legacy/fast/legacy/legacy/fast trials
+  use the same recorded inputs and starting saves, with dumps/profiling disabled
+  and encoder/build overlap rejected without interrupting other processes.
+  Intro baseline 7.999/7.951/8.024/7.964 seconds, candidate
+  7.959/7.933/7.907/8.028; overworld baseline 16.443/16.658/16.429/16.881,
+  candidate 16.937/17.076/16.432/17.189; battle baseline
+  26.993/26.449/26.951/27.210, candidate 26.497/26.730/26.373/27.141.
+  Average throughput changes are +0.35%, -1.81%, +0.81%. Intro/battle are
+  inconclusive, while the overworld average regresses. Same-binary scalar pairs
+  are 7.924/8.021, 17.149/15.582 and 26.794/27.388; the frozen executable
+  remains the primary baseline rather than assuming identical binary layout.
+- Separate legacy/fast/scalar/scalar/fast/legacy native counters show a genuine
+  reduction in executed host work. Baseline user instructions are
+  125519266274/125484596855 versus 121623171866/121563783082 (3.11% fewer).
+  Baseline user cycles are 60607132173/60316186574 versus
+  59837500439/59330727942 (1.45% fewer). Same-binary scalar instructions are
+  125469667699/125501608549 and cycles 60653547153/60531755249, giving 3.10%
+  and 1.66% reductions. Events run 100% scheduled throughout. Counts include
+  process setup and driver threads; they do not prove an FPS improvement.
+- That mismatch justifies four additional balanced overworld pairs, in
+  fast/legacy/legacy/fast/legacy/fast/fast/legacy order. Additional baseline
+  times are 16.999/16.792/16.406/16.532 seconds, candidate
+  16.404/16.816/16.677/16.909. Across all eight trials per build, candidate
+  throughput is still 0.97% lower. Variation prevents a strong causal claim
+  about the slowdown, but neither timing set demonstrates the intended gain.
+- Fresh candidate sampling puts InputPlan::load at 1.74%, GPU ticket
+  materialization at 2.59%, dispatch at 2.00% and deferred encoding at 1.83%.
+  Changed inlining and limited samples prevent attributing the elapsed-time
+  result to these percentages. Reduced native instruction counts alone are
+  insufficient to ship a performance change with no demonstrated throughput
+  benefit. Discard the implementation and comparison flag; preserve the patch,
+  executables, replay metadata, counters and profiles privately. The validated
+  R-113 packer remains active. Movie helper/dispatch, checked memory and GPU
+  readback/submission costs remain targets; 200 actual normal-speed FPS is unmet.
+- Rebuild the restored source and compare both probe and play executables
+  byte-for-byte with the validated R-113 binaries: both match. No experimental
+  decoder or runtime policy remains in the working source or runnable build.
