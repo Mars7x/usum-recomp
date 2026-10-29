@@ -3240,3 +3240,75 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   rest on two interleaved runs per variant and are less certain than the intro
   gain. These are headless update-throughput results, not 200 normal-speed FPS;
   the full-game objective remains unmet. Game data and evidence stay private.
+
+### R-107 2026-10-29 — Reject dispatch front cache; refresh gameplay profile
+
+- The post-R-106 intro profile attributes about 8.9% of user-cycle samples to
+  dispatch. Annotated samples point to hash-table probing as well as the required
+  module identity checks. Test a 1024-slot address-indexed front cache backed by
+  the existing hash lookup and stable code indices. Every hit still checks the
+  complete address and module identity; collisions only miss. Preserve the
+  hash-only mode for comparison. Collision/growth and module lifecycle tests,
+  94 runtime tests, 12 hardware GPU tests and strict Clippy pass on the prototype.
+- Isolated 6× legacy/fast/reference/reference/fast/legacy replays use identical
+  saves and input scripts, no capture/profile overhead, and reject encoder/build
+  overlap. Intro old 8.351/8.245 seconds, new 8.237/8.302; overworld old
+  18.165/18.233, new 18.043/17.446; battle old 28.299/28.414, new 29.023/28.350.
+  Throughput changes are +0.34%, +2.56%, and -1.15%, respectively. The modified
+  hash-only reference takes 8.580/8.554, 18.138/17.568, and 28.670/28.579 seconds;
+  use the frozen shipped executable, not this changed storage layout, as baseline.
+  Instruction, VBlank, draw, triangle, video-job, update and output-save counts
+  match. No image/audio equivalence claim is made for this rejected experiment.
+- Reject the prototype: it does not establish a useful intro improvement and
+  gives mixed gameplay results. Preserve its patch and evidence privately;
+  restore the original dispatch implementation without changing guest behavior.
+- A fresh isolated post-R-106 overworld profile puts draw encoding at 4.35%,
+  vertex loading 3.93%, GPU snapshot materialization 2.76%, depth decoding 2.45%,
+  depth encoding 2.42%, deferred target encoding 2.24%, and dispatch 1.53% of
+  samples. Inlined guest memory work remains attributed to its callers. These
+  samples favor investigating framebuffer plane conversion over another dispatch
+  micro-optimization for gameplay. No normal-speed 200-FPS result is established.
+
+### R-108 2026-10-29 — Encode frozen framebuffer planes only when read
+
+- The R-107 profile and provider code show that a color-only CPU reader also
+  encodes the frozen depth/stencil plane into guest tiled layout. Give color and
+  depth/stencil independent immutable encoding caches. A depth-only reader also
+  leaves color unencoded. Frozen texture diagnostics use the same per-plane path.
+  Retain the original eager encoder with USUM_VULKAN_SPLIT_ENCODE=0, read once
+  when enabling deferred readback and frozen into each provider's policy.
+- Both planes still use the same complete GPU staging ticket, including its
+  original polling/mapping error behavior. This change avoids unused CPU layout
+  conversion and allocation; it does not omit GPU snapshot planes or change
+  rendering, guest instructions, budgets, virtual time, services, or decoder work.
+  Count a materialized target once even if both planes are requested concurrently.
+- Controlled 6× trials, with encoder/build overlap rejected, use identical hashed
+  starting saves and input scripts. Order is old/new/reference/reference/new/old/
+  new/old/old/new per scene, without periodic captures or guest-call profiling.
+  Intro old 8.509/8.220/8.380/8.220 seconds, new 8.189/8.108/8.117/8.222;
+  overworld old 17.998/17.592/17.820/18.187, new 17.470/17.037/17.802/17.033;
+  battle old 29.247/28.336/29.487/28.409, new 28.132/27.633/28.550/28.160.
+  Average replay throughput improves 2.12%, 3.25%, and 2.67%, respectively.
+  Eager same-binary reference pairs are 8.308/8.181, 17.600/17.911, and
+  29.489/28.439 seconds. Frozen pre-change binaries remain the primary baseline.
+- Baseline/eager/lazy comparisons match all 42 image captures, three PCM WAVs,
+  saves, instruction/VBlank/draw/triangle/video-job/audio-frame/update counts,
+  and queued/materialized ticket counts. There are zero renderer fallbacks.
+  Baseline/lazy long gameplay/bag and Mystery Gift recordings match 32 additional
+  captures, two WAVs, saves and guest counters; both restart at VBlank 3728.
+  These functional-run timings are not additional controlled benchmarks.
+- All 68 CPU runtime tests, 93 enabled Vulkan/window runtime tests, 12 hardware
+  GPU tests and strict Clippy pass. Extend the frozen-plane test to check eager,
+  color-first lazy, and depth-first lazy reads, exact stencil bytes after newer
+  GPU writes, cache independence, one-target accounting and CPU-write invalidation.
+- Fresh post-change overworld samples put depth encoding below the 1% report
+  threshold (previously 2.42%); depth decoding remains about 2.60%, vertex loading
+  4.38%, draw encoding 3.84%, and ticket materialization 2.37%. Sampling and changed
+  attribution are diagnostic, not substitutes for replay timing. The replay
+  still shades all 45832 overworld and 62746 battle draws on the GPU; CPU vertex
+  and software-renderer fallback paths remain available.
+- No average regression in these scenes, but four runs per variant and these
+  recordings cannot establish whole-game behavior or performance. The gains are
+  modest headless throughput improvements, not 200 actual normal-speed FPS.
+  Full GPU snapshots, remaining framebuffer conversion and guest execution are
+  still costs. Evidence and game data remain private.

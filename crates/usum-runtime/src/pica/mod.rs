@@ -97,6 +97,8 @@ pub struct Pica {
     #[cfg(feature = "vulkan-compare")]
     vulkan_defer_readback: bool,
     #[cfg(feature = "vulkan-compare")]
+    vulkan_split_encode: bool,
+    #[cfg(feature = "vulkan-compare")]
     vulkan_resolution_scale: u32,
     #[cfg(feature = "vulkan-compare")]
     scaled_displays: Vec<vulkan_compare::scale::Display>,
@@ -174,6 +176,8 @@ impl Default for Pica {
             vulkan_vertex: false,
             #[cfg(feature = "vulkan-compare")]
             vulkan_defer_readback: false,
+            #[cfg(feature = "vulkan-compare")]
+            vulkan_split_encode: true,
             #[cfg(feature = "vulkan-compare")]
             vulkan_resolution_scale: 1,
             #[cfg(feature = "vulkan-compare")]
@@ -304,6 +308,7 @@ impl Pica {
     #[cfg(feature = "vulkan-compare")]
     pub fn enable_vulkan_deferred_readback(&mut self) {
         self.vulkan_defer_readback = true;
+        self.vulkan_split_encode = std::env::var("USUM_VULKAN_SPLIT_ENCODE").as_deref() != Ok("0");
     }
 
     #[cfg(feature = "vulkan-compare")]

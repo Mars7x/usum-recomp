@@ -33,6 +33,10 @@ pub(super) struct DeferredTarget {
     /// deliberately fail upload validation if the residency proof is lost.
     seed: Arc<TargetSnapshot>,
     encoded: OnceLock<Result<EncodedPlanes, Fault>>,
+    split_encode: bool,
+    color_encoded: OnceLock<Result<Vec<u8>, Fault>>,
+    depth_encoded: OnceLock<Result<Vec<u8>, Fault>>,
+    counted: OnceLock<()>,
     views: Mutex<Vec<FrozenView>>,
 }
 
@@ -47,8 +51,7 @@ impl DeferredBytes for Plane {
         self.target.info.width as usize * self.target.info.height as usize * 4
     }
     fn bytes(&self) -> Result<&[u8], Fault> {
-        let (color, depth) = self.target.encoded.get_or_init(|| self.target.encode()).as_ref().map_err(|f| *f)?;
-        Ok(if self.depth { depth } else { color })
+        self.target.bytes(self.depth)
     }
     fn as_any(&self) -> &dyn Any {
         self
@@ -56,6 +59,33 @@ impl DeferredBytes for Plane {
 }
 
 impl DeferredTarget {
+    fn bytes(&self, depth: bool) -> Result<&[u8], Fault> {
+        if !self.split_encode {
+            let (color, z) = self.encoded.get_or_init(|| self.encode()).as_ref().map_err(|f| *f)?;
+            return Ok(if depth { z } else { color });
+        }
+        let cache = if depth { &self.depth_encoded } else { &self.color_encoded };
+        cache.get_or_init(|| self.encode_plane(depth)).as_deref().map_err(|f| *f)
+    }
+
+    fn encode_plane(&self, depth: bool) -> Result<Vec<u8>, Fault> {
+        let started = std::time::Instant::now();
+        let read = self.ticket.read().map_err(|_| Fault::Device { address: self.info.color_address })?;
+        let mut bytes = if depth { vec![0; read.depth.len() * 4] } else { vec![0; read.color.len()] };
+        if depth {
+            encode_d24s8_target(&read.depth, Some(&read.stencil), &mut bytes, self.info.width);
+        } else {
+            encode_rgba8_target(&read.color, &mut bytes, self.info.width);
+        }
+        // Count a frozen target once, even when concurrent readers request both
+        // planes. The ticket still maps the complete immutable GPU snapshot.
+        self.counted.get_or_init(|| {
+            self.stats.materialized.fetch_add(1, Ordering::Relaxed);
+        });
+        self.stats.nanos.fetch_add(started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64, Ordering::Relaxed);
+        Ok(bytes)
+    }
+
     fn encode(&self) -> Result<(Vec<u8>, Vec<u8>), Fault> {
         let started = std::time::Instant::now();
         let read = self.ticket.read().map_err(|_| Fault::Device { address: self.info.color_address })?;
@@ -156,6 +186,10 @@ pub(super) fn install(
             stencil: Vec::new(),
         }),
         encoded: OnceLock::new(),
+        split_encode: pica.vulkan_split_encode,
+        color_encoded: OnceLock::new(),
+        depth_encoded: OnceLock::new(),
+        counted: OnceLock::new(),
         views: Mutex::default(),
     });
     let color = pica.pa_to_va(info.color_address)?;
@@ -222,7 +256,7 @@ impl FrozenTexture {
             .get_or_init(|| {
                 // Use the normal provider so accounting and later guest reads also
                 // observe this materialization, including deferred device failures.
-                self.source.encoded.get_or_init(|| self.source.encode()).as_ref().map_err(ToString::to_string)?;
+                self.source.bytes(self.depth).map_err(|e| e.to_string())?;
                 let read = self.source.ticket.read()?;
                 let (w, h) = (self.source.info.width as usize, self.source.info.height as usize);
                 let mut pixels = Vec::with_capacity(w * h * 4);
@@ -671,59 +705,74 @@ mod tests {
     #[test]
     #[ignore = "requires a Vulkan hardware adapter"]
     fn frozen_guest_planes_keep_rendered_stencil_and_residency_requires_both_planes() {
-        let renderer = Renderer::new().unwrap();
-        let mut pica = Pica::default();
-        pica.enable_vulkan_acceleration();
-        pica.enable_vulkan_deferred_readback();
-        let info = CaptureTarget {
-            color_address: 0x2000_0000,
-            depth_address: 0x2000_1000,
-            width: 8,
-            height: 8,
-            color_format: 0,
-            depth_format: 3,
-        };
-        let mut mem = Memory::new();
-        mem.map(pica.linear_base, vec![0xA5; 0x2000], Perm::RW).unwrap();
-        let gpu = Arc::new(renderer.create_color_target(8, 8).unwrap());
-        let color: Vec<_> = (0..256).map(|n| (n * 73) as u8).collect();
-        let depth: Vec<_> = (0..64).map(|n| n as f32 / 63.0).collect();
-        renderer.upload_target(&gpu, &color, &depth).unwrap();
-        let mut batch = renderer.begin_batch(&gpu);
-        batch.seed_stencil(&[0x91; 64], 1).unwrap();
-        let ticket = Arc::new(batch.submit_readback().unwrap());
-        pica.vulkan_live_target_cache.push(LiveTarget {
-            last_draw: 0,
-            depth_detail: false,
-            info,
-            gpu: Arc::clone(&gpu),
-            contents: None,
-            pending: None,
-            scaled_color: None,
-        });
-        install(&mut pica, &mut mem, info, ticket).unwrap();
-        let seed = resident_seed(&pica, &mem, info).unwrap();
-        assert!(matches(pica.vulkan_live_target_cache[0].pending.as_ref(), &seed));
-        let snapshot = mem.clone();
-        // A newer GPU target must not leak into the frozen guest snapshot.
-        renderer.upload_target(&gpu, &[9; 256], &[0.75; 64]).unwrap();
-        let mut batch = renderer.begin_batch(&gpu);
-        batch.seed_stencil(&[0xfe; 64], 1).unwrap();
-        batch.submit().unwrap();
-        let mut expected_color = vec![0; 256];
-        let mut expected_depth = vec![0x91; 256];
-        encode_rgba8_target(&color, &mut expected_color, 8);
-        encode_d24s8_target(&depth, None, &mut expected_depth, 8);
-        assert_eq!(mem.read_range(pica.linear_base, 256).unwrap(), expected_color);
-        assert_eq!(mem.read_range(pica.linear_base + 0x1000, 256).unwrap(), expected_depth);
-        // Readback does not invalidate residency, but even a one-byte CPU write
-        // removes that plane's identity and requires importing the guest bytes.
-        assert!(resident_seed(&pica, &mem, info).is_some());
-        mem.write_u8(pica.linear_base + 1, 7).unwrap();
-        assert!(resident_seed(&pica, &mem, info).is_none());
-        assert_eq!(snapshot.read_range(pica.linear_base, 256).unwrap(), expected_color);
-        let mut expected = expected_color;
-        expected[1] = 7;
-        assert_eq!(mem.read_range(pica.linear_base, 256).unwrap(), expected);
+        for (split, depth_first) in [(false, false), (true, false), (true, true)] {
+            let renderer = Renderer::new().unwrap();
+            let mut pica = Pica::default();
+            pica.enable_vulkan_acceleration();
+            pica.enable_vulkan_deferred_readback();
+            pica.vulkan_split_encode = split;
+            let info = CaptureTarget {
+                color_address: 0x2000_0000,
+                depth_address: 0x2000_1000,
+                width: 8,
+                height: 8,
+                color_format: 0,
+                depth_format: 3,
+            };
+            let mut mem = Memory::new();
+            mem.map(pica.linear_base, vec![0xA5; 0x2000], Perm::RW).unwrap();
+            let gpu = Arc::new(renderer.create_color_target(8, 8).unwrap());
+            let color: Vec<_> = (0..256).map(|n| (n * 73) as u8).collect();
+            let depth: Vec<_> = (0..64).map(|n| n as f32 / 63.0).collect();
+            renderer.upload_target(&gpu, &color, &depth).unwrap();
+            let mut batch = renderer.begin_batch(&gpu);
+            batch.seed_stencil(&[0x91; 64], 1).unwrap();
+            let ticket = Arc::new(batch.submit_readback().unwrap());
+            pica.vulkan_live_target_cache.push(LiveTarget {
+                last_draw: 0,
+                depth_detail: false,
+                info,
+                gpu: Arc::clone(&gpu),
+                contents: None,
+                pending: None,
+                scaled_color: None,
+            });
+            install(&mut pica, &mut mem, info, ticket).unwrap();
+            let pending = Arc::clone(pica.vulkan_live_target_cache[0].pending.as_ref().unwrap());
+            let seed = resident_seed(&pica, &mem, info).unwrap();
+            assert!(matches(pica.vulkan_live_target_cache[0].pending.as_ref(), &seed));
+            let snapshot = mem.clone();
+            // A newer GPU target must not leak into the frozen guest snapshot.
+            renderer.upload_target(&gpu, &[9; 256], &[0.75; 64]).unwrap();
+            let mut batch = renderer.begin_batch(&gpu);
+            batch.seed_stencil(&[0xfe; 64], 1).unwrap();
+            batch.submit().unwrap();
+            let mut expected_color = vec![0; 256];
+            let mut expected_depth = vec![0x91; 256];
+            encode_rgba8_target(&color, &mut expected_color, 8);
+            encode_d24s8_target(&depth, None, &mut expected_depth, 8);
+            if depth_first {
+                assert_eq!(mem.read_range(pica.linear_base + 0x1000, 256).unwrap(), expected_depth);
+                assert!(pending.color_encoded.get().is_none(), "depth-only reads must leave color unencoded");
+                assert!(pending.depth_encoded.get().is_some());
+            }
+            assert_eq!(mem.read_range(pica.linear_base, 256).unwrap(), expected_color);
+            assert_eq!(pending.color_encoded.get().is_some(), split);
+            assert_eq!(pending.depth_encoded.get().is_some(), depth_first, "encode only the planes actually read");
+            assert_eq!(pending.encoded.get().is_some(), !split);
+            assert_eq!(pica.vulkan_deferred_stats().1, 1);
+            assert_eq!(mem.read_range(pica.linear_base + 0x1000, 256).unwrap(), expected_depth);
+            assert_eq!(pending.depth_encoded.get().is_some(), split);
+            assert_eq!(pica.vulkan_deferred_stats().1, 1, "two planes are still one materialized target");
+            // Readback does not invalidate residency, but even a one-byte CPU write
+            // removes that plane's identity and requires importing the guest bytes.
+            assert!(resident_seed(&pica, &mem, info).is_some());
+            mem.write_u8(pica.linear_base + 1, 7).unwrap();
+            assert!(resident_seed(&pica, &mem, info).is_none());
+            assert_eq!(snapshot.read_range(pica.linear_base, 256).unwrap(), expected_color);
+            let mut expected = expected_color;
+            expected[1] = 7;
+            assert_eq!(mem.read_range(pica.linear_base, 256).unwrap(), expected);
+        }
     }
 }

@@ -283,6 +283,11 @@ stencil bytes. Other formats keep synchronous writeback. Deferred device failure
 become guest memory faults rather than stale RAM. The probe reports queued and
 materialized tickets and materialization time separately.
 
+CPU reads encode only the requested color or depth/stencil plane into guest
+layout. Both planes still come from the same immutable GPU ticket, and reading
+both counts as one materialized target. `USUM_VULKAN_SPLIT_ENCODE=0` restores
+eager conversion of both planes for reference comparisons.
+
 Full-plane framebuffer color and depth/stencil textures also use immutable GPU
 views. Matching dimensions, format and logical device-write identity are required;
 CPU writes, subviews and incompatible layouts use ordinary texture decoding.
