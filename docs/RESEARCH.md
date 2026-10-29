@@ -2826,3 +2826,25 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   and all four images. This small gameplay difference needs repetition; GPU
   timing also varies. All 27 guest tests and strict Clippy pass. Intro and gameplay
   remain below real time at 6×; this does not achieve 200 FPS.
+
+### R-093 2026-10-29 — Preserve command-list order and current depth aliases
+
+- Batch only consecutive draws to the same target. A/B/A attachment switches
+  previously merged both A groups ahead of B. Within a list, captures share its
+  initial guest memory, so returning to A must also inherit the most recent
+  compatible GPU depth from B, including at native resolution. Track target
+  recency on every group and select the newest compatible feedback source.
+- Read each target after its last group and commit native readbacks in actual
+  target order. This prevents a late readback of an earlier alias from overwriting
+  newer physical depth. A hardware test covers native/6× A/B/A occlusion, both
+  directly and across a texture-feedback barrier, and checks complete color output
+  plus final guest depth. It fails before the fix and passes afterward.
+- All 78 enabled runtime tests, nine runtime hardware tests and strict Clippy pass.
+  The four overworld and 28 battle native/scaled captures stay byte-identical.
+  This fixes a separate ordering bug; it does not resolve the reported outlines.
+- The user's requirement is clean outlines in the overworld and battle, enabled
+  by default, with a future option to disable them. A private overworld trace
+  identifies enabled stencil tests and replacement writes of model IDs. Current
+  software/Vulkan raster paths omit stencil execution and preserve old bytes;
+  proper stencil handling is the next rendering investigation. Temporary trace
+  instrumentation and game-derived payloads are excluded from Git.

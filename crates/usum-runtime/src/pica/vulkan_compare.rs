@@ -875,7 +875,7 @@ pub(crate) fn replay_live(pica: &mut Pica, mem: &mut Memory) -> Result<(usize, u
         }
         for texture in snapshot.textures.iter_mut().flatten() {
             let mut dependency = None;
-            for (index, result) in latest.iter().enumerate() {
+            for (index, result) in latest.iter().enumerate().rev() {
                 if depth_texture_matches(pica, texture, *result)? {
                     dependency = Some(index);
                     break;
@@ -910,7 +910,7 @@ pub(crate) fn replay_live(pica: &mut Pica, mem: &mut Memory) -> Result<(usize, u
     targets += render_live_segment(pica, renderer, pending, &mut latest, &feedback_textures, Some(&mut results))?;
     // Do not modify guest buffers until every segment succeeded, so an
     // accelerated list can still rerun in software after a GPU error.
-    for info in latest {
+    for &info in &latest {
         if results.iter().any(|result| result.info == info) {
             continue;
         }
@@ -944,6 +944,9 @@ pub(crate) fn replay_live(pica: &mut Pica, mem: &mut Memory) -> Result<(usize, u
         ));
     }
     let writeback_started = std::time::Instant::now();
+    // A target read back after the final segment may have been drawn before
+    // another alias. Commit physical guest buffers in their actual draw order.
+    results.sort_by_key(|result| latest.iter().position(|info| *info == result.info));
     for result in results {
         if let Some(ticket) = result.pending {
             deferred::install(pica, mem, result.info, ticket)?;
@@ -1012,13 +1015,15 @@ fn render_live_segment(
     }
     let mut groups: Vec<(CaptureTarget, Vec<DrawSnapshot>)> = Vec::new();
     for snapshot in snapshots {
-        match groups.iter_mut().find(|(target, _)| *target == snapshot.target_info) {
+        match groups.last_mut().filter(|(target, _)| *target == snapshot.target_info) {
             Some((_, draws)) => draws.push(snapshot),
             None => groups.push((snapshot.target_info, vec![snapshot])),
         }
     }
     let targets = groups.len();
-    for (target_info, draws) in groups {
+    let mut groups = groups.into_iter();
+    while let Some((target_info, draws)) = groups.next() {
+        let final_for_target = !groups.as_slice().iter().any(|(info, _)| *info == target_info);
         let initialized = latest.contains(&target_info);
         let initial = &draws[0].target;
         let target_index = match pica.vulkan_live_target_cache.iter().position(|target| target.info == target_info) {
@@ -1047,26 +1052,41 @@ fn render_live_segment(
         // same. Re-expanding its native samples would destroy subpixel depth
         // and make a later surface pass fail between native pixel centers.
         // Freeze the most recent compatible GPU depth before any seed upload.
-        let saved_depth =
-            if !initialized && !resident_matches && pica.vulkan_resolution_scale > 1 && target_info.depth_address != 0 {
-                pica.vulkan_live_target_cache
-                    .iter()
-                    .filter(|other| {
-                        other.depth_detail
-                            && other.info.depth_address == target_info.depth_address
-                            && other.info.depth_format == target_info.depth_format
-                            && other.info.width == target_info.width
-                            && other.info.height == target_info.height
-                            && other.contents.as_ref().is_some_and(|contents| contents.depth == initial.depth)
-                    })
-                    .max_by_key(|other| other.last_draw)
-                    .map(|other| renderer.snapshot_depth(&other.gpu))
-                    .transpose()?
-            } else {
-                None
-            };
+        // Captures within one command list all see its initial guest memory.
+        // Follow the most recently submitted compatible depth alias even when
+        // returning to an already initialized color target, at every scale.
+        let shared_depth = latest.iter().rev().find_map(|info| {
+            pica.vulkan_live_target_cache.iter().find(|other| {
+                other.info == *info
+                    && other.depth_detail
+                    && target_info.depth_address != 0
+                    && other.info.depth_address == target_info.depth_address
+                    && other.info.depth_format == target_info.depth_format
+                    && other.info.width == target_info.width
+                    && other.info.height == target_info.height
+            })
+        });
+        let saved_depth = if let Some(source) = shared_depth {
+            (source.info != target_info).then(|| renderer.snapshot_depth(&source.gpu)).transpose()?
+        } else if !initialized && !resident_matches && pica.vulkan_resolution_scale > 1 && target_info.depth_address != 0 {
+            pica.vulkan_live_target_cache
+                .iter()
+                .filter(|other| {
+                    other.depth_detail
+                        && other.info.depth_address == target_info.depth_address
+                        && other.info.depth_format == target_info.depth_format
+                        && other.info.width == target_info.width
+                        && other.info.height == target_info.height
+                        && other.contents.as_ref().is_some_and(|contents| contents.depth == initial.depth)
+                })
+                .max_by_key(|other| other.last_draw)
+                .map(|other| renderer.snapshot_depth(&other.gpu))
+                .transpose()?
+        } else {
+            None
+        };
         let cached = &mut pica.vulkan_live_target_cache[target_index];
-        let retained_detail = if initialized || resident_matches { cached.depth_detail } else { saved_depth.is_some() };
+        let retained_detail = saved_depth.is_some() || ((initialized || resident_matches) && cached.depth_detail);
         // Once commands touch the target the previous readback no longer
         // describes it. Only a fully successful readback can restore reuse.
         cached.contents = None;
@@ -1104,7 +1124,7 @@ fn render_live_segment(
         for draw in &draws {
             draw.record_live(renderer, &mut batch, &mut pica.vulkan_live_resources, feedback)?;
         }
-        if let Some(results) = final_results.as_deref_mut() {
+        if let Some(results) = final_results.as_deref_mut().filter(|_| final_for_target) {
             let readback_started = std::time::Instant::now();
             if deferred::eligible(pica, target_info) {
                 let ticket = Arc::new(batch.submit_readback()?);
@@ -1116,17 +1136,15 @@ fn render_live_segment(
                     scaled_color: None,
                 });
                 pica.vulkan_live_resources.transfer_times[0] += readback_started.elapsed();
-                if !initialized {
-                    latest.push(target_info);
-                }
+                latest.retain(|info| *info != target_info);
+                latest.push(target_info);
                 continue;
             }
             if native_readback(pica) {
                 results.push(read_native_result(batch, target_info, pica.vulkan_resolution_scale)?);
                 pica.vulkan_live_resources.transfer_times[0] += readback_started.elapsed();
-                if !initialized {
-                    latest.push(target_info);
-                }
+                latest.retain(|info| *info != target_info);
+                latest.push(target_info);
                 continue;
             }
             let (color, depth) = if pica.vulkan_live_depth {
@@ -1144,9 +1162,8 @@ fn render_live_segment(
         } else {
             batch.submit()?;
         }
-        if !initialized {
-            latest.push(target_info);
-        }
+        latest.retain(|info| *info != target_info);
+        latest.push(target_info);
     }
     Ok(targets)
 }
@@ -1344,6 +1361,102 @@ mod tests {
         assert!(count(&expected) > 1000);
         assert_eq!(count(&actual), count(&expected), "a native-depth reseed must not punch stripes into the color pass");
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    #[ignore = "requires a Vulkan hardware adapter"]
+    fn color_target_round_trip_keeps_draw_order_and_shared_depth() {
+        use usum_render::{ColorMask, CullMode, DepthCompare, DepthState, TevState, Viewport};
+        let renderer = live_renderer().unwrap();
+        for (scale, split) in [(1, false), (1, true), (6, false), (6, true)] {
+            let mut pica = Pica::default();
+            pica.enable_vulkan_acceleration();
+            pica.set_vulkan_resolution_scale(scale).unwrap();
+            pica.regs[0x41] = 0x430000;
+            pica.regs[0x43] = 0x430000;
+            pica.regs[0x4d] = 0xbf0000;
+            pica.regs[0x6d] = 1;
+            let first = CaptureTarget {
+                color_address: 0x2000_0000,
+                depth_address: 0x2000_2000,
+                width: 32,
+                height: 32,
+                color_format: 0,
+                depth_format: 3,
+            };
+            let second = CaptureTarget { color_address: 0x2000_1000, ..first };
+            let mut mem = Memory::new();
+            mem.map(pica.linear_base, vec![0; 0x4000], usum_guest::Perm::RW).unwrap();
+            mem.device_write(pica.linear_base + 0x2000, &[0xFF; 4096]).unwrap();
+            let vertex = |x, y, z| Vertex { position: [x, y, z, 1.0], color: [1.0; 4], ..Vertex::default() };
+            let model = [vertex(-0.83, -0.81, -0.25), vertex(0.87, -0.79, -0.72), vertex(0.03, 0.89, -0.50)];
+            let surface = model.map(|mut v| {
+                v.position[2] = -0.20;
+                v
+            });
+            let occluder =
+                [vertex(-1.0, -1.0, -0.125), vertex(0.1, -1.0, -0.125), vertex(0.1, 1.0, -0.125), vertex(-1.0, 1.0, -0.125)];
+            let mut reference = Vec::new();
+            for (step, info, vertices, triangles) in [
+                (0, first, model.as_slice(), &[[0, 1, 2]][..]),
+                (1, second, occluder.as_slice(), &[[0, 1, 2], [0, 2, 3]][..]),
+                (2, first, surface.as_slice(), &[[0, 1, 2]][..]),
+            ] {
+                let (target, textures) = capture_buffers(&mut pica, &mem, info).unwrap();
+                let mut snapshot =
+                    DrawSnapshot::from_shaded_vertices_shared(&pica, vertices, triangles, info, target, textures).unwrap();
+                snapshot.draw_number = step + 1;
+                snapshot.state.lighting = None;
+                snapshot.state.raster.tev = TevState::default();
+                snapshot.state.raster.blend = None;
+                snapshot.state.raster.cull = CullMode::None;
+                snapshot.state.raster.depth_max = 0xFF_FFFF;
+                snapshot.state.raster.depth = DepthState { compare: DepthCompare::LessEqual, write: true };
+                snapshot.state.raster.color_mask = if step == 2 { ColorMask::ALL } else { ColorMask::from_bits(0) };
+                if split && step == 2 {
+                    snapshot.textures[0] = Some(TextureSnapshot {
+                        address: pica.pa_to_va(first.depth_address).unwrap(),
+                        source_size: 4096,
+                        format: 0,
+                        width: 32,
+                        height: 32,
+                        pixels: Arc::from(vec![255; 4096]),
+                        sampler: Default::default(),
+                        border: [0; 4],
+                    });
+                }
+                reference.push((snapshot.vertices.clone(), snapshot.state.raster));
+                pica.vulkan_snapshots.push(snapshot);
+            }
+            replay_live(&mut pica, &mut mem).unwrap();
+            let actual =
+                renderer.read_color_target(&pica.vulkan_live_target_cache.iter().find(|t| t.info == first).unwrap().gpu).unwrap();
+            let target = renderer.create_color_target(32 * scale, 32 * scale).unwrap();
+            let mut batch = renderer.begin_batch(&target);
+            for (vertices, state) in reference {
+                batch.draw(&vertices, Viewport::full(&target), state).unwrap();
+            }
+            let (expected, expected_depth) = batch.finish_and_read_color_and_depth().unwrap();
+            assert!(expected.as_chunks::<4>().0.iter().any(|p| p[0] != 0));
+            assert_eq!(actual.len(), expected.len());
+            assert_eq!(
+                actual.iter().zip(&expected).filter(|(a, b)| a != b).count(),
+                0,
+                "A/B/A color switches must keep shared depth at scale {scale}, split {split}"
+            );
+            let guest_depth = target_snapshot(&pica, &mem, first).unwrap().depth;
+            for y in 0..32 {
+                for x in 0..32 {
+                    let value = expected_depth[((y * scale + scale / 2) * 32 * scale + x * scale + scale / 2) as usize];
+                    let quantized = (value.clamp(0.0, 1.0) * 0xFF_FFFF as f32) as u32;
+                    assert_eq!(
+                        guest_depth[(y * 32 + x) as usize],
+                        quantized as f32 / 0xFF_FFFF as f32,
+                        "guest depth at ({x},{y}), scale {scale}, split {split}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
