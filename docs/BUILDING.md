@@ -247,6 +247,12 @@ software fallback. The probe reports offloaded draws/inputs and CPU fallback
 counts. The full 650-second recording is validated with very small rounding
 differences; the renderer remains experimental and broader gameplay is unverified.
 
+Vertex programs whose maximum loop counts fit the 65,536-instruction limit prove
+that budget once at compilation. Larger programs keep per-draw checks using the
+actual loop uniforms. `USUM_VULKAN_STATIC_BUDGET=0` restores per-draw checking for
+all programs; this process-wide policy is captured at the first successful shader
+compilation so cached programs use one policy.
+
 The synthetic hardware vertex checks use no game data:
 
 ```bash

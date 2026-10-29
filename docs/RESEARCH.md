@@ -3380,3 +3380,53 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   cannot establish FPS. Four runs and these recordings do not cover the whole
   game. These modest headless gains do not change the game's render cadence or
   establish 200 actual rendered FPS at normal speed; that objective remains open.
+
+### R-111 2026-10-29 — Prove safe vertex instruction budgets once per program
+
+- The post-R-110 overworld profile attributes 0.82% of samples to Cost::bound.
+  GPU draw preparation repeatedly walks an immutable shader cost tree. Prove
+  the budget at compilation when maximum loop counts fit the existing inclusive
+  65536-instruction limit. All cost operations are nonnegative saturating sums
+  and products; each loop reads only an integer uniform's low byte, whose maximum
+  is 255. A bound at [255; 4] therefore covers every possible draw uniform.
+- Eligible programs keep a successful proof in their cached VertexProgram and
+  avoid per-draw tree traversal. Programs whose maximum is larger still evaluate
+  the original tree with the actual uniforms and retain dynamic rejection.
+  USUM_VULKAN_STATIC_BUDGET=0 retains per-draw traversal for every program. Capture
+  this process-wide policy on the first successful translation to keep the
+  program cache consistent. Shader source/emission, limits, rendering, guest
+  instructions, budgets, virtual time and CPU fallback behavior are unchanged.
+- Differential checks compare original and proved validation across 256 generated
+  nested cost trees and 32 uniform arrays per tree, including saturation, empty
+  sums, all four slots, ignored high bits and maximum counts. Explicit cases
+  retain acceptance at exactly 65536 and dynamic rejection immediately above it.
+  Both policies pass 18 render unit tests, six renderer hardware tests and twelve
+  runtime hardware tests. All 94 enabled runtime tests, 68 CPU runtime tests and
+  strict render/runtime Clippy also pass.
+- Controlled 6× old/new/reference/reference/new/old/new/old/old/new trials use
+  identical hashed saves and replay inputs, no periodic captures/call profiles,
+  and reject encoder/build overlap. Intro old 8.130/8.054/8.114/7.917 seconds,
+  new 7.852/7.929/8.060/7.958; overworld old 17.247/17.770/17.053/17.563,
+  new 17.223/16.494/16.419/17.225; battle old 28.245/27.846/28.208/27.524,
+  new 27.411/27.403/28.100/28.144. Average throughput differences are +1.31%,
+  +3.37%, and +0.69%. The overworld result is the strongest observed improvement;
+  intro/battle differences are small compared with the variation, including a
+  slower fourth battle trial. Do not claim stable gains for those scenes.
+- Same-binary reference pairs are 7.895/7.938, 17.796/17.808, and 27.691/28.368
+  seconds. The frozen b10c254 executable remains the primary baseline: the new
+  reference still has the added proof field/branch and a changed binary layout.
+  Do not attribute every elapsed-time difference solely to tree traversal.
+- Baseline/reference/optimized output matches all 42 native/scaled captures,
+  three PCM WAVs, saves and guest instruction/VBlank/draw/triangle/video/audio/
+  update counters. Long bag/gameplay and Mystery Gift recordings match 32 more
+  captures, two WAVs, saves and guest counters, with restart at VBlank 3728.
+  Long baseline captures are reused only after checking the identical binary
+  SHA, starting-save/input hashes and WAV hash. Those functional-run timings
+  are not additional controlled benchmark evidence. All scenes have zero software
+  fallbacks and unchanged GPU/CPU vertex draw counts.
+- A fresh overworld profile puts Cost::bound below the 0.1% reporting threshold,
+  vertex loading at 5.07%, draw encoding 3.81%, GPU ticket materialization 2.12%,
+  and deferred encoding 1.56%. Sampling does not prove zero traversal in all
+  programs; the dynamic fallback is intentional. Vertex input loading remains
+  a larger target. Four timing trials and these recordings do not establish
+  whole-game performance/correctness or 200 actual rendered FPS at normal speed.

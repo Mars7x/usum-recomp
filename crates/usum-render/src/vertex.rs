@@ -57,6 +57,7 @@ pub struct VertexProgram {
     pub(crate) id: u64,
     pub(crate) source: String,
     cost: Cost,
+    uniforms_always_safe: bool,
 }
 
 impl VertexProgram {
@@ -78,8 +79,17 @@ impl VertexProgram {
             if !terminated {
                 return Err("vertex program can fall out of code memory".into());
             }
+            // Process-wide policy keeps cached programs consistent. This is
+            // read only on a cache miss, never during per-draw validation.
+            static STATIC_BUDGET: OnceLock<bool> = OnceLock::new();
+            // Only low-byte loop counts affect this nonnegative cost. Their
+            // maximum proves the bound for every possible draw uniform; larger
+            // programs keep evaluating their actual uniform-dependent bound.
+            let uniforms_always_safe = *STATIC_BUDGET
+                .get_or_init(|| std::env::var("USUM_VULKAN_STATIC_BUDGET").as_deref() != Ok("0"))
+                && cost.bound(&[255; 4]) <= 65_536;
             let source = format!("{HELPERS}\nfn pica_run(index: u32) -> array<vec4<f32>,16> {{\nvar s: PicaState;\nfor(var k=0u;k<16u;k++){{s.v[k]=vs_inputs.values[index*16u+k];}}\n{body}\n}}\n");
-            Ok(Arc::new(Self { id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed), source, cost }))
+            Ok(Arc::new(Self { id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed), source, cost, uniforms_always_safe }))
         })();
         cache.insert(key, result.clone());
         result
@@ -88,7 +98,7 @@ impl VertexProgram {
     /// Conservative bound, including both sides of conditional branches.
     /// Reject pathological uniform-controlled loops before submitting a draw.
     pub fn validate_uniforms(&self, integers: &[u32; 4]) -> Result<(), String> {
-        if self.cost.bound(integers) > 65_536 {
+        if !self.uniforms_always_safe && self.cost.bound(integers) > 65_536 {
             Err("vertex program exceeds GPU instruction budget".into())
         } else {
             Ok(())
@@ -581,5 +591,52 @@ mod tests {
         assert!(Arc::ptr_eq(&a, &b));
         assert!(a.validate_uniforms(&[0; 4]).is_ok());
         assert!(a.validate_uniforms(&[255; 4]).is_err());
+    }
+
+    #[test]
+    fn static_budget_proof_preserves_decisions_with_saturation() {
+        fn next(seed: &mut u64) -> u64 {
+            *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            *seed
+        }
+        fn tree(seed: &mut u64, depth: usize) -> Cost {
+            let choice = next(seed) >> 32;
+            match if depth == 0 { 0 } else { choice % 4 } {
+                0 => Cost::Fixed([0, 1, 7, 65_535, 65_536, u64::MAX - 1, u64::MAX][choice as usize % 7]),
+                1 => Cost::Loop(choice as usize % 4, Box::new(tree(seed, depth - 1))),
+                _ => Cost::Sum((0..choice % 7).map(|_| tree(seed, depth - 1)).collect()),
+            }
+        }
+        let mut seed = 0x57a97d8d;
+        for _ in 0..256 {
+            let cost = tree(&mut seed, 5);
+            let maximum = cost.bound(&[255; 4]);
+            let reference = VertexProgram { id: 0, source: String::new(), cost: cost.clone(), uniforms_always_safe: false };
+            let optimized =
+                VertexProgram { id: 0, source: String::new(), cost: cost.clone(), uniforms_always_safe: maximum <= 65_536 };
+            for n in 0..32 {
+                let integers = match n {
+                    0 => [0; 4],
+                    1 => [255; 4],
+                    2 => [u32::MAX; 4],
+                    _ => std::array::from_fn(|_| (next(&mut seed) >> 32) as u32),
+                };
+                assert!(cost.bound(&integers) <= maximum, "{cost:?} with {integers:?}");
+                assert_eq!(reference.validate_uniforms(&integers), optimized.validate_uniforms(&integers));
+            }
+        }
+    }
+
+    #[test]
+    fn static_budget_proof_keeps_the_inclusive_limit_and_dynamic_rejection() {
+        for body in [256, 257] {
+            let cost = Cost::Loop(0, Box::new(Cost::Fixed(body)));
+            let safe = cost.bound(&[255; 4]) <= 65_536;
+            assert_eq!(safe, body == 256);
+            let program = VertexProgram { id: 0, source: String::new(), cost, uniforms_always_safe: safe };
+            assert!(program.validate_uniforms(&[0; 4]).is_ok());
+            assert_eq!(program.validate_uniforms(&[255; 4]).is_ok(), safe);
+            assert_eq!(program.validate_uniforms(&[u32::MAX; 4]).is_ok(), safe);
+        }
     }
 }
