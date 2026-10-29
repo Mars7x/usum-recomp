@@ -15,6 +15,7 @@
 //! button on the bottom screen touches it.
 
 mod controller;
+mod hud;
 
 use std::num::NonZeroU32;
 use std::process::ExitCode;
@@ -30,6 +31,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::probe::{self, Modules, Outcome};
+use crate::timing::{FrameSample, FrameStamp, FrameTelemetry, PresentationPacer, PresentationRate};
 
 const TOP: (u32, u32) = (400, 240);
 const BOTTOM: (u32, u32) = (320, 240);
@@ -157,6 +159,20 @@ fn compare_vulkan_captures(kernel: &mut crate::kernel::Kernel) {
 
 /// The `main` of a generated play program: `play <dump>`.
 pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules: Modules) -> ExitCode {
+    let frontend_started = Instant::now();
+    let presentation_rate = match std::env::var("USUM_PRESENT_FPS") {
+        Ok(value) => match value.parse::<PresentationRate>() {
+            Ok(rate) => rate,
+            Err(error) => {
+                eprintln!("USUM_PRESENT_FPS: {error}");
+                return ExitCode::FAILURE;
+            }
+        },
+        Err(_) => PresentationRate::Auto,
+    };
+    eprintln!(
+        "presentation cap: {presentation_rate}; guest clock remains at normal speed (F6 cap, F5 title statistics, F7 testing FPS counter)"
+    );
     if let Err(error) = controller::configure_discovery() {
         eprintln!("cannot select container controller discovery: {error}; using default discovery");
     }
@@ -203,7 +219,7 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
     let frames = {
         let proxy = proxy.clone();
         Arc::new(crate::kernel::FrameOut {
-            frames: Mutex::new([None, None]),
+            frames: Mutex::default(),
             resolution_scale: AtomicU32::new(resolution_scale),
             notify: Box::new(move || {
                 let _ = proxy.send_event(());
@@ -235,6 +251,8 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
         #[cfg(feature = "vulkan-compare")]
         gpu_frames: [None, None],
         #[cfg(feature = "vulkan-compare")]
+        gpu_versions: [0; 2],
+        #[cfg(feature = "vulkan-compare")]
         gpu_distinct: [0; 2],
         #[cfg(feature = "vulkan-compare")]
         gpu_uploads: 0,
@@ -250,11 +268,24 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
         cursor: None,
         pressing: false,
         quit: quit.clone(),
-        title_stopped: false,
         draws: 0,
         rgb: (Arc::from([]), Arc::from([])),
         rgb_dimensions: [TOP, BOTTOM],
         draw_time: Duration::ZERO,
+        started: frontend_started,
+        pacer: PresentationPacer::new(presentation_rate),
+        telemetry: FrameTelemetry::default(),
+        sample: FrameSample::default(),
+        show_stats: std::env::var("USUM_FRAME_STATS").as_deref() == Ok("1"),
+        log_stats: std::env::var("USUM_FRAME_LOG").as_deref() == Ok("1"),
+        rgb_versions: [0; 2],
+        displayed_top: 0,
+        last_title: String::new(),
+        test_fps: std::env::var("USUM_TEST_FPS").as_deref() == Ok("1"),
+        hud_text: String::new(),
+        hud_bitmap: None,
+        #[cfg(feature = "vulkan-compare")]
+        hud_gpu: None,
     };
     let result = event_loop.run_app(&mut app);
     if app.draws > 0 {
@@ -275,6 +306,7 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
     // the game thread sees `quit` at its next budget refill, then writes
     // the input recording: wait for it
     let _ = game.join();
+    eprintln!("{}", app.telemetry.summary(app.started.elapsed(), app.frame_stamp()));
     // the server asks for data every few milliseconds, so the sound
     // thread sees `quit` promptly
     if let Some(t) = sound_thread {
@@ -474,6 +506,8 @@ struct App {
     #[cfg(feature = "vulkan-compare")]
     gpu_frames: [Option<Arc<usum_render::DisplayFrame>>; 2],
     #[cfg(feature = "vulkan-compare")]
+    gpu_versions: [u64; 2],
+    #[cfg(feature = "vulkan-compare")]
     gpu_distinct: [u64; 2],
     #[cfg(feature = "vulkan-compare")]
     gpu_uploads: u64,
@@ -492,13 +526,26 @@ struct App {
     cursor: Option<(f64, f64)>,
     pressing: bool,
     quit: Arc<AtomicBool>,
-    title_stopped: bool,
     draws: u64,
     /// Time spent redrawing, for the report at exit.
     draw_time: Duration,
     /// The screens as last converted: top, bottom (RGB rows).
     rgb: (Arc<[u8]>, Arc<[u8]>),
     rgb_dimensions: [(u32, u32); 2],
+    rgb_versions: [u64; 2],
+    displayed_top: u64,
+    started: Instant,
+    pacer: PresentationPacer,
+    telemetry: FrameTelemetry,
+    sample: FrameSample,
+    show_stats: bool,
+    log_stats: bool,
+    last_title: String,
+    test_fps: bool,
+    hud_text: String,
+    hud_bitmap: Option<hud::Bitmap>,
+    #[cfg(feature = "vulkan-compare")]
+    hud_gpu: Option<Arc<usum_render::DisplayFrame>>,
 }
 
 impl ApplicationHandler for App {
@@ -544,7 +591,26 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.publish_inputs();
-        event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(8)));
+        self.request_pending_redraw();
+        let stamp = self.frame_stamp();
+        if let Some(sample) = self.telemetry.report(self.started.elapsed(), stamp) {
+            self.sample = sample;
+            if self.log_stats {
+                eprintln!("{sample}");
+            }
+            self.update_title();
+            // The testing counter must fall to zero when the guest stops
+            // publishing frames. These HUD-only redraws count as repeats,
+            // never as game updates, and still respect the presentation cap.
+            if self.test_fps {
+                self.pacer.request();
+                self.request_pending_redraw();
+            }
+        }
+        // Input polling remains independent of the presentation cap.
+        let poll = Instant::now() + Duration::from_millis(8);
+        let next = self.pacer.deadline().map_or(poll, |due| (self.started + due).min(poll));
+        event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(next));
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, (): ()) {
@@ -552,9 +618,8 @@ impl ApplicationHandler for App {
             event_loop.exit();
             return;
         }
-        if let Some(w) = &self.window {
-            w.request_redraw();
-        }
+        self.pacer.request();
+        self.request_pending_redraw();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
@@ -569,6 +634,26 @@ impl ApplicationHandler for App {
                     self.quit.store(true, Ordering::Relaxed);
                     event_loop.exit();
                     return;
+                }
+                if event.state == ElementState::Pressed && !event.repeat {
+                    match key {
+                        KeyCode::F5 => {
+                            self.show_stats = !self.show_stats;
+                            self.update_title();
+                        }
+                        KeyCode::F6 => {
+                            self.pacer.set_rate(self.pacer.rate().next_preset());
+                            eprintln!("presentation cap: {}; guest clock remains at normal speed", self.pacer.rate());
+                            self.update_title();
+                            self.request_pending_redraw();
+                        }
+                        KeyCode::F7 => {
+                            self.test_fps = !self.test_fps;
+                            self.pacer.request();
+                            self.request_pending_redraw();
+                        }
+                        _ => {}
+                    }
                 }
                 if event.state == ElementState::Pressed
                     && matches!(key, KeyCode::F3 | KeyCode::F4)
@@ -621,6 +706,44 @@ impl ApplicationHandler for App {
 }
 
 impl App {
+    fn frame_stamp(&self) -> FrameStamp {
+        self.frames.frames.lock().map(|frames| frames.stamp).unwrap_or_default()
+    }
+
+    fn request_pending_redraw(&mut self) {
+        if let Some(window) = &self.window {
+            if self.pacer.queue(self.started.elapsed()) {
+                window.request_redraw();
+            }
+        }
+    }
+
+    fn update_title(&mut self) {
+        let Some(window) = &self.window else { return };
+        let stopped = self.shared.lock().ok().and_then(|shared| shared.stopped.clone());
+        let title = if let Some(why) = stopped {
+            format!("usum-recomp — {why}")
+        } else {
+            let scale = self.frames.resolution_scale.load(Ordering::Relaxed);
+            if self.show_stats {
+                format!("usum-recomp — {scale}× — updates {:.1}/s | present {:.1}/s | speed {:.0}% | p95 {:.1} ms | cap {} — F5 stats / F6 cap / F7 FPS",
+                    self.sample.updates_per_second, self.sample.presents_per_second, self.sample.game_speed * 100.0,
+                    self.sample.interval_p95_ms, self.pacer.rate())
+            } else {
+                format!(
+                    "usum-recomp — {scale}× ({}×{} top) — F3/F4 scale — cap {} — F5 stats / F6 cap / F7 FPS",
+                    400 * scale,
+                    240 * scale,
+                    self.pacer.rate()
+                )
+            }
+        };
+        if title != self.last_title {
+            window.set_title(&title);
+            self.last_title = title;
+        }
+    }
+
     fn publish_inputs(&mut self) {
         let controller = self.controllers.poll();
         let input = if self.focused { controller::combine(self.keyboard_pad, controller) } else { 0 };
@@ -650,14 +773,38 @@ impl App {
     }
 
     fn draw(&mut self) {
+        let attempt = self.started.elapsed();
+        if !self.pacer.begin(attempt) {
+            return;
+        }
+        let previous_draws = self.draws;
         let started = Instant::now();
+        if self.test_fps {
+            let text = format!("FPS {:.1}\nWIN {:.1}", self.sample.updates_per_second, self.sample.presents_per_second);
+            if self.hud_text != text {
+                self.hud_bitmap = Some(hud::Bitmap::new(&text));
+                self.hud_text = text;
+                #[cfg(feature = "vulkan-compare")]
+                {
+                    self.hud_gpu = None;
+                }
+            }
+        }
         self.redraw();
-        self.draw_time += started.elapsed();
+        let took = started.elapsed();
+        self.draw_time += took;
+        let now = self.started.elapsed();
+        self.pacer.finish(attempt);
+        if self.draws != previous_draws {
+            self.telemetry.presented(now, took, self.displayed_top);
+        }
+        self.update_title();
     }
 
     fn redraw(&mut self) {
         #[cfg(feature = "vulkan-compare")]
         if self.gpu_presenter.is_some() {
+            let before = self.draws;
             match self.redraw_gpu() {
                 Ok(()) => return,
                 Err(error) => {
@@ -674,6 +821,7 @@ impl App {
                                     self.rgb.1 = Arc::clone(rgb);
                                 }
                                 self.rgb_dimensions[screen] = frame.dimensions();
+                                self.rgb_versions[screen] = self.gpu_versions[screen];
                             }
                         }
                     }
@@ -681,6 +829,12 @@ impl App {
                         self.surface = softbuffer::Context::new(window.clone())
                             .and_then(|c| softbuffer::Surface::new(&c, window.clone()))
                             .ok();
+                    }
+                    // If presentation succeeded before an optional capture
+                    // failed, switch backend on the next frame, without a
+                    // second present of the same redraw.
+                    if self.draws != before {
+                        return;
                     }
                 }
             }
@@ -698,9 +852,9 @@ impl App {
             return Ok(());
         }
         let renderer = crate::pica::Pica::window_renderer()?;
-        let new_frames = {
+        let (new_frames, versions) = {
             let mut frames = self.frames.frames.lock().map_err(|e| e.to_string())?;
-            [frames[0].take(), frames[1].take()]
+            frames.take()
         };
         for (screen, raw) in new_frames.into_iter().enumerate() {
             let Some(raw) = raw else {
@@ -725,9 +879,15 @@ impl App {
                     Arc::new(renderer.upload_display_rgb(width, height, &probe::raw_to_rgb(&raw, width))?)
                 }
             });
+            self.gpu_versions[screen] = versions[screen];
         }
         let (scale, x0, y0) = Self::layout(size.width, size.height);
-        let screens: Vec<_> = self
+        if self.test_fps && self.hud_gpu.is_none() {
+            if let Some(bitmap) = &self.hud_bitmap {
+                self.hud_gpu = Some(Arc::new(renderer.upload_display_rgb(bitmap.width, bitmap.height, &bitmap.rgb)?));
+            }
+        }
+        let mut screens: Vec<_> = self
             .gpu_frames
             .iter()
             .enumerate()
@@ -739,21 +899,17 @@ impl App {
                 })
             })
             .collect();
-        let presenter = self.gpu_presenter.as_mut().ok_or("Vulkan presenter disappeared")?;
         self.gpu_mapped_uses += screens.iter().filter(|screen| screen.frame.ready()).count() as u64;
+        if self.test_fps {
+            if let (Some(bitmap), Some(frame)) = (&self.hud_bitmap, &self.hud_gpu) {
+                screens.push(usum_render::DisplayScreen { frame, rect: [hud::ORIGIN, hud::ORIGIN, bitmap.width, bitmap.height] });
+            }
+        }
+        let presenter = self.gpu_presenter.as_mut().ok_or("Vulkan presenter disappeared")?;
         if !presenter.present(size.width, size.height, &screens)? {
             return Ok(());
         }
-        let stopped = self.shared.lock().ok().and_then(|s| s.stopped.clone());
-        if let Some(why) = &stopped {
-            if !self.title_stopped {
-                window.set_title(&format!("usum-recomp — {why}"));
-                self.title_stopped = true;
-            }
-        } else {
-            let internal = self.frames.resolution_scale.load(Ordering::Relaxed);
-            window.set_title(&format!("usum-recomp — {internal}× ({}×{} top) — F3/F4 scale", 400 * internal, 240 * internal));
-        }
+        self.displayed_top = self.gpu_versions[0];
         self.draws += 1;
         if let Some(path) = std::env::var_os("USUM_PLAY_SNAPSHOT").filter(|_| self.draws.is_multiple_of(60)) {
             let rgb = presenter.capture_rgb(size.width, size.height, &screens)?;
@@ -780,9 +936,8 @@ impl App {
         let (scale, x0, y0) = Self::layout(width, height);
         // take new frames under the lock, convert them after releasing it,
         // so the game thread never waits for the window
-        let stopped = self.shared.lock().ok().and_then(|s| s.stopped.clone());
-        let [new_top, new_bottom] = match self.frames.frames.lock() {
-            Ok(mut f) => [f[0].take(), f[1].take()],
+        let ([new_top, new_bottom], versions) = match self.frames.frames.lock() {
+            Ok(mut f) => f.take(),
             Err(_) => return,
         };
         for (screen, raw) in [new_top, new_bottom].into_iter().enumerate() {
@@ -806,6 +961,7 @@ impl App {
                     self.rgb.1 = pixels;
                 }
                 self.rgb_dimensions[screen] = dims;
+                self.rgb_versions[screen] = versions[screen];
             }
         }
         let screens = [
@@ -839,24 +995,21 @@ impl App {
                 buffer[at..at + visible as usize].copy_from_slice(&line);
             }
         }
-        if stopped.is_none() {
-            let internal = self.frames.resolution_scale.load(Ordering::Relaxed);
-            window.set_title(&format!("usum-recomp — {internal}× ({}×{} top) — F3/F4 scale", 400 * internal, 240 * internal));
-        }
-        if let Some(why) = &stopped {
-            if !self.title_stopped {
-                window.set_title(&format!("usum-recomp — {why}"));
-                self.title_stopped = true;
-            }
-        }
         // USUM_PLAY_SNAPSHOT=path: every 60 draws, the window's pixels as
         // a PPM (a check of what is shown; game-derived, private)
-        self.draws += 1;
-        if let Some(path) = std::env::var_os("USUM_PLAY_SNAPSHOT").filter(|_| self.draws.is_multiple_of(60)) {
+        if self.test_fps {
+            if let Some(bitmap) = &self.hud_bitmap {
+                bitmap.composite(&mut buffer, width, height);
+            }
+        }
+        if let Some(path) = std::env::var_os("USUM_PLAY_SNAPSHOT").filter(|_| (self.draws + 1).is_multiple_of(60)) {
             let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
             ppm.extend(buffer.iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8]));
             let _ = std::fs::write(path, ppm);
         }
-        let _ = buffer.present();
+        if buffer.present().is_ok() {
+            self.draws += 1;
+            self.displayed_top = self.rgb_versions[0];
+        }
     }
 }

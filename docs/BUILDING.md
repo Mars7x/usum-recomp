@@ -167,7 +167,7 @@ cargo build --release -p play
 ./target/release/play ~/Games/ultra-sun.3ds
 ```
 
-| Key (by position) | 3DS |
+| Key (by position) | Action |
 |---|---|
 | arrows | circle pad (the overworld moves with it) |
 | I J K L | D-pad |
@@ -176,7 +176,44 @@ cargo build --release -p play
 | Q / W | L / R |
 | Enter / Backspace | Start / Select |
 | Escape | quit |
+| F5 | show/hide frame statistics in the window title |
+| F6 | cycle the host presentation cap: auto / 30 / 60 / 120 / 144 / 240 |
+| F7 | toggle the top-left testing FPS counter (off by default) |
 | left mouse button on the bottom screen | touch |
+
+Frame timing is built into the runtime. `USUM_PRESENT_FPS=auto` (the default)
+adds no presentation cap; a number from 1 to 1000 limits window presents per
+second. For example, `USUM_PRESENT_FPS=30 ./target/release/play game.3ds` caps
+the window while the guest clock, game rendering, audio and input scheduling
+continue normally. A cap above the game's update rate does not generate extra
+game frames. This is a maximum, not a guaranteed rate; source timing or host
+load can leave it underfilled. Pending window updates coalesce; resizing/exposing the window uses
+the same cap. Input-device polling retains its own cadence.
+
+The title separates GSP top-screen framebuffer **updates/s**, successful host
+**presents/s**, and **game speed** (guest-clock advance divided by wall time).
+Updates are framebuffer submissions, not proof of unique images; presents are
+window-system submissions, not physical monitor scanout. These measurements do
+not establish uncapped gameplay FPS. Frame-interval p95 covers the latest 240
+completed present intervals, including long gaps. `USUM_FRAME_STATS=1` enables
+title statistics at launch; they are otherwise hidden until F5 is pressed.
+`USUM_FRAME_LOG=1` writes samples approximately
+once per wall second; an end-of-session summary is always logged. Samples also
+report shown update versions, repeated presents, skipped update versions between
+shown frames, and mean host redraw time (including waits). Failed presents do not count.
+Guest-clock samples come from the latest published VBlank; session averages
+include frontend startup, while the periodic rates use their measured interval.
+These controls are frontend presentation policy, independent of guest timers;
+game-side higher-FPS support remains future work.
+
+The separate top-left testing counter is off by default. Press F7 or launch
+with `USUM_TEST_FPS=1` to enable it. Its `FPS` line uses game top-screen updates
+per wall second; `WIN` shows successful window presents per wall second. The
+framebuffer-submission caveat above applies to `FPS`: it is not proof of unique
+rendered images. The panel is composited only onto the host window, independently
+of internal resolution, and never written into guest images or saves. Both
+Vulkan and CPU presentation support it. Its small bitmap/upload is cached until
+the one-second sample changes; disabling it skips HUD drawing/upload work.
 
 Controllers are detected automatically, including controllers connected after
 launch. A newly connected pad or the most recently used pad becomes active.

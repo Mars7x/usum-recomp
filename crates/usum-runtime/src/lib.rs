@@ -16,3 +16,4 @@ pub mod ro;
 pub mod services;
 #[cfg(feature = "window")]
 pub mod sound;
+pub mod timing;

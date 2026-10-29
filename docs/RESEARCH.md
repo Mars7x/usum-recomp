@@ -3828,3 +3828,71 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   time in the window, and normal-speed 200 rendered FPS remains unachieved.
   No further replay beyond the reported new-area stop was requested. Pause
   optimization after this validated change, as the user requested.
+
+### R-118 2026-10-29 — Core presentation policy, timing measurements and testing HUD
+
+- The user requested built-in frame-rate groundwork and an opt-in top-left FPS
+  counter, then resumed the native dynamic-FPS/200-FPS objective. Add a common
+  runtime presentation policy and timing module; no mod files or guest patches
+  are needed for these controls. This milestone does not uncap game rendering.
+- F6 cycles auto/30/60/120/144/240 maximum window presents per second;
+  `USUM_PRESENT_FPS=auto` or 1..1000 selects the initial policy. Auto follows
+  notifications rather than spinning duplicate redraws. Pending frames coalesce,
+  expose/resize events obey the cap, and input polling keeps its separate cadence.
+  Guest instructions, simulation-clock charging, hardware timers and audio rates
+  are unchanged. Drawing time is included in the cap period, with no queued
+  catch-up burst after a slow redraw.
+- Publish frame versions and clock/submission counters under the same mailbox
+  mutex. A failed capture retains the older image's version. Track produced top
+  updates, shown versions, repeated presents and skipped versions separately;
+  failed presents do not count. A GPU present followed by a diagnostic-capture
+  failure switches backend on the next redraw rather than presenting twice.
+  Restart keeps the existing mailbox and its cumulative counters.
+- Use a monotonic frontend origin established before the game thread starts.
+  One-second samples report observed rates, guest-clock/wall-time speed, host
+  redraw duration and mean/p95 completed present intervals over the latest 240
+  samples. These are observations, not projected performance from execution cost.
+  F5 toggles optional title statistics; `USUM_FRAME_STATS=1` enables them at
+  launch, and `USUM_FRAME_LOG=1` enables periodic logs. Title statistics are
+  hidden by default; a session summary is always logged.
+- F7 toggles the testing-only top-left counter; `USUM_TEST_FPS=1` enables it at
+  launch. It is off by default. `FPS` currently measures actual top-screen GSP
+  framebuffer submissions per wall second; `WIN` measures successful host presents.
+  GSP submissions are not proof of unique rendered images or a native engine
+  frame-completion boundary. Do not use this proxy or window redraws to claim
+  the native 200-FPS objective. Native frame-completion instrumentation remains
+  necessary before validating engine uncapping.
+- The small bitmap panel uses the existing GPU compositor or the CPU window
+  buffer, independently of internal resolution. Cache its bitmap/upload until
+  sample text changes. It never writes guest images or saves, and the disabled
+  path does no HUD drawing/upload work. While enabled it also refreshes without
+  new guest frames, so a stopped producer reports zero rather than retaining an
+  old FPS value; HUD-only redraws count as repeated presents, never game updates.
+- All 104 enabled window/Vulkan runtime tests and 72 non-window tests pass,
+  as do strict Clippy, formatting and a CPU-window-only feature build. New tests
+  cover coalescing, cap changes, long stalls, frontend epoch independence, draw
+  time accounting, mailbox overwrites/failed captures, measured rates/percentiles,
+  bounded sample history and clipped HUD composition outside the panel.
+- Against the frozen 3dd3da6 executable, final fixed-input/save captures match
+  all 74 images, five WAVs, final saves and guest instruction/VBlank/draw/triangle/
+  update/video/audio counts. The 6× window matrix covers auto/15/30/120 caps in
+  intro, overworld and battle, CPU presentation at auto/15, and the 78-second
+  restart at cap 15. Saves and guest counters match; candidate guest-clock
+  stamps and submission counts agree across caps. Cap bounds hold. GPU runs
+  have zero software fallbacks and zero materialized game-display source uses.
+- Example restart validation produces the original 4055 top-screen submissions
+  and 4664 VBlanks while submitting only 1161 window presents at cap 15. This is
+  presentation coalescing, not reduced game execution. Default auto comparisons
+  use old/new/new/old ordering, fixed inputs/saves and no encoder/build overlap;
+  this is a control/measurement feature, with no optimization speedup claimed.
+- After adding the HUD refresh behavior, repeat the five capture fixtures and
+  test Vulkan/CPU HUD-on, Vulkan cap-15 HUD-on and HUD-off window runs. Pixel
+  checks verify the panel's location/colors and its absence when disabled;
+  visual inspection confirms readable text. Game counters and saves still match.
+  Invalid cap settings fail before game data loads. The final source hashes are
+  recorded with the private validation artifacts.
+- Separate compatibility finding from the user's preceding live run: the stop
+  at CreateThread(priority 0x30, processor -2) reaches a lifetime thread-table
+  limit of 32, despite exited entries; the argument values themselves are in
+  the supported range. Preserve that recording for follow-up resource-lifetime
+  work. No successful replay beyond that stop or fix is claimed here.

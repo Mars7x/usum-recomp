@@ -194,7 +194,7 @@ pub struct Present {
 /// Where the kernel hands the screens to a live display (`play`).
 pub struct FrameOut {
     /// The newest framebuffers, top and bottom, as stored.
-    pub frames: std::sync::Mutex<[Option<crate::probe::RawFrame>; 2]>,
+    pub frames: std::sync::Mutex<crate::timing::FrameMailbox<crate::probe::RawFrame>>,
     pub resolution_scale: std::sync::atomic::AtomicU32,
     /// Called after each VBlank's frames are in place.
     pub notify: Box<dyn Fn() + Send + Sync>,
@@ -711,6 +711,7 @@ impl Kernel {
     fn vblank(&mut self, mem: &mut Memory) -> Result<(), String> {
         let Some(base) = self.gsp_memory() else { return Ok(()) };
         let fault = |f: usum_guest::Fault| format!("GSP framebuffer info: {f}");
+        let mut submitted = [false; 2];
         for screen in 0..2u32 {
             let info = base + 0x200 + screen * 0x40;
             let (index, flags) = (mem.read_u8(info).map_err(fault)?, mem.read_u8(info + 1).map_err(fault)?);
@@ -718,6 +719,7 @@ impl Kernel {
                 let entry = info + 4 + u32::from(index & 1) * 0x1C;
                 let w: Vec<u32> = (0..7).map(|k| mem.read_u32(entry + 4 * k)).collect::<Result<_, _>>().map_err(fault)?;
                 self.presented.push(Present { screen, active: w[0], left: w[1], right: w[2], stride: w[3], format: w[4] });
+                submitted[screen as usize] = true;
                 mem.write_u8(info + 1, flags & !1).map_err(fault)?;
             }
         }
@@ -739,11 +741,7 @@ impl Kernel {
                 })
             });
             if let Ok(mut frames) = out.frames.lock() {
-                for (slot, frame) in frames.iter_mut().zip(raw) {
-                    if frame.is_some() {
-                        *slot = frame;
-                    }
-                }
+                frames.publish(raw, submitted, self.virtual_clock.unwrap_or(0));
             }
             (out.notify)();
         }
