@@ -311,6 +311,8 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
                 }
             }
             let frozen = kernel.pica.vulkan_frozen_texture_captures();
+            let [planned, inputs] = kernel.pica.vulkan_input_plan_stats();
+            println!("vulkan vertex inputs {planned} planned draws, {inputs} distinct inputs");
             if frozen != 0 {
                 println!("vulkan frozen textures {frozen} captures");
             }

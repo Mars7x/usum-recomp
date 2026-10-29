@@ -12,6 +12,8 @@
 
 use usum_guest::Memory;
 
+#[cfg(feature = "vulkan-compare")]
+mod input;
 mod stencil;
 
 use super::shader::{self, Vec4};
@@ -1383,7 +1385,15 @@ fn draw_inner(p: &mut Pica, mem: &mut Memory, elements: bool) -> Result<(), Stri
                         }
                         _ => (1..slots.len() - 1).map(|t| [0, t, t + 1]).collect(),
                     };
-                    let load = |index: &u32| load_vertex(p, layout.as_ref().map_err(Clone::clone)?, mem, *index);
+                    let plan = if p.vulkan_input_plan && distinct.len() >= 16 {
+                        layout.as_ref().ok().map(|layout| input::InputPlan::new(p, layout))
+                    } else {
+                        None
+                    };
+                    let load = |index: &u32| match &plan {
+                        Some(plan) => plan.load(mem, *index),
+                        None => load_vertex(p, layout.as_ref().map_err(Clone::clone)?, mem, *index),
+                    };
                     let inputs: Vec<Result<[Vec4; 16], String>> = if distinct.len() >= 256 {
                         use rayon::prelude::*;
                         distinct.par_iter().with_min_len(64).map(load).collect()
@@ -1402,6 +1412,10 @@ fn draw_inner(p: &mut Pica, mem: &mut Memory, elements: bool) -> Result<(), Stri
                         depth_format: reg(p, 0x116) & 3,
                     };
                     super::vulkan_compare::capture_gpu_vertices(p, mem, target, program, inputs, indices)?;
+                    if plan.is_some() {
+                        p.vulkan_input_plan_counts[0] += 1;
+                        p.vulkan_input_plan_counts[1] += distinct.len() as u64;
+                    }
                     p.triangles += triangles.len() as u64;
                     p.phases[7] += processing.elapsed();
                     p.phases[0] += phase.elapsed();
@@ -1601,6 +1615,55 @@ mod tests {
     }
 
     use super::*;
+
+    #[cfg(feature = "vulkan-compare")]
+    #[test]
+    fn planned_hardware_inputs_match_captures_for_small_serial_and_parallel_batches() {
+        let run = |planned, count| {
+            let mut p = Pica::default();
+            p.enable_vulkan_acceleration();
+            p.enable_vulkan_vertex();
+            p.enable_vulkan_capture(usize::MAX);
+            p.vulkan_skip_software = true;
+            p.vulkan_input_plan = planned;
+            p.regs[0x200] = 0x20000000 >> 3;
+            p.regs[0x201] = 15;
+            p.regs[0x205] = 1 << 28 | 16 << 16;
+            p.regs[0x228] = count;
+            p.regs[0x11D] = 0x20002000 >> 3;
+            p.regs[0x11E] = 8 | 7 << 12;
+            p.regs[0x41] = 0x410000;
+            p.regs[0x43] = 0x410000;
+            p.regs[0x4F] = 1;
+            p.regs[0x50] = 0x03020100;
+            p.vs.output_mask = 1;
+            p.vs.write(0x25, 0);
+            p.vs.write(0x26, 15 | 0x1B << 5 | 0x1B << 14 | 0x1B << 23);
+            p.vs.write(0x1B, 0);
+            p.vs.write(0x1C, 0x13 << 26);
+            p.vs.write(0x1C, 0x22 << 26);
+            let mut bytes = vec![0; 0x4000];
+            for index in 0..count as usize {
+                let position = [index as f32 / 512.0, -0.5, -0.25, 1.0];
+                for (slot, value) in bytes[index * 16..index * 16 + 16].as_chunks_mut::<4>().0.iter_mut().zip(position) {
+                    *slot = value.to_le_bytes();
+                }
+            }
+            let mut memory = Memory::new();
+            memory.map(p.linear_base, bytes, usum_guest::Perm::RW).unwrap();
+            draw_inner(&mut p, &mut memory, false).unwrap();
+            let mut snapshots = p.take_vulkan_snapshots();
+            assert_eq!(snapshots.len(), 1);
+            (snapshots.remove(0), p.vulkan_input_plan_stats())
+        };
+        for count in [3, 33, 257] {
+            let reference = run(false, count);
+            let planned = run(true, count);
+            assert_eq!(reference.0, planned.0);
+            assert_eq!(reference.1, [0, 0]);
+            assert_eq!(planned.1, if count >= 16 { [1, u64::from(count)] } else { [0, 0] });
+        }
+    }
 
     #[cfg(feature = "vulkan-compare")]
     #[test]

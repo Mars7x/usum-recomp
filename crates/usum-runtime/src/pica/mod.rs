@@ -95,6 +95,10 @@ pub struct Pica {
     #[cfg(feature = "vulkan-compare")]
     vulkan_vertex: bool,
     #[cfg(feature = "vulkan-compare")]
+    vulkan_input_plan: bool,
+    #[cfg(feature = "vulkan-compare")]
+    vulkan_input_plan_counts: [u64; 2],
+    #[cfg(feature = "vulkan-compare")]
     vulkan_defer_readback: bool,
     #[cfg(feature = "vulkan-compare")]
     vulkan_split_encode: bool,
@@ -176,6 +180,10 @@ impl Default for Pica {
             vulkan_skip_software: false,
             #[cfg(feature = "vulkan-compare")]
             vulkan_vertex: false,
+            #[cfg(feature = "vulkan-compare")]
+            vulkan_input_plan: std::env::var("USUM_VULKAN_INPUT_PLAN").as_deref() != Ok("0"),
+            #[cfg(feature = "vulkan-compare")]
+            vulkan_input_plan_counts: [0; 2],
             #[cfg(feature = "vulkan-compare")]
             vulkan_defer_readback: false,
             #[cfg(feature = "vulkan-compare")]
@@ -323,6 +331,11 @@ impl Pica {
     #[cfg(feature = "vulkan-compare")]
     pub fn vulkan_vertex_stats(&self) -> ([u64; 4], Option<&str>) {
         (self.vulkan_vertex_counts, self.vulkan_vertex_error.as_deref())
+    }
+
+    #[cfg(feature = "vulkan-compare")]
+    pub fn vulkan_input_plan_stats(&self) -> [u64; 2] {
+        self.vulkan_input_plan_counts
     }
 
     #[cfg(feature = "vulkan-compare")]
@@ -890,6 +903,8 @@ mod tests {
             pica.enable_vulkan_deferred_readback();
             pica.enable_vulkan_vertex();
             pica.vulkan_uniform_depth = false;
+            pica.vulkan_input_plan = false;
+            pica.vulkan_input_plan_counts = [3, 96];
             pica.set_vulkan_resolution_scale(6).unwrap();
         }
         pica.restart_process();
@@ -903,6 +918,8 @@ mod tests {
         {
             assert!(pica.vulkan_accelerate && pica.vulkan_vertex && pica.vulkan_defer_readback);
             assert!(!pica.vulkan_uniform_depth);
+            assert!(!pica.vulkan_input_plan);
+            assert_eq!(pica.vulkan_input_plan_counts, [3, 96]);
             assert_eq!(pica.vulkan_resolution_scale, 6);
         }
     }

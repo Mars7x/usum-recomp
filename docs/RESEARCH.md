@@ -3430,3 +3430,63 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   programs; the dynamic fallback is intentional. Vertex input loading remains
   a larger target. Four timing trials and these recordings do not establish
   whole-game performance/correctness or 200 actual rendered FPS at normal speed.
+
+### R-112 2026-10-29 — Plan GPU vertex input assembly once per draw
+
+- The post-R-111 overworld profile places load_vertex at 5.07% of samples. Each
+  vertex builds a twelve-attribute optional array, then applies fixed values and
+  register permutation. For hardware draws with at least sixteen distinct inputs,
+  precompute the final destination of each field and a fixed-register template
+  once per draw. Load directly into that template, preserving later-loader and
+  later-attribute alias precedence. CPU shading and smaller draws retain the
+  original loader; USUM_VULKAN_INPUT_PLAN=0 also selects it for hardware draws.
+- Retain every loader slice and every field read in original order, including
+  overwritten/unused attributes: these reads can fail. Keep checked-memory slice
+  and per-element fallback, wrapping address arithmetic, partial components and
+  ordered first-error collection. No shader arithmetic, GPU topology, guest
+  instruction/budget/clock behavior, or CPU fallback is changed. The plan is
+  local to a draw; it caches no guest memory or cross-process state. Its policy
+  and cumulative diagnostic counters survive a title restart.
+- Counters verify 37544 planned overworld draws / 12407034 inputs, out of
+  45832 / 12454554 (99.62% of inputs). Battle uses 42851 / 14263275, out of
+  62746 / 14387636 (99.14%). The intro's 688 tiny draws / 2760 inputs retain
+  the original loader. Reference mode reports zero planned draws/inputs.
+- Both modes pass 99 enabled runtime tests and 12 hardware GPU tests; all 68
+  CPU runtime tests and strict Clippy pass. Differential checks cover 256 varied
+  layouts and six vertex indices each, all element formats, register aliases,
+  fixed/default attributes, NaN/signed-zero bits, duplicate loaders, read-only and
+  unreadable mappings, split regions and address wrap. Explicit checks retain
+  faults for discarded values and identical deferred-provider call/error order.
+  Captures for 3/33/257 vertices compare the small, serial and parallel paths.
+- At 6×, controlled old/new/reference/reference/new/old/new/old/old/new trials
+  use identical hashed saves/inputs, no periodic dumps/call profiling, and reject
+  encoder/build overlap. Intro old 7.906/7.900/7.893/8.162 seconds, new
+  8.098/7.985/7.867/8.056; overworld old 16.976/16.558/17.763/17.800,
+  new 16.636/17.648/16.492/16.920; battle old 27.529/28.118/27.587/28.141,
+  new 28.044/26.993/28.172/27.787. Average throughput changes are -0.45%,
+  +2.07%, and +0.34%. Intro/battle are inconclusive, and overworld samples also
+  vary substantially. Same-binary reference pairs are 8.059/7.926,
+  17.446/17.326, and 27.526/27.907; frozen b4d9439 is the primary baseline.
+- An isolated same-binary reference/new/new/reference overworld counter check
+  corroborates reduced host work. User instructions are 135087949656/135087035841
+  reference versus 133352431089/133382644906 planned (1.27% fewer); user cycles
+  are 63467652927/63201293324 versus 61960592509/61952546170 (2.18% fewer).
+  Both events run 100% scheduled, and all runs retain 1170300377 guest
+  instructions, 956 VBlanks, 45832 draws and 498 updates. These counters include
+  process setup and driver threads, use the same hashed starting save/input,
+  reject encoder/build overlap, and do not measure normal-speed FPS.
+- All 42 baseline/reference/planned native/scaled captures, three WAVs, saves
+  and guest instruction/VBlank/draw/triangle/video/audio/update counts match.
+  Long bag/gameplay and Mystery Gift recordings match 32 additional captures,
+  two WAVs, saves and counters, including restart at VBlank 3728. Reused long
+  baseline captures verify the identical binary SHA, starting-save/input hashes
+  and WAV hash. Their elapsed times are not additional performance trials.
+  All scenes keep zero software fallbacks and unchanged GPU/CPU vertex counts.
+- Fresh gameplay samples attribute 1.76% to InputPlan::load and 1.41% to
+  element_in, with draw encoding at 4.81% and GPU ticket materialization 2.07%.
+  Inlining/attribution differs from the old loader, so do not subtract those
+  percentages as a measured speedup. Scalar element decoding, draw submission
+  and guest execution remain targets. Sixteen vertices is an amortization policy,
+  not a proven optimum for every workload. Four timing trials and these recordings
+  leave whole-game performance/correctness uncertain. The 200 actual rendered
+  FPS objective at normal speed remains unmet.

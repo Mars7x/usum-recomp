@@ -253,6 +253,12 @@ actual loop uniforms. `USUM_VULKAN_STATIC_BUDGET=0` restores per-draw checking f
 all programs; this process-wide policy is captured at the first successful shader
 compilation so cached programs use one policy.
 
+Hardware draws with at least 16 distinct vertices precompute attribute
+destinations and fixed input registers once per draw. All loader reads retain
+their order and checked-memory fallback; CPU shading keeps the reference loader.
+`USUM_VULKAN_INPUT_PLAN=0` restores that loader for GPU draws too. The probe reports
+planned draws and distinct inputs separately from total GPU vertex counts.
+
 The synthetic hardware vertex checks use no game data:
 
 ```bash
