@@ -734,6 +734,27 @@ pub fn tiled_offset(x: u32, y: u32, width: u32) -> u32 {
     (ty * (width / 8) + tx) * 64 + z
 }
 
+/// Required input prefix for the common unfiltered tiled RGBA8 LCD copy.
+/// Reading the advertised padded height can cross a framebuffer boundary and
+/// materialize unrelated GPU results. Other transfer modes retain their full
+/// input extent. `display_transfer` still validates flags and sampled bytes.
+pub fn display_transfer_input_len((in_w, in_h): (u32, u32), (out_w, out_h): (u32, u32), flags: u32) -> Result<u32, String> {
+    let bytes = bytes_per_pixel((flags >> 8) & 7).ok_or("DisplayTransfer input format")? as u32;
+    let full = in_w.checked_mul(in_h).and_then(|n| n.checked_mul(bytes)).ok_or("DisplayTransfer input size overflow")?;
+    if flags & !5 != 0x1000 || in_w == 0 || !in_w.is_multiple_of(8) {
+        return Ok(full);
+    }
+    let (width, height) = (out_w.min(in_w), out_h.min(in_h));
+    if width == 0 || height == 0 {
+        return Ok(0);
+    }
+    // Morton offsets increase in each coordinate for an aligned tile stride.
+    // An incomplete advertised final tile must retain the original short-input
+    // error rather than reading additional memory beyond the old extent.
+    let end = tiled_offset(width - 1, height - 1, in_w).checked_add(1).and_then(|n| n.checked_mul(4));
+    Ok(end.unwrap_or(full).min(full))
+}
+
 /// A DisplayTransfer (3dbrew "GPU/External Registers", transfer engine).
 /// The input is `in_w` × `in_h` pixels of 8x8 tiles. The output is linear
 /// rows (the default mode) or 8x8 tiles again (flag bit 5), cropped from
@@ -833,11 +854,28 @@ mod tests {
                         .collect();
                     let direct = display_transfer(&input, (width, height), output, flags | 1 << 12).unwrap();
                     assert_eq!(direct, expected);
+                    let length = display_transfer_input_len((width, height), output, flags | 1 << 12).unwrap() as usize;
+                    assert_eq!(display_transfer(&input[..length], (width, height), output, flags | 1 << 12).unwrap(), expected);
+                    if length > 0 {
+                        assert!(display_transfer(&input[..length - 1], (width, height), output, flags | 1 << 12).is_err());
+                    }
                 }
             }
             let short = &input[..input.len() - 1];
             assert!(display_transfer(short, (width, height), (width, height), 1 << 12).is_err());
         }
+    }
+
+    #[test]
+    fn lcd_reads_omit_unused_tiles_and_other_modes_keep_the_full_extent() {
+        assert_eq!(display_transfer_input_len((256, 512), (240, 400), 0x1004).unwrap(), 409088);
+        assert_eq!(display_transfer_input_len((256, 512), (240, 320), 0x1005).unwrap(), 327168);
+        for flags in [0, 0x0100_1004, 0x1000 | 32] {
+            assert_eq!(display_transfer_input_len((256, 512), (240, 320), flags).unwrap(), 256 * 512 * 4);
+        }
+        assert_eq!(display_transfer_input_len((7, 8), (3, 4), 0x1004).unwrap(), 7 * 8 * 4);
+        assert!(display_transfer_input_len((u32::MAX, 2), (1, 1), 0x1004).is_err());
+        assert!(display_transfer_input_len((8, 8), (8, 8), 0x1704).is_err());
     }
 
     #[test]

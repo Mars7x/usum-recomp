@@ -562,10 +562,9 @@ impl Kernel {
                     let started = std::time::Instant::now();
                     let dims = |w: u32| (w & 0xFFFF, w >> 16);
                     let (input_dims, output_dims, flags) = (dims(c[3]), dims(c[4]), c[5]);
-                    let fin = crate::pica::bytes_per_pixel((flags >> 8) & 7).ok_or("DisplayTransfer input format")?;
-                    let input = mem
-                        .read_range(c[1], input_dims.0 * input_dims.1 * fin as u32)
-                        .map_err(|f| format!("DisplayTransfer input: {f}"))?;
+                    let read_dims = if std::env::var_os("USUM_DISPLAY_FULL_INPUT").is_some() { input_dims } else { output_dims };
+                    let input_len = crate::pica::display_transfer_input_len(input_dims, read_dims, flags)?;
+                    let input = mem.read_range(c[1], input_len).map_err(|f| format!("DisplayTransfer input: {f}"))?;
                     let out = crate::pica::display_transfer(&input, input_dims, output_dims, flags)?;
                     #[cfg(feature = "vulkan-compare")]
                     self.pica.capture_scaled_transfer((c[1], c[2]), (input_dims, output_dims), flags, &input, &out)?;

@@ -280,10 +280,16 @@ readback tickets for RGBA8/D24S8 targets with depth buffers. Both exact guest
 plane identities must match before reusing resident GPU contents; CPU writes
 invalidate reuse. Actual CPU readers still receive the frozen result, including
 stencil bytes. Other formats keep synchronous writeback. This path is disabled
-by default: recorded intro, overworld and battle images match, but 6× timing
-currently regresses slightly. Deferred device failures are
+by default: recorded intro, overworld and battle images match, while 6×
+performance validation continues. Unset the variable to select synchronous
+readback; setting it to `0` still enables this presence-based option. Deferred device failures are
 reported as guest memory faults rather than exposing stale RAM. The probe reports
 queued/materialized tickets and materialization time separately.
+
+Common unfiltered RGBA8-to-RGB8 LCD transfers read only the prefix containing
+sampled tiles, omitting unused padded rows/columns. `USUM_DISPLAY_FULL_INPUT=1`
+restores the advertised full input extent for same-binary reference checks.
+Other transfer modes keep their previous full input extent.
 
 Synthetic deferred-readback checks use no game data:
 

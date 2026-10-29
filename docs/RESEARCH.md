@@ -2939,8 +2939,38 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   the CPU texture reader actually materializes each lazy snapshot.
 - All 36 recorded intro, overworld and battle native/scaled captures match the
   corrected synchronous renderer byte for byte, with zero software fallbacks.
-  Same-binary off/on/on/off intro times are 10.029/10.127/10.128/10.068 seconds;
-  overworld times are 18.504/19.609/18.726/18.288 seconds. Deferred mode is about
-  0.8% slower in the intro and 4.2% slower in gameplay, so it remains opt-in.
-  This is validation groundwork, not a default performance improvement. The
-  200-FPS target remains unmet. Captures and game inputs stay private.
+  The initial mode benchmark was invalid: this option tests environment-variable
+  presence, so assigning `0` still enabled deferred mode. Those timings do not
+  compare synchronous and deferred performance. Corrected comparisons remove
+  the variable and verify the logged mode; see R-098. Deferred mode remains
+  opt-in while performance validation continues. The 200-FPS target remains
+  unmet. Captures and game inputs stay private.
+
+### R-098 2026-10-29 — Omit unused LCD input padding and correct mode measurements
+
+- Common unfiltered tiled RGBA8-to-RGB8 LCD copies now read only the prefix
+  containing sampled texels. The 256×512 top/bottom inputs need 409088/327168
+  bytes for 240×400/240×320 crops instead of 524288 each. This also avoids
+  crossing a deferred framebuffer boundary merely to read unused padding.
+  Other formats, filters, tile modes and unaligned strides retain full reads.
+- Validate checked input sizes and empty output. Compare cropped/flipped prefix
+  conversion against the full-input generic format oracle, and verify removing
+  the final required byte fails. All 84 enabled runtime tests and strict Clippy
+  pass. Recorded native and 6× intro/overworld/battle captures remain byte-exact;
+  the deferred cases have zero software fallbacks.
+- Correct the initial R-097 benchmark: the readback option is presence-based,
+  so `USUM_VULKAN_DEFER_READBACK=0` still enables it. New runs unset it for
+  synchronous mode and explicitly check the logged mode after each trial.
+  Old synchronous, trimmed synchronous and trimmed deferred intro pairs take
+  9.342/9.335, 9.248/9.182 and 9.152/9.324 seconds; overworld pairs take
+  20.119/19.072, 20.234/20.018 and 19.816/19.112 seconds respectively. Deferred
+  mode remains opt-in; these small differences do not establish a robust gain.
+- `USUM_DISPLAY_FULL_INPUT=1` retains a same-binary full-read reference. Repeated
+  full/trimmed/trimmed/full intro times are 9.328/9.251/9.211/9.184 seconds;
+  overworld times are 19.843/19.480/19.383/18.858. All captures, instruction and
+  draw counts agree. No consistent FPS gain is claimed from trimming alone.
+- Fresh user-space cycle sampling places guest word reads/writes at about 32%
+  of intro CPU samples and dispatch lookup at 7.6%. Gameplay samples show guest
+  word access around 11%, vertex loading 4.2%, draw encoding 3.9%, and combined
+  depth/stencil conversion 5.5%. These identify remaining CPU work, not an FPS
+  result. Profiles and game data stay private. The 200-FPS objective is unmet.
