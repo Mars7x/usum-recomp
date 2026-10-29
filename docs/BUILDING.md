@@ -178,7 +178,8 @@ cargo build --release -p play
 | left mouse button on the bottom screen | touch |
 
 Controllers are detected automatically, including controllers connected after
-launch. The first connected controller is used. Left stick controls the circle
+launch. A newly connected pad or the most recently used pad becomes active.
+Left stick controls the circle
 pad with a radial dead zone and proportional movement; D-pad controls the 3DS
 D-pad. South/East/North/West face buttons map to A/B/X/Y (Xbox A/B/Y/X or
 PlayStation Cross/Circle/Triangle/Square); bumpers map to L/R and Start/Select
@@ -187,7 +188,10 @@ neutralized while the window is unfocused, and disconnecting releases the pad.
 
 On Linux, building the window feature now needs `pkg-config` and `libudev-dev`
 (Debian/Ubuntu; Fedora uses `pkgconf-pkg-config` and `systemd-devel`). Controller
-access uses the normal desktop session's input-device permissions.
+access uses the normal desktop session's input-device permissions. Linux
+containers automatically select device-node notifications so late connections
+and permission changes can be detected without host udev broadcasts. Failed
+backend initialization is retried; an empty but healthy backend stays running.
 
 The game runs on the virtual clock, throttled to real time; while the
 renderer is slower than the console it plays in slow motion. Sound goes

@@ -1,42 +1,124 @@
 //! Standard gamepad mappings, hot plugging and radial analog dead zones.
 use crate::services::hid;
-use gilrs::{Axis, Button, EventType, Gilrs};
+use gilrs::{Axis, Button, EventType, GamepadId, Gilrs};
+use std::time::{Duration, Instant};
+
+/// udev enumeration works inside toolbox containers, but host hotplug events
+/// need not cross their namespace. Gilrs' inotify backend observes the mounted
+/// device directory, including permission changes. Re-exec with a command-specific
+/// environment rather than mutating process-global environment around threads.
+pub(super) fn configure_discovery() -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("GILRS_DISABLE_UDEV").is_none()
+        && ["/run/.containerenv", "/.dockerenv"].iter().any(|p| std::path::Path::new(p).exists())
+    {
+        use std::os::unix::process::CommandExt;
+        eprintln!("controller discovery: watching input-device changes in the container");
+        let error = std::process::Command::new(std::env::current_exe()?)
+            .args(std::env::args_os().skip(1))
+            .env("GILRS_DISABLE_UDEV", "1")
+            .exec();
+        return Err(error);
+    }
+    Ok(())
+}
+
+struct Selection<T> {
+    active: Option<T>,
+}
+
+impl<T> Default for Selection<T> {
+    fn default() -> Self {
+        Self { active: None }
+    }
+}
+
+impl<T: Copy + PartialEq> Selection<T> {
+    fn connected_or_active(&mut self, id: T) {
+        self.active = Some(id);
+    }
+    fn disconnected(&mut self, id: T) {
+        if self.active == Some(id) {
+            self.active = None;
+        }
+    }
+    fn select(&mut self, available: impl Iterator<Item = T>) -> Option<T> {
+        let mut first = None;
+        for id in available {
+            if self.active == Some(id) {
+                return self.active;
+            }
+            first.get_or_insert(id);
+        }
+        self.active = first;
+        first
+    }
+}
 
 pub(super) struct Controllers {
     backend: Option<Gilrs>,
+    selection: Selection<GamepadId>,
+    next_retry: Instant,
+    last_error: Option<String>,
 }
 
 impl Controllers {
     pub(super) fn new() -> Self {
-        let backend = match Gilrs::new() {
+        let mut this = Self { backend: None, selection: Selection::default(), next_retry: Instant::now(), last_error: None };
+        this.open_backend();
+        this
+    }
+
+    fn open_backend(&mut self) {
+        self.next_retry = Instant::now() + Duration::from_secs(2);
+        match Gilrs::new() {
             Ok(pads) => {
+                if self.last_error.take().is_some() {
+                    eprintln!("controller input recovered");
+                }
                 for (_, pad) in pads.gamepads() {
                     eprintln!("controller connected: {}", pad.name());
                 }
-                Some(pads)
+                self.backend = Some(pads);
             }
             Err(error) => {
-                eprintln!("controller input unavailable: {error}; keyboard remains available");
-                None
+                let error = error.to_string();
+                if self.last_error.as_ref() != Some(&error) {
+                    eprintln!("controller input unavailable: {error}; retrying while keyboard remains available");
+                }
+                self.last_error = Some(error);
             }
-        };
-        Self { backend }
+        }
     }
 
     pub(super) fn poll(&mut self) -> (u32, (i16, i16)) {
+        if self.backend.is_none() && Instant::now() >= self.next_retry {
+            self.open_backend();
+        }
         let Some(pads) = self.backend.as_mut() else {
             return (0, (0, 0));
         };
         while let Some(event) = pads.next_event() {
             match event.event {
-                EventType::Connected => eprintln!("controller connected: {}", pads.gamepad(event.id).name()),
-                EventType::Disconnected => eprintln!("controller disconnected: {}", pads.gamepad(event.id).name()),
+                EventType::Connected => {
+                    eprintln!("controller connected: {}", pads.gamepad(event.id).name());
+                    self.selection.connected_or_active(event.id);
+                }
+                EventType::Disconnected => {
+                    eprintln!("controller disconnected: {}", pads.gamepad(event.id).name());
+                    self.selection.disconnected(event.id);
+                }
+                EventType::ButtonPressed(..) | EventType::ButtonRepeated(..) => self.selection.connected_or_active(event.id),
+                EventType::ButtonChanged(_, value, _) if value > 0.5 => self.selection.connected_or_active(event.id),
+                EventType::AxisChanged(_, value, _) if value.abs() > 0.18 => self.selection.connected_or_active(event.id),
                 _ => {}
             }
         }
-        let Some((_, pad)) = pads.gamepads().find(|(_, pad)| pad.is_connected()) else {
+        pads.inc();
+        let Some(id) = self.selection.select(pads.gamepads().filter(|(_, p)| p.is_connected()).map(|(id, _)| id)) else {
             return (0, (0, 0));
         };
+        let pad = pads.gamepad(id);
         let buttons = [
             (Button::South, 1 << 0),
             (Button::East, 1 << 1),
@@ -89,6 +171,21 @@ pub(super) fn combine(keyboard: u32, controller: (u32, (i16, i16))) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn late_connection_replaces_idle_receiver_and_reconnects_without_stale_selection() {
+        let mut selection = Selection::default();
+        assert_eq!(selection.select([].into_iter()), None);
+        assert_eq!(selection.select([0].into_iter()), Some(0));
+        selection.connected_or_active(1);
+        assert_eq!(selection.select([0, 1].into_iter()), Some(1));
+        selection.disconnected(1);
+        assert_eq!(selection.select([0].into_iter()), Some(0));
+        selection.connected_or_active(2);
+        assert_eq!(selection.select([0, 2].into_iter()), Some(2));
+        selection.connected_or_active(0);
+        assert_eq!(selection.select([0, 2].into_iter()), Some(0));
+        assert_eq!(selection.select([].into_iter()), None);
+    }
     #[test]
     fn dead_zone_rescales_and_caps_the_radial_stick() {
         assert_eq!(analog(0.1, -0.1), (0, 0));

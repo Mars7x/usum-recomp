@@ -157,6 +157,9 @@ fn compare_vulkan_captures(kernel: &mut crate::kernel::Kernel) {
 
 /// The `main` of a generated play program: `play <dump>`.
 pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules: Modules) -> ExitCode {
+    if let Err(error) = controller::configure_discovery() {
+        eprintln!("cannot select container controller discovery: {error}; using default discovery");
+    }
     let resolution_scale = match crate::pica::resolution_scale_env() {
         Ok(scale) if scale == 1 || (cfg!(feature = "vulkan-compare") && std::env::var_os("USUM_VULKAN_ACCELERATE").is_some()) => {
             scale

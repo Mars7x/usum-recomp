@@ -2750,3 +2750,21 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   25.367 on (17.98 versus 19.63 top-screen updates/s). Instructions, video jobs,
   draws and VBlanks match, and every native/scaled capture is byte-identical.
   Intro playback and gameplay remain below real time; 200 FPS is not achieved.
+
+### R-089 2026-10-28 — Recover controllers connected after launch
+
+- The test environment is a toolbox container: startup udev enumeration works,
+  while host hotplug broadcasts need not reach its namespace. Select Gilrs'
+  device-directory notification backend in Linux containers, including its
+  permission-change events. A safe early self-exec supplies the discovery flag
+  without mutating process-global environment around running threads.
+- Select newly connected or recently active pads rather than always using the
+  first connected receiver/virtual pad. Disconnect clears the selected device;
+  failed backend startup retries with deduplicated errors. Healthy empty backends
+  stay running, avoiding repeated discovery-thread creation. Advance Gilrs' event
+  counter on each input poll.
+- Selection tests cover startup without a pad, a late connection behind an idle
+  receiver, disconnect/fallback, reconnection and subsequent activity. Existing
+  analog/keyboard merging tests pass. The container bootstrap self-exec and
+  usage path were smoke-tested without opening a window. Physical post-launch
+  reconnection remains a user-hardware retest, not a claimed automated result.
