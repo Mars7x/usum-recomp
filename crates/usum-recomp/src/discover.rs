@@ -14,7 +14,8 @@
 //! or SVC unwound to.
 //!
 //! Code reached only through computed addresses is found from *pointer
-//! seeds*: aligned words anywhere in the image whose value lies in the code
+//! seeds*: aligned words anywhere in the image, and byte-packed words in data,
+//! whose value lies in the code
 //! range (odd values: Thumb); *self-relative* words outside the code range
 //! whose own address plus their value does (the compiler's tables of
 //! static constructors store `target - entry`; RESEARCH.md R-025); and
@@ -364,15 +365,18 @@ fn pointer_seeds(image: &Image, analysis: &Analysis, data_words: bool) -> BTreeS
             seeds.insert(relative);
         }
     }
-    // absolute pointers at halfword-aligned places outside the code:
-    // packed data tables (Ultra Sun keeps one at 0x005E749E, R-034)
+    // Absolute pointers in byte-packed data tables need not be aligned to
+    // either a word or a halfword. Keep instruction-target alignment checks;
+    // only the location storing the pointer may have any byte alignment.
     for i in 0..words {
-        let address = image.base + 4 * i + 2;
-        if image.code.contains(&address) {
-            continue;
-        }
-        if let Some(value) = image.word(address).filter(|&v| candidate(v)) {
-            seeds.insert(value);
+        for offset in [1, 2, 3] {
+            let address = image.base + 4 * i + offset;
+            if image.code.contains(&address) {
+                continue;
+            }
+            if let Some(value) = image.word(address).filter(|&v| candidate(v)) {
+                seeds.insert(value);
+            }
         }
     }
     for instr in analysis.functions.values().filter(|f| !f.thumb).flat_map(|f| f.instrs.values()) {
@@ -556,6 +560,25 @@ mod tests {
 #[cfg(test)]
 mod pointer_tests {
     use super::*;
+
+    #[test]
+    fn packed_data_pointers_seed_code_at_every_byte_alignment_including_image_tail() {
+        for offset in 0..4 {
+            // An indirect entry and an otherwise unreachable ARM function.
+            // The packed pointer is the final complete word in the image.
+            let mut bytes = vec![0xa5; 20 + offset];
+            for (at, word) in [0xe12fff10u32, 0xe3a00007, 0xe12fff1e].into_iter().enumerate() {
+                bytes[at * 4..at * 4 + 4].copy_from_slice(&word.to_le_bytes());
+            }
+            bytes[16 + offset..20 + offset].copy_from_slice(&0x8004u32.to_le_bytes());
+            let image = Image { base: 0x8000, bytes: &bytes, code: 0x8000..0x800c };
+            assert!(analyze(&image, &[0x8000]).functions.contains_key(&0x8004), "pointer offset {offset}");
+            assert!(
+                !analyze_with(&image, &[0x8000], false).functions.contains_key(&0x8004),
+                "unrelocated module data must not create absolute-pointer seeds"
+            );
+        }
+    }
 
     #[test]
     fn code_pointers_in_data_seed_functions() {

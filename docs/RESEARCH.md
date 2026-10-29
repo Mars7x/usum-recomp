@@ -3728,3 +3728,32 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   improves the intro, but the intro still falls short of real-time playback in
   these trials. Uncapped 200 actual rendered FPS at normal game speed is not
   achieved; the goal remains active.
+
+### R-116 2026-10-29 — Discover byte-packed area/script callbacks
+
+- The user's new-area stop is a fail-loud missing translation at ARM
+  0x00386fd0, reached by the indirect branch at 0x0053bbb8. The preserved input
+  and starting save reproduce it at VBlank 25224 after 22604896289 guest
+  instructions. The game thread stops; this is not a Vulkan queue deadlock.
+- The executable stores that callback pointer at 0x005e6f8f, in a packed table
+  alternating string and function pointers. Existing discovery scans aligned
+  words plus halfword-aligned data pointers, missing odd-byte locations.
+  Extend the data-pointer scan to offsets 1/2/3 within each word. Preserve
+  code-range, instruction-state/alignment and initial-decode checks. Unrelocated
+  CRO data still does not seed absolute pointers; relative/ADR discovery stays
+  unchanged. There is no address-specific seed or gameplay workaround.
+- All eleven recompilation-library tests and strict Clippy pass. The new
+  synthetic regression covers all four pointer-storage alignments, including a
+  final complete word at a partial image tail, and checks that disabling data
+  seeds still excludes these entries.
+- Regeneration increases executable functions from 36441 to 38565, retaining
+  every old function; module discovery stays at 60178 functions. The private
+  workspace changes 167 generated sources and rebuilds successfully. A check
+  against the compiled executable entry table finds the formerly missing
+  callback and verifies that entering it with zero budget returns Budget with
+  the original PC/budget, without touching unmapped memory.
+- The user requested no further gameplay replay past this point. No successful
+  area traversal is claimed; the demonstrated missing-entry cause is corrected
+  and the rebuilt play executable includes it. Input/save artifacts remain
+  private. Optimization resumes, with no FPS improvement attributed to this
+  discovery fix and the normal-speed 200-FPS goal still active.
