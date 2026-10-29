@@ -4028,3 +4028,35 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   and an unavailable-ICD fallback both complete the intro with matching guest
   counters and saves. This establishes default selection and fallback, not a
   new rendering speedup or native dynamic FPS implementation.
+
+### R-123 2026-10-29 — Reject uniform seed clears without overworld gains
+
+- Test replacing uniform scaled color/depth seed uploads and expansion with
+  attachment clears. Validate every byte/depth bit before specializing; retain
+  the original shader for nonuniform planes, subnormal or negative-zero depth,
+  and the same-binary reference switch. Preserve stencil with load/store.
+- All 256 channel values at scales 2/3/6/8 match the original GPU path exactly,
+  including depth bits and previously seeded nonuniform stencil. Eight renderer
+  hardware tests, 21 ordinary renderer tests, 108 enabled window/Vulkan runtime
+  tests and strict Clippy pass. CPU checks reject last-pixel/last-depth changes,
+  partial planes, nonfinite/out-of-range values and tiny/signed-zero depth.
+- Freeze an exact 3e42c3b baseline: its rebuilt play executable matches the
+  previously validated binary byte-for-byte. Fresh baseline, candidate and
+  candidate reference replays agree on all 42 intro/overworld/battle images,
+  three WAVs, saves and guest counters, with zero software fallbacks. The
+  candidate actually uses 684/991/1683 clears in those respective fixtures.
+  Capture-run elapsed times are not used as benchmarks; diagnostic work can
+  overlap those correctness-only runs.
+- Isolated balanced trials disable captures/profiling and reject observed
+  encoder/Rust-build overlap without interrupting other jobs. Intro baseline
+  6.204/6.221 versus candidate 6.119/6.118 seconds gives +1.54% throughput;
+  overworld baseline 13.196/13.186/13.247/13.242 versus candidate
+  13.322/13.218/13.319/13.230 gives -0.41%; battle baseline 20.897/20.807 versus
+  candidate 20.820/20.898 gives -0.03%. Same-binary reference pairs are
+  6.192/6.192, 13.357/13.381 and 20.866/20.782 seconds. Reduced upload work does
+  not establish the desired gameplay gain against the frozen baseline.
+- Remove the experiment and counters. No long/restart or window candidate
+  matrix is claimed after the primary gameplay result rejects the change.
+  Preserve private artifacts, then rebuild restored probe/play and compare both
+  byte-for-byte to the frozen baseline. Vulkan remains the default; no discarded
+  seed optimization remains in the runnable build.
