@@ -5660,3 +5660,26 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   failure in the recorded gameplay runs. Preserve reset-owner-trace and
   rate-assignment-guard evidence. Full replay validation of the opt-in rate
   policy is separate; actor eligibility remains unchanged.
+
+### R-163 2026-10-30 — Preserve event credit across an unchanged rate write
+
+- Implement the rate-assignment correction as a separate opt-in private policy.
+  When the current frame's applied credit records the same rate as the guest
+  state after the setter, preserve it. A changed rate still invalidates that
+  state's credit; reset/binding operations and first-step eligibility retain
+  their preceding behavior. The original policy remains selectable.
+- Compile the actual rate setter with the modified helpers. With the flag off,
+  the same-rate-after-pose test reproduces the expected missing-credit failure.
+  With it on, that test and changed-rate, independent-state, before-pose and
+  single-consumption checks pass. An assignment that leaves guest state
+  unchanged therefore no longer destroys the credited event interval.
+- All nine full replay controls pass exactly: idle, turning and straight
+  movement at normal cadence with the new flag on, and corrected higher cadence
+  with it off/on. Every preceding CSV, WAV, PPM and RNG binary matches. Verify
+  current source saves, recorded inputs, case binaries, harness and manifest
+  against their recorded hashes independently.
+- Preserve rate-preserving evidence. The replay cases establish compatibility;
+  the targeted instruction test establishes the corrected ordering case. Do not
+  infer that the latter ordering occurred in those gameplay recordings or that
+  this produces a measurable speedup. Other field writers, non-fixture actor
+  binding, arbitrary cadence and broader gameplay validation remain open.
