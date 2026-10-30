@@ -244,6 +244,7 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
         Arc::new(crate::kernel::FrameOut {
             frames: Mutex::default(),
             resolution_scale: AtomicU32::new(resolution_scale),
+            dialog: Mutex::default(),
             notify: Box::new(move || {
                 let _ = proxy.send_event(());
             }),
@@ -801,15 +802,20 @@ impl App {
         }
         let previous_draws = self.draws;
         let started = Instant::now();
-        if self.test_fps {
-            let text = format!("FPS {:.1}\nWIN {:.1}", self.sample.updates_per_second, self.sample.presents_per_second);
-            if self.hud_text != text {
-                self.hud_bitmap = Some(hud::Bitmap::new(&text));
-                self.hud_text = text;
-                #[cfg(feature = "vulkan-compare")]
-                {
-                    self.hud_gpu = None;
-                }
+        let dialog = self.frames.dialog.lock().ok().and_then(|text| text.clone());
+        let text = dialog.unwrap_or_else(|| {
+            if self.test_fps {
+                format!("FPS {:.1}\nWIN {:.1}", self.sample.updates_per_second, self.sample.presents_per_second)
+            } else {
+                String::new()
+            }
+        });
+        if self.hud_text != text {
+            self.hud_bitmap = (!text.is_empty()).then(|| hud::Bitmap::new(&text));
+            self.hud_text = text;
+            #[cfg(feature = "vulkan-compare")]
+            {
+                self.hud_gpu = None;
             }
         }
         self.redraw();
@@ -904,7 +910,7 @@ impl App {
             self.gpu_versions[screen] = versions[screen];
         }
         let (scale, x0, y0) = Self::layout(size.width, size.height);
-        if self.test_fps && self.hud_gpu.is_none() {
+        if self.hud_gpu.is_none() {
             if let Some(bitmap) = &self.hud_bitmap {
                 self.hud_gpu = Some(Arc::new(renderer.upload_display_rgb(bitmap.width, bitmap.height, &bitmap.rgb)?));
             }
@@ -922,10 +928,8 @@ impl App {
             })
             .collect();
         self.gpu_mapped_uses += screens.iter().filter(|screen| screen.frame.ready()).count() as u64;
-        if self.test_fps {
-            if let (Some(bitmap), Some(frame)) = (&self.hud_bitmap, &self.hud_gpu) {
-                screens.push(usum_render::DisplayScreen { frame, rect: [hud::ORIGIN, hud::ORIGIN, bitmap.width, bitmap.height] });
-            }
+        if let (Some(bitmap), Some(frame)) = (&self.hud_bitmap, &self.hud_gpu) {
+            screens.push(usum_render::DisplayScreen { frame, rect: [hud::ORIGIN, hud::ORIGIN, bitmap.width, bitmap.height] });
         }
         let presenter = self.gpu_presenter.as_mut().ok_or("Vulkan presenter disappeared")?;
         if !presenter.present(size.width, size.height, &screens)? {
@@ -1019,10 +1023,8 @@ impl App {
         }
         // USUM_PLAY_SNAPSHOT=path: every 60 draws, the window's pixels as
         // a PPM (a check of what is shown; game-derived, private)
-        if self.test_fps {
-            if let Some(bitmap) = &self.hud_bitmap {
-                bitmap.composite(&mut buffer, width, height);
-            }
+        if let Some(bitmap) = &self.hud_bitmap {
+            bitmap.composite(&mut buffer, width, height);
         }
         if let Some(path) = std::env::var_os("USUM_PLAY_SNAPSHOT").filter(|_| (self.draws + 1).is_multiple_of(60)) {
             let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();

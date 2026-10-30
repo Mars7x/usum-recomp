@@ -1,6 +1,6 @@
 # Next steps
 
-Updated 2026-10-29. Ultra Sun boots, runs the opening and menus, reaches
+Updated 2026-10-30. Ultra Sun boots, runs the opening and menus, reaches
 indoor/outdoor movement and early battles, and supports recorded replay tests.
 Full-game completion and Ultra Moon gameplay parity remain unverified.
 See [compatibility](COMPATIBILITY.md), [building and controls](BUILDING.md),
@@ -43,6 +43,9 @@ See [compatibility](COMPATIBILITY.md), [building and controls](BUILDING.md),
 - Coarser GPU input scheduling reduces worker overhead (R-128), with about 3%
   overworld and 2.5% battle throughput gains in isolated replays. Normal-speed
   play remains cadence-limited, and intro results vary between test modes.
+- Offline Mystery Gift search cancellation and system network-error dialogs now
+  return through the game's normal menu/restart flow (R-131). These are offline
+  compatibility paths; gift delivery and communication with peers are absent.
 
 ## Active work
 
@@ -52,7 +55,11 @@ See [compatibility](COMPATIBILITY.md), [building and controls](BUILDING.md),
    audio at normal speed while producing additional rendered frames. Aim for
    substantially better measured gameplay performance at 6×. Generated frames,
    extrapolation, repeated window presents or a faster game clock do not count
-   as native rendering improvements.
+   as native rendering improvements. Compare movement and animation at common
+   game-time checkpoints, and compare encounter decisions, event ordering and
+   audio start times against the original cadence. Additional frames must come
+   from engine rendering with correctly advanced scene state; matching travel
+   distance or increasing framebuffer submissions alone is insufficient.
 2. **Profile-led optimization.** Revisit intro/movie helpers, checked memory,
    frequent guest helpers, vertex preparation and GPU synchronization using
    fresh profiles. Retain a reference path and frozen before/after executables.

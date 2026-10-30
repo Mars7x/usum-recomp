@@ -8,6 +8,8 @@
 //! settles a detail, the code says so. An SVC not implemented here stops
 //! execution with a report; nothing is guessed.
 
+mod error_applet;
+mod infrared;
 #[cfg(test)]
 mod network_menu_tests;
 mod restart;
@@ -67,6 +69,10 @@ pub enum Object {
     SharedMemory {
         size: u32,
         mapped: Option<u32>,
+    },
+    /// Contents retained after the process unmaps a shared block.
+    UnmappedSharedMemory {
+        bytes: Vec<u8>,
     },
     /// A file session onto a file in a save archive (host path), opened
     /// with these FS open flags.
@@ -205,6 +211,8 @@ pub struct FrameOut {
     /// The newest framebuffers, top and bottom, as stored.
     pub frames: std::sync::Mutex<crate::timing::FrameMailbox<crate::probe::RawFrame>>,
     pub resolution_scale: std::sync::atomic::AtomicU32,
+    /// Host-rendered system dialog, independent of the testing overlay.
+    pub dialog: std::sync::Mutex<Option<String>>,
     /// Called after each VBlank's frames are in place.
     pub notify: Box<dyn Fn() + Send + Sync>,
 }
@@ -317,6 +325,8 @@ pub struct Kernel {
     pub console: cfg::Console,
     /// The RomFS level 3 image (SelfNCCH), if the dump has one.
     pub romfs: Option<fs::Image>,
+    infrared: Option<infrared::Infrared>,
+    error_applet: Option<error_applet::ErrorApplet>,
     /// Read-only system-menu metadata from the dump's ExeFS.
     pub exefs: BTreeMap<String, fs::Image>,
     /// Where the game's save data (archive 4) lives on the host. Never
@@ -392,6 +402,7 @@ pub fn name(number: u32) -> &'static str {
         0x1B => "SetTimer",
         0x1E => "CreateMemoryBlock",
         0x1F => "MapMemoryBlock",
+        0x20 => "UnmapMemoryBlock",
         0x21 => "CreateAddressArbiter",
         0x22 => "ArbitrateAddress",
         0x23 => "CloseHandle",
@@ -853,6 +864,7 @@ impl Kernel {
         };
         let previous = self.pad;
         self.pad = pad;
+        self.error_applet_input(pad & !previous)?;
         for section in [0u32, 0xA8] {
             let at = base + section;
             // 3dbrew: the ticks are those of the updates of entry 0, the
@@ -1129,13 +1141,25 @@ impl Kernel {
                                     return Outcome::Unimplemented(format!("APT parameter buffer: {f}"));
                                 }
                             }
+                            let mut delivered = p.clone();
+                            // Glance and Receive each transfer a client handle;
+                            // closing a glance must not destroy the queued object.
+                            if p.sender == error_applet::ERROR_APPLET && p.handle != 0 {
+                                let Some(object) = self.handles.get(&p.handle).cloned() else {
+                                    return Outcome::Unimplemented("APT queued capture handle was lost".into());
+                                };
+                                delivered.handle = self.open(object);
+                            }
                             // Glance clears it too for commands 8 and 9 (3dbrew)
                             if !glance || matches!(p.command, 8 | 9) {
                                 if let Some(a) = self.apt.as_mut() {
                                     a.parameter = None;
                                 }
+                                if p.sender == error_applet::ERROR_APPLET && p.handle != 0 {
+                                    self.handles.remove(&p.handle);
+                                }
                             }
-                            Some(apt::parameter_reply(glance, &p, buffer))
+                            Some(apt::parameter_reply(glance, &delivered, buffer))
                         }
                         // what NS replies with nothing pending is not known
                         _ => None,
@@ -1158,7 +1182,13 @@ impl Kernel {
                 apt::Request::AppletUtility { utility, .. } => {
                     return Outcome::Unimplemented(format!("{service} AppletUtility {utility}"));
                 }
-                apt::Request::Other(_) => None,
+                apt::Request::Other(_) => match self.error_applet_request(mem, &message) {
+                    Ok((reply, signaled)) => {
+                        wake |= signaled;
+                        reply
+                    }
+                    Err(what) => return Outcome::Unimplemented(what),
+                },
             },
             // SetThisSaveDataSecureValue(slot, u64 value): a value kept beside
             // the save, which the game compares on loading to notice a save
@@ -1710,6 +1740,21 @@ impl Kernel {
                     }
                     Err(what) => return Outcome::Unimplemented(what),
                 },
+                // Host Error Display never occupies guest VRAM. Its handoff
+                // therefore preserves the system area and GPU state in place.
+                gsp::Request::Other(h @ (0x0017_0000 | 0x0019_0000 | 0x001A_0000)) if self.error_applet.is_some() => {
+                    Some(services::result_reply((h >> 16) as u16))
+                }
+                gsp::Request::Other(0x0018_0000) if self.error_applet.is_some() => {
+                    let mut reply = vec![services::header(0x18, 9, 0), 0];
+                    for screen in 0..2 {
+                        let Some(p) = self.presented.iter().rev().find(|p| p.screen == screen) else {
+                            return Outcome::Unimplemented("display capture before a framebuffer submission".into());
+                        };
+                        reply.extend([p.left, p.right, p.format, p.stride]);
+                    }
+                    Some(reply)
+                }
                 // FlushDataCache, InvalidateDataCache, StoreDataCache
                 // (address, size, process): nothing to do on coherent host memory
                 gsp::Request::Other(h @ (0x0008_0082 | 0x0009_0082 | 0x001F_0082))
@@ -1736,6 +1781,13 @@ impl Kernel {
             "hid:USER" | "hid:SPVR" if matches!(header, 0x0011_0000 | 0x0012_0000 | 0x0013_0000 | 0x0014_0000) => {
                 self.hid_motion.request(header)
             }
+            "ir:USER" => match self.infrared_request(mem, &message) {
+                Ok((reply, signaled)) => {
+                    wake |= signaled;
+                    reply
+                }
+                Err(what) => return Outcome::Unimplemented(what),
+            },
             // ACU_GetStatus / GetWifiStatus (libctru ac.h): this runtime
             // has no Internet connection or configured access-point slot.
             "ac:u" if header == 0x000C_0000 => Some(vec![services::header(0xC, 2, 0), 0, 1]),
@@ -2518,6 +2570,18 @@ impl Kernel {
             0x1F => {
                 let (handle, address, perm) = (cpu.r[0], cpu.r[1], cpu.r[2]);
                 match self.handles.get(&handle) {
+                    Some(Object::UnmappedSharedMemory { bytes }) if address != 0 && address % 0x1000 == 0 && perm & !3 == 0 => {
+                        let size = bytes.len() as u32;
+                        let access = if perm & 2 != 0 { Perm::RW } else { Perm::R };
+                        if _mem.map(address, bytes.clone(), access).is_err() {
+                            return Outcome::Unimplemented(format!("MapMemoryBlock at {address:#x}: already mapped"));
+                        }
+                        self.handles.insert(handle, Object::SharedMemory { size, mapped: Some(address) });
+                        self.blocks.push(Block { base: address, size, perm, state: 6 });
+                        self.blocks.sort_by_key(|b| b.base);
+                        cpu.r[0] = RESULT_SUCCESS;
+                        Outcome::Continue
+                    }
                     Some(&Object::SharedMemory { size, mapped: None })
                         if address != 0 && address % 0x1000 == 0 && perm & !3 == 0 =>
                     {
@@ -2536,6 +2600,23 @@ impl Kernel {
                         Outcome::Unimplemented(format!("MapMemoryBlock({handle:#x} = {other:?}, {address:#x}, perm {perm})"))
                     }
                 }
+            }
+            0x20 => {
+                let (handle, address) = (cpu.r[0], cpu.r[1]);
+                let Some(&Object::SharedMemory { size, mapped: Some(mapped) }) = self.handles.get(&handle) else {
+                    return Outcome::Unimplemented(format!("UnmapMemoryBlock({handle:#x}, {address:#x}): not mapped"));
+                };
+                let block = self.blocks.iter().position(|b| b.base == address && b.size == size && b.state == 6);
+                if mapped != address || block.is_none() {
+                    return Outcome::Unimplemented(format!("UnmapMemoryBlock({handle:#x}, {address:#x}): mapping mismatch"));
+                }
+                let Ok(bytes) = _mem.unmap_region(address, size) else {
+                    return Outcome::Unimplemented(format!("UnmapMemoryBlock at {address:#x}: incomplete mapping"));
+                };
+                self.blocks.remove(block.expect("checked"));
+                self.handles.insert(handle, Object::UnmappedSharedMemory { bytes });
+                cpu.r[0] = RESULT_SUCCESS;
+                Outcome::Continue
             }
             0x08 => self.create_thread(cpu, _mem),
             // ExitThread()
@@ -2933,6 +3014,29 @@ mod tests {
         assert_eq!((cpu.r[1], cpu.r[2], cpu.r[4]), (0x0010_1000, 0x0FFC_0000 - 0x0010_1000, STATE_FREE));
         // above everything
         assert_eq!(k.query(0x2000_0000), Block { base: 0x1000_0000, size: 0xF000_0000, perm: 0, state: STATE_FREE });
+    }
+
+    #[test]
+    fn shared_memory_unmap_remap_retains_contents_and_rejects_wrong_address() {
+        let mut k = Kernel::default();
+        let mut mem = Memory::new();
+        let mut cpu = Cpu::default();
+        let handle = k.open(Object::SharedMemory { size: 0x1000, mapped: None });
+        cpu.r[..4].copy_from_slice(&[handle, 0x1000, 3, 3]);
+        assert!(matches!(k.svc(&mut cpu, &mut mem, 0x1f), Outcome::Continue));
+        mem.write_u32(0x1000, 0x12345678).unwrap();
+        cpu.r[..2].copy_from_slice(&[handle, 0x2000]);
+        assert!(matches!(k.svc(&mut cpu, &mut mem, 0x20), Outcome::Unimplemented(_)));
+        assert_eq!(mem.read_u32(0x1000).unwrap(), 0x12345678);
+        cpu.r[..2].copy_from_slice(&[handle, 0x1000]);
+        assert!(matches!(k.svc(&mut cpu, &mut mem, 0x20), Outcome::Continue));
+        assert!(mem.read_u32(0x1000).is_err());
+        assert_eq!(k.query(0x1000).state, STATE_FREE);
+        cpu.r[..4].copy_from_slice(&[handle, 0x3000, 1, 1]);
+        assert!(matches!(k.svc(&mut cpu, &mut mem, 0x1f), Outcome::Continue));
+        assert_eq!(mem.read_u32(0x3000).unwrap(), 0x12345678);
+        assert!(mem.write_u32(0x3000, 0).is_err());
+        assert_eq!(k.query(0x3000).state, 6);
     }
 
     #[test]

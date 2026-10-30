@@ -96,6 +96,17 @@ impl Memory {
         self.page_index = (self.use_page_index && self.regions.len() >= 8).then(|| index::PageIndex::new(&self.regions));
     }
 
+    /// Removes one complete mapping, retaining its logical contents for a
+    /// shared-memory object that may be mapped again later. Partial mappings
+    /// are rejected before changing either memory or its lookup index.
+    pub fn unmap_region(&mut self, base: u32, size: u32) -> Result<Vec<u8>, Overlap> {
+        let i = self.regions.iter().position(|r| r.base == base && r.bytes.len() == size as usize).ok_or(Overlap)?;
+        self.materialize_all().map_err(|_| Overlap)?;
+        let region = self.regions.remove(i);
+        self.refresh_page_index();
+        Ok(region.bytes)
+    }
+
     // Keep the page lookup and the caller's region access together. Otherwise
     // every guest load/store calls out and transfers a tagged pair via memory.
     #[inline(always)]
@@ -367,6 +378,24 @@ impl Memory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unmapping_refreshes_page_indices_and_preserves_other_regions() {
+        let mut m = Memory::new();
+        for i in 1..=9 {
+            m.map(i * 0x2000, vec![i as u8; 0x1000], Perm::RW).unwrap();
+        }
+        assert_eq!(m.unmap_region(0x8000, 0x800), Err(Overlap));
+        assert_eq!(m.read_u32(0x8000).unwrap(), 0x04040404);
+        assert_eq!(m.unmap_region(0x8000, 0x1000).unwrap(), vec![4; 0x1000]);
+        assert!(m.read_u32(0x8000).is_err());
+        assert!(m.write_u32(0x8000, 0).is_err());
+        for i in [1, 2, 3, 5, 6, 7, 8, 9] {
+            assert_eq!(m.read_u8(i * 0x2000).unwrap(), i as u8);
+        }
+        m.map(0x8000, vec![42; 0x1000], Perm::R).unwrap();
+        assert_eq!(m.read_u32(0x8000).unwrap(), 0x2a2a2a2a);
+    }
 
     #[test]
     fn remapping_back_rejoins_the_region() {

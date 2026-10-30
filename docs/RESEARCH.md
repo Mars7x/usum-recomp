@@ -4289,3 +4289,53 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
 - Keep these fixture-address diagnostics outside the product. Their wall times
   include tracing and sometimes concurrent correctness work, so they are not
   performance comparisons. Neither experiment is enabled as native dynamic FPS.
+
+### R-131 2026-10-30 — Complete recorded offline Mystery Gift error and cancellation paths
+
+- Extend R-126/R-129 from initial menu back-out to confirmed communication
+  choices. Implement IRUSER shared-memory initialization, empty packet rings,
+  disconnected status, search state, cancellation events and finalization.
+  No peer, received gift or successful connection is fabricated. The recorded
+  infrared and local search paths now cancel to the menu and restart normally.
+  IR AutoConnection remains an offline pending search until cancellation;
+  automatic timeout and real communication are not implemented.
+- Support the Error Display library applet's capture handshake and host dialog.
+  GlanceParameter and ReceiveParameter deliver separate client handles, so
+  closing a glanced handle no longer destroys the queued capture object.
+  UnmapMemoryBlock releases a complete shared mapping while retaining its bytes
+  for remapping; mismatched mappings are rejected before mutation. Memory lookup
+  indices and QueryMemory blocks are updated together. The host overlay leaves
+  guest VRAM in place during the scoped capture/save/restore handoff.
+- Validate the observed 0xF80-byte SDK parameter layout and its return field.
+  A fresh A/B press acknowledges a network error through the normal APT resume
+  parameter. Unknown dialog types/layouts remain unsupported. An unavailable
+  agreement returns NOT_SUPPORTED without changing the agreed version; no
+  agreement is silently accepted. Protocol references include
+  [libctru APT](https://github.com/devkitPro/libctru/blob/master/libctru/source/services/apt.c),
+  [error applet declarations](https://github.com/devkitPro/libctru/blob/master/libctru/include/3ds/applets/error.h)
+  and [SVC mapping definitions](https://www.3dbrew.org/wiki/SVC).
+- Recorded 6× Vulkan checks cover Internet error 30399, acknowledgment, the
+  game's own error message, menu return and restart; a second attempt in the
+  same session also completes that flow. The code/password route passes its
+  Internet confirmation and returns through the same offline error/restart
+  path. This does not validate software-keyboard entry or online submission.
+  A 35-second windowed replay visually confirms the host error text with the
+  testing FPS overlay disabled and reports zero software fallbacks.
+- The five frozen intro/overworld/battle/long/restart fixtures match the R-129
+  executable: 74 images and five WAVs are byte-identical, with equal saves,
+  guest instructions, VBlanks, draws, triangles, framebuffer submissions, movie
+  jobs and audio counts. The 60 numbered Internet captures preceding the old
+  shared-memory stop also match. Captures, binaries, inputs and save hashes
+  remain private; these correctness runs are not performance benchmarks.
+- All 33 guest-memory tests and 121 enabled window/Vulkan runtime tests pass
+  (12 runtime hardware tests remain ignored in that unit invocation). The
+  minimal runtime configuration passes 88 tests. Strict Clippy passes for the
+  changed crates/configurations, as do formatting and whitespace checks.
+  Focused tests cover invalid dialog parameters, repeat preparation, one-time
+  acknowledgment, unchanged clocks, handle lifetime, remapping contents and
+  stale memory-index prevention.
+- No native FPS unlock or new performance gain is claimed here. Native dynamic
+  FPS remains core work: additional engine-rendered frames must advance scene
+  state correctly while preserving movement, animation, encounter decisions,
+  event ordering and audio timing. R-130's movement-only correction is still
+  excluded from the product.

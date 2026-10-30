@@ -1,6 +1,6 @@
 # Compatibility
 
-Status as of 2026-10-29. Identification and translation are separate from
+Status as of 2026-10-30. Identification and translation are separate from
 playability. No complete playthrough or broad hardware compatibility is claimed.
 
 | Profile | Import / analysis | Runtime evidence |
@@ -25,9 +25,12 @@ SVC in that same state. It does not claim a completed playthrough beyond it.
 The recorded Mystery Gift back-out failure on network-exclusive-state release
 is fixed (R-126), including the subsequent application restart. Online gift
 delivery is not implemented. Offline initialization and read-only self-content
-access are covered in R-129. The Internet failure path still needs the system
-error dialog, and confirmed infrared needs its communication service. Code entry
-and online submission remain unverified.
+access are covered in R-129. Offline infrared search/cancellation and the Internet
+system error dialog are covered in R-131, including repeated Internet attempts,
+the code/password Internet confirmation, and return through application restart.
+The dialog remains visible with the testing FPS overlay disabled. Actual infrared
+peers, automatic search timeouts, online gift delivery and code entry after a
+successful connection remain unsupported or unverified.
 
 Native dynamic FPS remains unfinished. Neither host presentation caps nor
 unthrottled deterministic replay throughput establish normal-speed uncapped
