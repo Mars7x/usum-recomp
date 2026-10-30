@@ -77,11 +77,10 @@ See [compatibility](COMPATIBILITY.md), [building and controls](BUILDING.md),
    as native rendering improvements. Compare movement and animation at common
    game-time checkpoints, and compare encounter decisions, event ordering and
    audio start times against the original cadence. Additional frames must come
-   from engine rendering with correctly advanced scene state; matching travel
-   distance or increasing framebuffer submissions alone is insufficient. R-138
-   preserves nominal rates experimentally and traces the effective movement-rate
-   getter, but trajectory and effect events still diverge. Trace its consumers
-   and remaining camera/event timing; the observed integer timer is a -1 sentinel.
+   from engine rendering with correctly advanced scene state. R-141 aligns the
+   first cadence-transition step and locates a positive countdown; corrected
+   integer duration still needs clocks anchored to initialization/reset rather
+   than global frame parity. Movement and effect choices/timing still diverge.
 2. **Profile-led optimization.** Revisit intro/movie helpers, checked memory,
    frequent guest helpers, vertex preparation and GPU synchronization using
    fresh profiles. Retain a reference path and frozen before/after executables.

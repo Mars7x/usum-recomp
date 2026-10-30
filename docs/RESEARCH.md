@@ -4730,3 +4730,54 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   30.019/30.0185 seconds. Existing pacing limits those runs. Saves, guest counters
   and resident presentation agree, with no materialized source uses. Neither a
   native-FPS unlock nor broader game compatibility is established by this change.
+
+### R-141 2026-10-30 — Correct the first cadence step and locate an actual positive countdown
+
+- Trace the event interval passed from 0x003aeb6c to 0x004ba088. The former reads
+  controller offsets 0x12c/0x130 and scans from the previous animation phase to
+  the current one. Normal cadence supplies 179 intervals in the post-transition
+  replay; the higher-cadence effective-step experiment supplies 356. Source logs
+  and interval counts are diagnostics, not sound accuracy or FPS measurements.
+- The first higher-cadence update is at engine frame 602, following frame 600.
+  A constant half-step incorrectly advances phase 4 → 4.5; the elapsed interval
+  still requires 4 → 5. Give this first update its full phase/root/cap/getter
+  step in a separate private build, then use half-steps at frames 603 onward.
+  Initial phases align at common engine frames. A previously divergent
+  3041-sample effect now starts at DSP frame 2076 versus 2075 normally; other
+  effects and source allocations still differ. This does not fix all audio timing.
+- The same 100 common trajectory checkpoints still travel 980.294 versus 932.947
+  units normally, with maximum position error 54.692 and mean 24.584. Capture
+  the primary actor's surrounding state at field updates. A different field
+  contains a positive countdown 3/2/1/0 over successive updates, and another
+  counts 0/1/2/3/4. These are separate from R-138's unchanged -1 sentinel.
+- A hardware read/write watchpoint on our own child locates the countdown update
+  in the field module's overlapping translations containing 0x6f051168. It is
+  component offset 0x34, observed at controller-relative offset 0x1a8 in this
+  fixture. The count-up is component offset 0x3c, in blocks containing
+  0x6f050f40. Patch both translated copies in a separate private module library,
+  retaining the original guest instruction charges and all normal translations.
+- Test alternating integer updates on odd/even engine frames, first just the
+  countdown, then both counters. Preserve an exact unmodified-transition control:
+  its trajectory, top-screen image, WAV and source-event log match the earlier
+  build. Results at the same 100 common trajectory checkpoints:
+
+  | Private operation | Travel | Maximum position error | Mean position error | Non-streaming source events |
+  |---|---:|---:|---:|---:|
+  | Normal cadence | 932.947 | 0 | 0 | 251 |
+  | Effective steps with corrected transition | 980.294 | 54.692 | 24.584 | 270 |
+  | Countdown on odd frames | 925.425 | 40.543 | 23.352 | 270 |
+  | Countdown on even frames | 916.253 | 45.538 | 31.417 | 270 |
+  | Both counters on odd frames | 925.552 | 40.669 | 23.382 | 256 |
+  | Both counters on even frames | 915.983 | 45.668 | 31.149 | 256 |
+
+- State snapshots prove the countdown holds on intervening updates. They also
+  expose an initialization-phase problem: the even-frame policy initially holds
+  4 rather than the reference's 3. Integer duration needs a clock anchored to
+  the component's initialization/reset, not an arbitrary global parity. Matching
+  the number of source events alone does not establish matching choices/times.
+- Each tested higher-cadence variant still produces 21 distinct guest-rendered
+  images during VBlanks 650–670, versus 11 normally. No generated or extrapolated
+  frames are used. Their movement and events remain different, so none is enabled
+  as a core native-FPS unlock. These are timing-correctness experiments, with no
+  controlled wall-time/FPS gain claimed. Fixture addresses, private generated
+  patches, dependency hashes and results remain in native-fps-research.
