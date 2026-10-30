@@ -4841,3 +4841,41 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   select future investigations; the controlled replay/counter trials establish
   this change's gain. Private evidence is in draw-upload-binned-validation and
   native-fps-research/steady-gameplay-profile-v2/-v3.
+
+### R-143 2026-10-30 — Counter clocks and turning at higher cadence
+
+- Extend the private R-141 timing diagnostic with per-counter fractional clocks
+  anchored to observed resets/gaps, rather than global odd/even frame parity.
+  Preserve the first elapsed interval at the cadence transition. Apply effective
+  half-interval turning and animation-blend steps locally, retaining stored
+  nominal rates. The clock currently recognizes one fixture component address;
+  general identity, explicit initialization and reset/lifecycle hooks are absent.
+- In the original turning replay, reset-aware countdown/countup clocks reduce
+  common-checkpoint mean position error to about 23.38 game units. Adjusting the
+  turning response reduces it to 8.68; additionally adjusting blend gives 8.54.
+  Maximum error remains 26.37 with the blend adjustment. Travel is 924.56 versus
+  932.95 normally. These residual errors prohibit enabling the experiment.
+- There are 21 distinct engine-rendered poses during VBlanks 650–670 versus
+  11 normally. Extra frames come from engine rendering and advanced scene state,
+  with no generated/interpolated frames. Nonstream audio-source event counts
+  remain different (261 versus 251); these counts are diagnostics, not direct
+  counts of footsteps or encounters. No wall-time/FPS gain is claimed.
+- Repeat four cardinal-direction recordings from the identical starting save.
+  Every normal-cadence control reproduces its archived trajectory, final native
+  image, full WAV and source-event trace exactly. During engine frames 640–679,
+  normal/higher cadence takes 20/40 movement steps. Total step travel is:
+
+  | Direction | Original cadence | Higher cadence |
+  |---|---:|---:|
+  | Down | 380.00000 | 380.00000 |
+  | Left | 362.71440 | 362.92487 |
+  | Right | 379.99999 | 380.00002 |
+  | Up | 347.19991 | 347.19995 |
+
+- Matching steady travel does not establish timing parity: maximum common-time
+  position differences remain 19.44/18.29/25.40/18.81 units for down/left/right/up;
+  means are 4.47/3.78/8.42/5.63. Investigate initialization, input transitions,
+  animation boundaries and event decisions before broader integration. Normal
+  generated game sources contain none of these private patches. Frozen binaries,
+  dependency manifests and diagnostics remain in native-fps-research under
+  clock-step-tests, blend-clock-tests and clock-straight-controls.
