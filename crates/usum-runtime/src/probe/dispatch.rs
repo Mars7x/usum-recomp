@@ -31,6 +31,7 @@ impl Hasher for AddressHasher {
 }
 
 struct Owner {
+    revision: Arc<()>,
     index: usize,
     base: u32,
     size: u32,
@@ -46,8 +47,11 @@ struct CachedCode {
 }
 
 impl CachedCode {
-    fn valid(&self, kernel: &Kernel) -> bool {
+    fn valid(&self, kernel: &Kernel, revisions: bool) -> bool {
         self.owner.as_ref().is_none_or(|owner| {
+            if revisions {
+                return Arc::ptr_eq(&owner.revision, kernel.modules.revision());
+            }
             kernel.modules.get(owner.index).is_some_and(|m| {
                 m.base == owner.base && m.cro.file_size == owner.size && m.cro.name == owner.name && m.sha256 == owner.sha256
             })
@@ -59,6 +63,7 @@ pub(super) struct CodeCache {
     enabled: bool,
     entries: HashMap<u32, CachedCode, BuildHasherDefault<AddressHasher>>,
     front_enabled: bool,
+    revision_enabled: bool,
     front: [Option<FrontSlot>; 256],
     front_hits: u64,
     hash_hits: u64,
@@ -91,6 +96,7 @@ impl CodeCache {
             enabled,
             entries: HashMap::default(),
             front_enabled: enabled && std::env::var("USUM_DISPATCH_FRONT_CACHE").as_deref() != Ok("0"),
+            revision_enabled: std::env::var("USUM_DISPATCH_MODULE_REVISION").as_deref() != Ok("0"),
             front: std::array::from_fn(|_| None),
             front_hits: 0,
             hash_hits: 0,
@@ -109,14 +115,14 @@ impl CodeCache {
         let index = front_index(key);
         if self.front_enabled {
             if let Some(slot) = &self.front[index] {
-                if slot.key == key && slot.code.valid(kernel) {
+                if slot.key == key && slot.code.valid(kernel, self.revision_enabled) {
                     self.front_hits += 1;
                     return Some((slot.code.code, slot.code.delta));
                 }
             }
         }
         if self.enabled {
-            if let Some(cached) = self.entries.get(&key).filter(|c| c.valid(kernel)) {
+            if let Some(cached) = self.entries.get(&key).filter(|c| c.valid(kernel, self.revision_enabled)) {
                 self.hash_hits += 1;
                 if self.front_enabled {
                     self.front[index] = Some(FrontSlot { key, code: cached.clone() });
@@ -141,6 +147,7 @@ impl CodeCache {
                     .enumerate()
                     .find(|(_, m)| m.base != 0 && address.wrapping_sub(m.base) < m.cro.file_size)?;
                 Some(Arc::new(Owner {
+                    revision: Arc::clone(kernel.modules.revision()),
                     index,
                     base: m.base,
                     size: m.cro.file_size,
@@ -251,10 +258,13 @@ mod tests {
         let mut cpu = Cpu::default();
         let mut mem = Memory::new();
         // Both modes must agree through the same lifecycle, including cached hits.
-        for (enabled, front) in [(false, false), (true, false), (true, true)] {
+        for (enabled, front, revisions) in
+            [(false, false, false), (true, false, false), (true, true, false), (true, false, true), (true, true, true)]
+        {
             let mut cache = CodeCache::new(enabled);
             cache.front_enabled = front;
-            kernel.modules = vec![loaded("first", "aaa", 0x8000)];
+            cache.revision_enabled = revisions;
+            kernel.modules = vec![loaded("first", "aaa", 0x8000)].into();
             for _ in 0..2 {
                 for (key, expected) in [(0x1000, 1), (0x1001, 2)] {
                     let (code, delta) = cache.resolve(&kernel, &modules, ENTRIES, key).unwrap();
@@ -288,6 +298,22 @@ mod tests {
             kernel.modules[0].cro.file_size = 0x1000;
             assert!(cache.resolve(&kernel, &modules, ENTRIES, 0xa200).is_some());
             assert!(cache.resolve(&kernel, &modules, ENTRIES, 0xa201).is_none());
+            // Replacing the complete table, restoring an unchanged clone and
+            // mutating through the exposed Vec must all preserve ownership.
+            let previous = kernel.modules.clone();
+            kernel.modules = vec![loaded("first", "aaa", 0xa000)].into();
+            let (code, _) = cache.resolve(&kernel, &modules, ENTRIES, 0xa200).unwrap();
+            code(&mut cpu, &mut mem).unwrap();
+            assert_eq!(cpu.r[0], 1);
+            kernel.modules = previous;
+            let (code, _) = cache.resolve(&kernel, &modules, ENTRIES, 0xa200).unwrap();
+            code(&mut cpu, &mut mem).unwrap();
+            assert_eq!(cpu.r[0], 2);
+            let mut replacement = vec![loaded("first", "aaa", 0xa000)];
+            std::mem::swap(&mut *kernel.modules, &mut replacement);
+            let (code, _) = cache.resolve(&kernel, &modules, ENTRIES, 0xa200).unwrap();
+            code(&mut cpu, &mut mem).unwrap();
+            assert_eq!(cpu.r[0], 1);
             kernel.modules.clear();
             assert!(cache.resolve(&kernel, &modules, ENTRIES, 0xa200).is_none());
         }

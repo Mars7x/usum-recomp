@@ -11,6 +11,9 @@
 //! Not modelled: what the fix level frees, and RO's rewrite of the mapped
 //! header (the game has not been seen to read either).
 
+mod loaded_modules;
+pub use loaded_modules::LoadedModules;
+
 use usum_guest::Memory;
 use usum_import::cro::{self, Cro, ImportRef, Relocation, SegmentKind, SegmentOffset};
 

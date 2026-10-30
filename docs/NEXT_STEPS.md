@@ -48,6 +48,9 @@ See [compatibility](COMPATIBILITY.md), [building and controls](BUILDING.md),
 - Bulk stencil readback extraction reduces measured host instructions by about
   2.6–2.7% (R-132), with small isolated throughput gains and little change in
   normal-speed gameplay. The scalar comparison path remains available.
+- Tracked module revisions reduce repeated dispatch checks (R-135), improving
+  isolated intro throughput by about 2.3%. Gameplay changes remain small and
+  uncertain; loaded-module lifecycle checks and comparison paths are retained.
 - LCD tile-row conversion reduces measured host instructions by about 4%
   (R-134), with roughly 1% isolated gameplay throughput gains. Normal-speed
   overworld and battle remain limited by the existing engine cadence.

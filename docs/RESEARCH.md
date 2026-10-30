@@ -4463,3 +4463,47 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
 - Retain private frozen binaries, source/input/save hashes, captures and results
   under `display-tile-validation`. This is a small timing-neutral CPU reduction;
   native dynamic FPS and broader full-game performance remain active work.
+
+### R-135 2026-10-30 — Validate cached code against tracked module revisions
+
+- The post-R-132 intro profile still spends 7.17% self time resolving host code.
+  Replace repeated cached-owner string/size/base checks with a revision token
+  for the loaded-module list. Every mutable borrow replaces the token before
+  access escapes, including indexing, iteration and access through the Vec.
+  Cached tokens keep their allocations alive, preventing address reuse from
+  validating stale ownership. Clones can share a token while contents agree;
+  mutation of either clone creates a fresh token.
+- Lookup after invalidation still checks the translated module's name and hash
+  and recomputes relocation ownership. Executable precedence and ARM/Thumb
+  keys are unchanged. `USUM_DISPATCH_MODULE_REVISION=0` retains the original
+  per-hit metadata checks; the existing cache/front-cache reference switches
+  remain available. This differs from R-099's rejected weak-identity experiment:
+  no weak-reference upgrade or reference-count operation is needed on a hit.
+- Four alternating frozen-baseline/candidate 6× replay runs average
+  5.849/5.716 seconds in the intro, 12.498/12.474 in the overworld and
+  19.661/19.563 in battle: about 2.31%, 0.19% and 0.50% higher throughput.
+  Same-binary metadata-reference pairs average 5.949/12.610/19.547 seconds.
+  Battle's reference is slightly faster than the candidate, so these small
+  gameplay differences do not establish a robust FPS gain.
+- Two fully scheduled user-space counter trials per executable reduce intro
+  instructions by 3.44% and cycles by 2.15%; overworld instructions/cycles drop
+  0.33%/1.58%, and battle drops 0.71%/0.39%. Wait for other builds/replays and
+  external encoders, discard observed overlaps and retain the accepted repeats.
+  No external process is stopped. Counter reductions are not FPS projections.
+- Normal-speed windowed means are 6.041/6.005 seconds for the intro,
+  16.020/16.021 for the overworld and 30.018/30.017 for battle. The intro
+  nominally improves about 0.60%; gameplay remains pacing-limited. All window
+  runs retain resident GPU presentation, zero software fallbacks and no
+  materialized display-source uses.
+- Five identical-input/save fixtures retain 74 byte-identical images, five
+  identical WAVs, unchanged saves and matching guest/render/audio counters.
+  Short fixtures also match with metadata checks selected. All 123 enabled
+  window/Vulkan runtime tests pass with both policies, and the minimal runtime
+  passes 90 tests. Lifecycle tests cover unloads, replacement, relocation,
+  changed name/hash/size, table replacement, clones, borrowed-Vec mutation and
+  instruction state. The 12 hardware-specific unit tests remain ignored in
+  that invocation; recorded Vulkan replays provide integration coverage. Strict
+  Clippy, formatting and whitespace checks pass.
+- Private binaries, hashes, captures and benchmark results are retained under
+  `module-revision-validation`. Guest code, instruction charges, clocks and
+  native frame cadence are unchanged. Full-game behavior remains unverified.

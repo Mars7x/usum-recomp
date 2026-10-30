@@ -101,6 +101,7 @@ The probe runs on a virtual clock, so runs repeat exactly. Its options:
 | `USUM_GUEST_BLOCK_WORDS=0` | use ordered scalar memory accesses for translated register-list transfers; by default, lists of four or more words share one checked lookup when the entire span is ordinary RAM |
 | `USUM_DISPATCH_CACHE=0` | disable the host code-lookup cache for a reference run; enabled by default, with module identity checked on cached module entries |
 | `USUM_DISPATCH_FRONT_CACHE=0` | disable the small address cache ahead of the identity-checked hash cache; keep the hash lookup for a same-binary comparison |
+| `USUM_DISPATCH_MODULE_REVISION=0` | compare module base/size/name/hash on each cache hit instead of validating the tracked module-list revision; both paths reject changed ownership |
 | `USUM_DISPATCH_STATS=1` | log address-cache hits, hash-cache hits and full-resolution misses when a run ends; off by default |
 | `USUM_THREAD_LIFETIME_REFERENCE=1` | reproduce the old 32-lifetime-thread limit for diagnostics; normally exited threads release their TLS storage while retained handles keep their original identity |
 | `USUM_WAV=file.wav` | record the mixed sound to a WAV file (32,728 Hz stereo) |

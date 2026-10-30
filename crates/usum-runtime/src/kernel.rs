@@ -269,7 +269,7 @@ pub struct Kernel {
     /// The CRS RO was initialized with: where it is mapped, and parsed.
     pub crs: Option<(u32, usum_import::cro::Cro)>,
     /// Modules RO has loaded, the CRS first.
-    pub modules: Vec<crate::ro::Loaded>,
+    pub modules: crate::ro::LoadedModules,
     /// The CRR RO holds: address and size.
     pub crr: Option<(u32, u32)>,
     /// The GPU's register state.
