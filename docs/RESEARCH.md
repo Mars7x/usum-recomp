@@ -5530,3 +5530,27 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   arbitrary-rate game scheduling, native rendered-frame measurement and broader
   battle/movie/transition validation remain unfinished. No performance gain is
   inferred from these correctness checks.
+
+### R-159 2026-10-30 — Resolve the animation event consumer's live owner
+
+- Complete six read-only ownership traces: idle, turning and straight movement
+  at normal and corrected higher cadence. All preceding captures and traces
+  remain exact, including full audio, images and RNG snapshots. The bounded
+  window observes one callback owner, so it does not establish NPC coverage.
+- Distinguish the animation state's bound resource from its actual owner. The
+  event controller references a model, which references the animation owner;
+  the owner's bank, selection flag and parameter determine the queried state.
+  The phase query returns the first valid channel's result, not the maximum of
+  all channels. A positive observed parameter must not be assumed to be a
+  normalized blend weight.
+- All five observed first-step event credits resolve to the selected primary
+  state: idle at engine frame 626, turning at 718 and 790, and straight movement
+  at 620 and 732. This supports checking the live ownership chain and the phase
+  actually returned by the query instead of relying on fixed controller/model
+  identities. It does not justify extending first-step eligibility to every
+  animation or actor.
+- Preserve private animation-owner-trace evidence and its analyzer. An opt-in
+  owner-bound consumer is under separate replay validation; the original path
+  remains available. Singleton credit storage, reset/rebinding invalidation,
+  other actors, arbitrary game cadence and interactive integration remain open.
+  No performance improvement is inferred from this tracing work.
