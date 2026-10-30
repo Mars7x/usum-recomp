@@ -43,6 +43,9 @@ See [compatibility](COMPATIBILITY.md), [building and controls](BUILDING.md),
 - Coarser GPU input scheduling reduces worker overhead (R-128), with about 3%
   overworld and 2.5% battle throughput gains in isolated replays. Normal-speed
   play remains cadence-limited, and intro results vary between test modes.
+- Bulk stencil readback extraction reduces measured host instructions by about
+  2.6–2.7% (R-132), with small isolated throughput gains and little change in
+  normal-speed gameplay. The scalar comparison path remains available.
 - Offline Mystery Gift search cancellation and system network-error dialogs now
   return through the game's normal menu/restart flow (R-131). These are offline
   compatibility paths; gift delivery and communication with peers are absent.

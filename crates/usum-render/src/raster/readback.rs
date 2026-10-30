@@ -2,6 +2,24 @@
 use super::*;
 use std::sync::OnceLock;
 
+fn bulk_stencil() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("USUM_VULKAN_BULK_STENCIL").as_deref() != Ok("0"))
+}
+
+#[inline]
+fn append_stencil_row(output: &mut Vec<u8>, input: &[u8], width: usize, stride: usize, bulk: bool) {
+    match (bulk, stride) {
+        (true, 1) => output.extend_from_slice(&input[..width]),
+        (true, 4) => output.extend(input[..width * 4].as_chunks::<4>().0.iter().map(|pixel| pixel[0])),
+        _ => {
+            for x in 0..width {
+                output.push(input[x * stride]);
+            }
+        }
+    }
+}
+
 pub(super) struct ResolvePipeline {
     pipeline: wgpu::ComputePipeline,
     layout: wgpu::BindGroupLayout,
@@ -116,12 +134,23 @@ impl PendingReadback {
             let mut color = vec![0; row_bytes * self.height as usize];
             let mut depth = Vec::with_capacity(self.width as usize * self.height as usize);
             let mut stencil = Vec::with_capacity(self.width as usize * self.height as usize);
+            let bulk = bulk_stencil();
             for row in 0..self.height as usize {
                 let range = row * self.padded_row as usize..row * self.padded_row as usize + row_bytes;
                 color[row * row_bytes..][..row_bytes].copy_from_slice(&color_mapped[range.clone()]);
                 depth.extend(depth_mapped[range].as_chunks::<4>().0.iter().map(|b| f32::from_ne_bytes(*b)));
-                for x in 0..self.width as usize {
-                    stencil.push(stencil_mapped[row * self.stencil_padded_row as usize + x * self.stencil_stride as usize]);
+                if bulk {
+                    append_stencil_row(
+                        &mut stencil,
+                        &stencil_mapped[row * self.stencil_padded_row as usize..],
+                        self.width as usize,
+                        self.stencil_stride as usize,
+                        true,
+                    );
+                } else {
+                    for x in 0..self.width as usize {
+                        stencil.push(stencil_mapped[row * self.stencil_padded_row as usize + x * self.stencil_stride as usize]);
+                    }
                 }
             }
             Ok(ColorDepthReadback { color, depth, stencil })
@@ -284,6 +313,27 @@ impl RasterBatch<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bulk_stencil_matches_scalar_across_padded_rows_and_preserves_prefixes() {
+        for width in [0usize, 1, 7, 8, 15, 32, 239, 240, 400, 513] {
+            for stride in [1usize, 4] {
+                let padded = (width * stride + 1).div_ceil(256) * 256;
+                let input: Vec<_> = (0..padded * 3).map(|i| (i.wrapping_mul(73) ^ (i >> 8)) as u8).collect();
+                let prefix = vec![0x12, 0x34, 0x56];
+                let mut scalar = prefix.clone();
+                let mut bulk = prefix.clone();
+                for row in 0..3 {
+                    let source = &input[row * padded..];
+                    append_stencil_row(&mut scalar, source, width, stride, false);
+                    append_stencil_row(&mut bulk, source, width, stride, true);
+                }
+                assert_eq!(bulk, scalar, "width {width}, stride {stride}");
+                assert_eq!(&bulk[..prefix.len()], &prefix);
+                assert_eq!(bulk.len(), prefix.len() + width * 3);
+            }
+        }
+    }
 
     #[test]
     #[ignore = "requires a Vulkan hardware adapter"]

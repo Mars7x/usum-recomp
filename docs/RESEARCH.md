@@ -4339,3 +4339,42 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   state correctly while preserving movement, animation, encounter decisions,
   event ordering and audio timing. R-130's movement-only correction is still
   excluded from the product.
+
+### R-132 2026-10-30 — Bulk stencil extraction from mapped Vulkan readbacks
+
+- Fresh post-R-131 profiles put the pending readback materialization closure at
+  3.35% self time in the overworld and 2.86% in the intro. Instruction annotation
+  concentrates its samples in the per-pixel stencil push loop, including repeated
+  vector-length loads, bounds checks and row-offset arithmetic. These profiles
+  supersede older bottleneck rankings for this experiment.
+- Extract contiguous stencil rows with a bulk slice copy, or a fixed-stride
+  iterator for four-byte stencil elements. Preserve the original scalar loop
+  with `USUM_VULKAN_BULK_STENCIL=0` for comparison. Mapping, synchronization,
+  color/depth conversion, guest timing and rendered dimensions are unchanged.
+- Four alternating frozen-baseline/candidate runs at 6× give mean isolated
+  replay times of 6.024/5.928 seconds for the intro, 12.844/12.725 seconds for
+  the overworld and 20.204/20.035 seconds for battle: approximately 1.62%,
+  0.93% and 0.84% throughput gains. Two same-binary scalar-reference means
+  are 5.961, 12.870 and 20.257 seconds respectively. Gains are small and noisy;
+  the last battle candidate trial is slower than its adjacent baseline.
+- Two counter trials per executable reduce host user-space instructions by
+  about 2.62% in the overworld and 2.71% in battle, with fully scheduled counters.
+  Counter totals are CPU-work evidence, not FPS projections. Wait for external
+  encoders and discard an observed overlapping trial; never stop those jobs.
+- Normal-speed windowed means are 6.215/6.175 seconds for the intro,
+  16.076/16.021 for the overworld and 30.019/30.018 for battle. These remain
+  largely pacing-limited and do not establish a meaningful gameplay FPS gain.
+  All trials report zero software fallbacks and identical guest work counts.
+- Frozen intro, overworld, battle, long and restart fixtures produce 74
+  byte-identical images, five identical WAVs, unchanged saves and matching
+  guest/render/audio counters. Short fixtures also match with the scalar
+  reference selected. Inputs, initial saves, binary hashes and captures are
+  retained privately under `stencil-readback-validation`.
+- All 21 enabled renderer and 121 enabled runtime unit tests pass. All seven
+  renderer and 12 runtime hardware tests pass with each implementation,
+  including padded stencil rows, target reuse and scaled rendering. Strict
+  Clippy and formatting checks pass. Other hardware and full-game behavior
+  remain unverified.
+- Native dynamic FPS remains separate core work. This change reduces CPU cost
+  while preserving the current engine cadence; it does not uncap simulation
+  or manufacture extra game frames.
