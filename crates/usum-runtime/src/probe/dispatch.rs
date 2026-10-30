@@ -64,6 +64,7 @@ pub(super) struct CodeCache {
     entries: HashMap<u32, CachedCode, BuildHasherDefault<AddressHasher>>,
     front_enabled: bool,
     revision_enabled: bool,
+    outline_misses: bool,
     front: [Option<FrontSlot>; 256],
     front_hits: u64,
     hash_hits: u64,
@@ -97,6 +98,7 @@ impl CodeCache {
             entries: HashMap::default(),
             front_enabled: enabled && std::env::var("USUM_DISPATCH_FRONT_CACHE").as_deref() != Ok("0"),
             revision_enabled: std::env::var("USUM_DISPATCH_MODULE_REVISION").as_deref() != Ok("0"),
+            outline_misses: std::env::var("USUM_DISPATCH_OUTLINE_MISSES").as_deref() != Ok("0"),
             front: std::array::from_fn(|_| None),
             front_hits: 0,
             hash_hits: 0,
@@ -105,7 +107,87 @@ impl CodeCache {
         }
     }
 
+    // Keep the frequent tagged hit free of hash insertion, owner allocation
+    // and their large stack frame. Full resolution stays out of this caller.
+    #[inline]
     pub fn resolve(
+        &mut self,
+        kernel: &Kernel,
+        modules: &Modules,
+        entries: &[(u32, Code)],
+        key: u32,
+    ) -> Option<(Code, Option<u32>)> {
+        if !self.outline_misses {
+            return self.resolve_reference(kernel, modules, entries, key);
+        }
+        let index = front_index(key);
+        if self.front_enabled {
+            if let Some(slot) = &self.front[index] {
+                if slot.key == key && slot.code.valid(kernel, self.revision_enabled) {
+                    self.front_hits += 1;
+                    return Some((slot.code.code, slot.code.delta));
+                }
+            }
+        }
+        self.resolve_backing(kernel, modules, entries, key)
+    }
+
+    #[inline(never)]
+    fn resolve_backing(
+        &mut self,
+        kernel: &Kernel,
+        modules: &Modules,
+        entries: &[(u32, Code)],
+        key: u32,
+    ) -> Option<(Code, Option<u32>)> {
+        let index = front_index(key);
+        if self.enabled {
+            if let Some(cached) = self.entries.get(&key).filter(|c| c.valid(kernel, self.revision_enabled)) {
+                self.hash_hits += 1;
+                if self.front_enabled {
+                    self.front[index] = Some(FrontSlot { key, code: cached.clone() });
+                }
+                return Some((cached.code, cached.delta));
+            }
+        }
+        self.misses += 1;
+        let (code, delta) = match lookup(entries, key) {
+            Some(code) => (code, None),
+            None => {
+                let (code, delta) = module_code(kernel, modules, key)?;
+                (code, Some(delta))
+            }
+        };
+        if self.enabled {
+            let owner = if delta.is_some() {
+                let address = key & !1;
+                let (index, m) = kernel
+                    .modules
+                    .iter()
+                    .enumerate()
+                    .find(|(_, m)| m.base != 0 && address.wrapping_sub(m.base) < m.cro.file_size)?;
+                Some(Arc::new(Owner {
+                    revision: Arc::clone(kernel.modules.revision()),
+                    index,
+                    base: m.base,
+                    size: m.cro.file_size,
+                    name: m.cro.name.clone(),
+                    sha256: m.sha256.clone(),
+                }))
+            } else {
+                None
+            };
+            let cached = CachedCode { code, delta, owner };
+            if self.front_enabled {
+                self.front[index] = Some(FrontSlot { key, code: cached.clone() });
+            }
+            self.entries.insert(key, cached);
+        }
+        Some((code, delta))
+    }
+
+    #[inline(never)]
+    fn resolve_reference(
         &mut self,
         kernel: &Kernel,
         modules: &Modules,
@@ -258,12 +340,15 @@ mod tests {
         let mut cpu = Cpu::default();
         let mut mem = Memory::new();
         // Both modes must agree through the same lifecycle, including cached hits.
-        for (enabled, front, revisions) in
+        for (enabled, front, revisions, outline) in
             [(false, false, false), (true, false, false), (true, true, false), (true, false, true), (true, true, true)]
+                .into_iter()
+                .flat_map(|(enabled, front, revisions)| [false, true].map(|outline| (enabled, front, revisions, outline)))
         {
             let mut cache = CodeCache::new(enabled);
             cache.front_enabled = front;
             cache.revision_enabled = revisions;
+            cache.outline_misses = outline;
             kernel.modules = vec![loaded("first", "aaa", 0x8000)].into();
             for _ in 0..2 {
                 for (key, expected) in [(0x1000, 1), (0x1001, 2)] {

@@ -4694,3 +4694,39 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   Native simulation timing is unchanged, and this does not unlock dynamic FPS.
   Broader compatibility and performance remain unverified outside these fixtures.
   Private binaries, input/save hashes and results are in display-identity-validation.
+
+### R-140 2026-10-30 — Keep frequent dispatch hits outside the backing resolver
+
+- The post-R-137 intro profile places CodeCache::resolve at 5.85% exclusive
+  user-cycle samples. Annotated code reserves 232 stack bytes and saves six
+  registers even on the frequent tagged-front hit. Most allocation, insertion,
+  translation lookup and owner construction work is needed only after a miss.
+- Inline a small front-hit path and keep backing lookup in a separate function.
+  Owner revision checks, complete ARM/Thumb keys, collision fallback, full miss
+  validation and counters retain their behavior. `USUM_DISPATCH_OUTLINE_MISSES=0`
+  retains the original complete resolver. Existing cache/front/revision switches
+  remain available. This changes no translated instruction, budget or game clock.
+- A synthetic 32-key component test, with fixed mock module ownership and exact
+  result checksums, favors the split (means 0.033569/0.031399 seconds for ten
+  million lookups). It motivates a game trial; it is not gameplay evidence.
+  All 123 enabled window/Vulkan runtime tests pass under both policies. Expand
+  the loaded-module mutation/replacement/relocation/instruction-state lifecycle
+  matrix through both resolver paths. Strict Clippy and formatting pass.
+- Frozen R-139 baseline, split and same-binary original-resolver short replays
+  match byte for byte. All five baseline/candidate fixtures preserve 74 images,
+  five WAVs, saves and guest/render/conversion/audio counters, with zero software
+  fallbacks. Private fixtures and executable hashes are in dispatch-outline-validation.
+- Four balanced, isolated 6× replay trials per executable, without captures or
+  profiling, average 5.62975/5.60525 seconds for intro (+0.44% throughput),
+  12.27300/12.25350 for overworld (+0.16%) and 19.47425/19.48250 for battle
+  (-0.04%). Same-binary reference means are 5.727/12.3735/19.533 seconds.
+  Gameplay differences are within trial variation; do not claim a robust gameplay
+  wall-time improvement. Wait for encoders and other jobs; never interrupt them.
+- Two fully scheduled native-counter trials per executable reduce instructions
+  2.87% intro, 0.65% overworld and 0.85% battle. Cycles change -0.69%/+0.16%/-0.43%
+  respectively. Keep the lower host work and small intro improvement, with the
+  gameplay uncertainty explicit. The component result is not projected to FPS.
+- Normal-speed window means before/after are 6.005/6.005, 16.020/16.020 and
+  30.019/30.0185 seconds. Existing pacing limits those runs. Saves, guest counters
+  and resident presentation agree, with no materialized source uses. Neither a
+  native-FPS unlock nor broader game compatibility is established by this change.
