@@ -48,6 +48,9 @@ See [compatibility](COMPATIBILITY.md), [building and controls](BUILDING.md),
 - Bulk stencil readback extraction reduces measured host instructions by about
   2.6–2.7% (R-132), with small isolated throughput gains and little change in
   normal-speed gameplay. The scalar comparison path remains available.
+- LCD tile-row conversion reduces measured host instructions by about 4%
+  (R-134), with roughly 1% isolated gameplay throughput gains. Normal-speed
+  overworld and battle remain limited by the existing engine cadence.
 - Offline Mystery Gift search cancellation and system network-error dialogs now
   return through the game's normal menu/restart flow (R-131). These are offline
   compatibility paths; gift delivery and communication with peers are absent.

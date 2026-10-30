@@ -107,6 +107,8 @@ The probe runs on a virtual clock, so runs repeat exactly. Its options:
 | `USUM_DSP_TRACE=n` | describe the first n sound buffers decoded, on stderr |
 | `USUM_WATCH=0x1074bc` | report the caller of the last direct call to that address (e.g. the SDK's panic routine) |
 | `USUM_VULKAN_ACCELERATE=1` | use guarded Vulkan rasterization; unsupported dependencies or failures rerun safely in software |
+| `USUM_DISPLAY_TILE_ROWS=0` | retain per-pixel Morton addressing for common LCD transfers instead of copying groups of eight pixels; same output and guest timing |
+| `USUM_VULKAN_BULK_STENCIL=0` | retain scalar stencil extraction from mapped Vulkan readbacks for comparison |
 | `USUM_VULKAN_DEPTH_FEEDBACK=1` | with acceleration, enable experimental GPU D24S8 feedback conversion; intermediate targets stay on GPU and dependent submissions are queued without CPU waits; final readback still synchronizes. The old `USUM_VULKAN_CPU_DEPTH_FEEDBACK` name remains an alias. |
 
 To read the game's machine code next to the probe's report, extract the

@@ -792,6 +792,21 @@ pub fn tiled_offset(x: u32, y: u32, width: u32) -> u32 {
     (ty * (width / 8) + tx) * 64 + z
 }
 
+fn tile_row_display_copy() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("USUM_DISPLAY_TILE_ROWS").as_deref() != Ok("0"))
+}
+
+/// One row inside a Morton tile: x bits occupy offsets 0, 1, 4, 5,
+/// 16, 17, 20, 21. The source starts at this row's first pixel, so only
+/// 22 pixels (rather than the complete tile) need to be readable.
+fn copy_display_tile_row(source: &[u8], destination: &mut [u8]) {
+    const X: [usize; 8] = [0, 1, 4, 5, 16, 17, 20, 21];
+    for (pixel, x) in destination.as_chunks_mut::<3>().0.iter_mut().zip(X) {
+        pixel.copy_from_slice(&source[x * 4 + 1..x * 4 + 4]);
+    }
+}
+
 /// Required input prefix for the common unfiltered tiled RGBA8 LCD copy.
 /// Reading the advertised padded height can cross a framebuffer boundary and
 /// materialize unrelated GPU results. Other transfer modes retain their full
@@ -858,9 +873,21 @@ pub fn display_transfer(
         if out_w == 0 {
             return Ok(out);
         }
+        let tile_rows = tile_row_display_copy();
         for (y, destination) in out.chunks_exact_mut(out_w as usize * 3).enumerate() {
             let row = if flags & 1 != 0 { out_h - 1 - y as u32 } else { y as u32 };
-            for (x, pixel) in destination.as_chunks_mut::<3>().0.iter_mut().enumerate() {
+            let copied = if tile_rows {
+                let row_base = tiled_offset(0, row, in_w) as usize * 4;
+                for (tile, pixels) in destination.as_chunks_mut::<24>().0.iter_mut().enumerate() {
+                    let at = row_base + tile * 64 * 4;
+                    let source = input.get(at..at + 22 * 4).ok_or("DisplayTransfer reads past its input")?;
+                    copy_display_tile_row(source, pixels);
+                }
+                out_w as usize / 8 * 8
+            } else {
+                0
+            };
+            for (x, pixel) in destination.as_chunks_mut::<3>().0.iter_mut().enumerate().skip(copied) {
                 let at = tiled_offset(x as u32, row, in_w) as usize * 4;
                 pixel.copy_from_slice(input.get(at + 1..at + 4).ok_or("DisplayTransfer reads past its input")?);
             }
@@ -930,6 +957,35 @@ mod tests {
     }
 
     use usum_guest::memory::Perm;
+
+    #[test]
+    fn display_tile_rows_match_generic_at_tile_edges_and_short_inputs() {
+        for width in [1u32, 7, 8, 9, 15, 16, 17, 31, 240, 256] {
+            for height in [0u32, 1, 7, 8, 9, 16, 23] {
+                let input: Vec<u8> =
+                    (0..width.div_ceil(8) * height.div_ceil(8) * 256).map(|i| (i.wrapping_mul(73) ^ (i >> 7)) as u8).collect();
+                for output in [(width, height), (width.saturating_sub(3), height.saturating_sub(2))] {
+                    for flip in [0, 1] {
+                        for length in [0, input.len().saturating_sub(1), input.len()] {
+                            let source = &input[..length];
+                            let expected = display_transfer(source, (width, height), output, flip | 4).map(|rgba| {
+                                rgba.as_chunks::<4>()
+                                    .0
+                                    .iter()
+                                    .flat_map(|pixel| encode_pixel(1, decode_pixel(0, pixel)).to_vec())
+                                    .collect::<Vec<_>>()
+                            });
+                            assert_eq!(
+                                display_transfer(source, (width, height), output, flip | 4 | 0x1000),
+                                expected,
+                                "input {width}x{height}, output {output:?}, flip {flip}, length {length}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn direct_display_conversion_matches_generic_cropping_and_flip() {

@@ -4423,3 +4423,43 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   Non-source-zero audio events rise from 403 to 411. Reject this as a standalone
   fix; retain only the private diagnostic and evidence. Input sampling/pipeline
   latency, changing targets and the remaining animation timing are unresolved.
+
+### R-134 2026-10-30 — Copy LCD rows in Morton-tile groups
+
+- Fresh post-R-132 CPU profiles still place native DisplayTransfer conversion
+  at 1.48% self time in the overworld. The intro instead remains dominated by
+  dispatch (7.17%), movie-module functions, the tree accessor and checked memory.
+  Preserve those separate CPU targets for subsequent work.
+- For the existing unfiltered tiled RGBA8-to-linear RGB8 case, compute the row
+  origin once and copy eight pixels using their fixed Morton offsets. Require
+  only the sampled prefix of each tile row; retain per-pixel handling for partial
+  tails. Cropping, flipping, errors, guest instruction charges, clocks, GPU
+  synchronization and other formats/modes are unchanged.
+  `USUM_DISPLAY_TILE_ROWS=0` selects the original per-pixel reference.
+- Four alternating frozen-baseline/candidate isolated runs at 6× average
+  5.896/5.882 seconds for the intro, 12.690/12.567 for the overworld and
+  19.937/19.674 for battle: about 0.24%, 0.98% and 1.34% higher throughput.
+  Same-binary reference pairs average 5.904/12.551/19.929 seconds; the overworld
+  reference is slightly faster than the candidate, so wall-time attribution
+  remains noisy and code layout contributes to the frozen-build comparison.
+- Two fully scheduled user-space counter trials per executable show 3.94% fewer
+  host instructions and 2.18% fewer cycles in the overworld; battle drops
+  3.99% instructions and 2.16% cycles. These are CPU-work measurements, not
+  extrapolated FPS. Trials wait for other encoders/builds/replays to finish.
+- Normal-speed windowed means are 6.186/6.066 seconds for the intro,
+  16.021/16.021 for the overworld and 30.018/30.018 for battle. Intro's nominal
+  gain is about 1.99% in this pair; gameplay remains cadence-limited. All
+  windowed runs use resident Vulkan presentation with zero software fallbacks
+  and no materialized display-source uses.
+- Intro, overworld, battle, long and restart fixtures preserve 74 byte-identical
+  screen captures, five identical WAVs, saves, guest instructions, VBlanks,
+  geometry, submissions, movie jobs and audio counts. Short fixtures also match
+  with the per-pixel reference selected. All 122 enabled runtime unit tests pass
+  with each path, including a generic-format oracle over tile boundaries,
+  unaligned advertised widths, empty/cropped/flipped output and short input.
+  The 12 hardware-specific runtime tests remain ignored in that unit invocation;
+  recorded Vulkan runs supply the integration evidence. Strict Clippy,
+  formatting and whitespace checks pass.
+- Retain private frozen binaries, source/input/save hashes, captures and results
+  under `display-tile-validation`. This is a small timing-neutral CPU reduction;
+  native dynamic FPS and broader full-game performance remain active work.
