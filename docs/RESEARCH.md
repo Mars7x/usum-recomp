@@ -5036,3 +5036,49 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   and variants remain in effective-reset-clock-build/explicit-reset-clock-tests.
   Preserve the initial private harness link failure and recover it with the
   configured local native-library path; the normal game builds are unaffected.
+
+### R-147 2026-10-30 — Reject a guarded native iterator after full-game trials
+
+- Revisit R-084/R-085/R-098 with fresh profiles after the intervening renderer
+  and memory optimizations. The accepted R-145 intro profile places executable
+  helper 0x004bed34 at 6.48% self samples. Movie-module helpers, guest dispatch
+  and memory access remain substantial; historical percentages are not current
+  measurements. Sampling identifies work, not native frame rate.
+- Implement an exact-code-fingerprint-selected tree iterator with unchanged
+  guest budgets, registers, flags, stack writes and fault ordering. Prove RAM
+  reads without invoking deferred providers; decline unproven, overlapping,
+  wrapping, interior-entry or insufficient-budget cases to the original code.
+  Retain a same-binary original-path switch. No game timing changes are involved.
+- Both policies pass guest/recompiler/runtime tests and the QEMU corpus: 35
+  programs in two layouts, 319,988 translated instructions, zero failures.
+  A private original/native comparison also passes 14,016 full CPU/memory cases.
+  Five frozen game replays preserve 74 images, five complete WAVs, starting and
+  resulting saves, and guest/render/audio/movie counters. Software fallback
+  counts remain zero. The three short fixtures also match the same-binary
+  original path. These checks establish tested correctness, not profitability.
+- Four balanced isolated 6× trials per executable regress replay throughput:
+
+  | Fixture | R-145 baseline mean | Candidate mean | Throughput change |
+  |---|---:|---:|---:|
+  | Intro | 5.37550 s | 5.48525 s | -2.00% |
+  | Overworld | 10.44950 s | 10.51850 s | -0.66% |
+  | Battle | 17.15850 s | 17.39025 s | -1.33% |
+
+- Same-binary original-path means are 5.4115/10.5155/17.3315 seconds. Fully
+  scheduled hardware-counter pairs increase host instructions by
+  0.6936%/0.0442%/0.1561% and cycles by 2.6728%/1.5037%/1.0862% for
+  intro/world/battle. The smaller gameplay differences alone warrant caution,
+  but no fixture establishes a benefit. Paced window means remain approximately
+  6.005/16.015/30.018 seconds, with identical guest work and normal timing.
+- Fresh candidate intro sampling attributes 3.52% self samples to proof reads,
+  1.99% to the native traversal and 1.08% to its node-reading closure, with
+  0.92% still in the generated helper. This supports investigating proof/call
+  overhead; it does not isolate every source of the measured regression.
+- Reject and remove the production candidate, restoring the accepted sources.
+  Keep its full source snapshots, executable hashes, controls, captures and
+  measurements privately in native-tree-validation, with separate baseline and
+  candidate intro profiles. Component-level speedups did not survive full-game
+  execution. No native dynamic-FPS feature or performance gain is claimed.
+- Compile and test sequentially at one job. The temporary memory monitor never
+  triggered and was removed before benchmarking. Wait for external work; stop
+  no encoder. No game-derived source or captured media is published.
