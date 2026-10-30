@@ -4378,3 +4378,48 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
 - Native dynamic FPS remains separate core work. This change reduces CPU cost
   while preserving the current engine cadence; it does not uncap simulation
   or manufacture extra game frames.
+
+### R-133 2026-10-30 — Separate movement accumulation from actor displacement
+
+- Read-only field-domain tracing reproduces the prior normal, higher-cadence
+  and half-position diagnostic outputs exactly: trajectories, VBlank-900
+  captures, audio WAVs and audio event logs. Five observed field entry points
+  run approximately twice as often over the same VBlank interval at the higher
+  cadence. This is partial coverage: direct translated calls bypass some entry
+  wrappers, so absent observations do not imply an inactive subsystem.
+- Follow the primary actor position setter into its caller. After writing the
+  position, the guest separately adds the movement vector's magnitude to an
+  accumulator, compares it with a threshold and retains a remainder. Halving
+  only the setter's position argument leaves that accounting unscaled. The
+  caller also uses the vector for later direction/state bookkeeping; it cannot
+  safely be treated as an isolated position-only delta.
+- A private experiment additionally halves that caller's movement vector after
+  the setter, preserving its original instruction charge and leaving all field
+  updates active. The observed accumulator wraps 19 times in the normal run,
+  38 with half-position alone and 20 with the additional vector scaling. These
+  are observed counter decreases, not a proven count of encounter rolls.
+- At VBlank 900 the new experiment remains in the overworld, like the control;
+  the half-position experiment is already in an encounter transition. It
+  submits 675 top buffers versus 498 normal and 590 half-position, but this
+  does not establish native dynamic FPS correctness. Over the same 86 shared
+  trajectory samples, travel is 932.95/960.07/968.27 units for normal,
+  half-position and additional vector scaling. Maximum positional divergence
+  remains 54.67 units. Turning, collision and animation still need investigation.
+- The new run's source-zero audio event log matches the control, while other
+  source events number 403 versus 349. The waveform and rendered pose differ.
+  More frames with these behavioral differences are not a shipping unlock.
+- Keep these save-specific addresses, generated diagnostics and captures private
+  under `native-fps-research`. This is causal timing research, not a throughput
+  benchmark or a production change. Native dynamic FPS remains a core feature
+  under development, with normal game/audio/event speed required.
+
+- A hardware watchpoint on the diagnostic child's player quaternion identifies
+  a separate turning interpolation. At the observed roughly 0.6 blend per
+  update, test `1 - sqrt(1 - blend)` at double cadence to preserve the response
+  to a fixed target over equal time. Both instrumented controls still match
+  their prior outputs exactly. The experimental correction does not solve the
+  moving-input replay: across 100 common samples, mean position error rises
+  from 22.79 to 26.32 units, while maximum error changes from 54.67 to 54.25.
+  Non-source-zero audio events rise from 403 to 411. Reject this as a standalone
+  fix; retain only the private diagnostic and evidence. Input sampling/pipeline
+  latency, changing targets and the remaining animation timing are unresolved.

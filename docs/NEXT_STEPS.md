@@ -39,7 +39,9 @@ See [compatibility](COMPATIBILITY.md), [building and controls](BUILDING.md),
   (R-125), so it is not enabled as a frame-rate unlock. Field-update isolation
   restores travel distance in a diagnostic, but intermediate motion and audio
   still differ (R-127). Scaling only player movement still changes encounter
-  behavior (R-130). Higher presentation counts alone are not native FPS.
+  behavior (R-130). Separate movement accumulation is now traced (R-133);
+  correcting it avoids one early encounter, but movement and audio still differ.
+  Higher presentation counts alone are not native FPS.
 - Coarser GPU input scheduling reduces worker overhead (R-128), with about 3%
   overworld and 2.5% battle throughput gains in isolated replays. Normal-speed
   play remains cadence-limited, and intro results vary between test modes.
