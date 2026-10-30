@@ -5305,3 +5305,54 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   under a 6 GiB cap with no swap and one CPU quota. Normal/disabled output
   checks passed. Another project was compiling concurrently: these are
   correctness experiments, with no wall-time performance or FPS claim.
+
+### R-153 2026-10-30 — Follow clip resets and preserve the initial event interval
+
+- Investigate R-152's remaining half-step difference at the first idle pose.
+  Read-only entry/exit instrumentation of the suspected binding routine observes
+  no calls in either short replay; both controls retain all prior outputs.
+  Allocation/binding alone therefore cannot identify these clip transitions.
+- Trace both generated copies of the reset routine and explicit rate, phase,
+  bounds and loop setters. Both normal and higher-cadence outputs remain exact.
+  At engine frame 626, the observed reset reuses an existing animation state:
+  phase/previous change from 3/2 normally (3.5/3 at higher cadence) to 0/0, and
+  the endpoint changes from 20 to 85. The nominal rate remains 1. This is an
+  actual clip-reset observation, not an inference from reaching a loop boundary.
+- Test a private reset-driven first-step credit for the player's looping clips.
+  Consume it once, only in the reset's frame with matching state fields; clear
+  it on observed resets and explicit phase/bounds/loop changes. Normal and
+  disabled controls reproduce the archived outputs exactly. One credit is
+  consumed at frame 626: the new clip advances by 1 instead of 0.5, then by
+  half-steps. Phases at shared ticks 626 and 628 are now 1 and 2, matching normal;
+  the extra update at 627 evaluates phase 1.5. All 157 bounded RNG-entry tuples
+  still match normal cadence.
+- Reject the pose-only change as sufficient: at the initial event check,
+  normal cadence passes interval [0, 1], but the candidate passes [1, 1]. The
+  event routine compares its stored previous phase plus expected step with the
+  current phase. It still expects 0.5 after the pose advances by 1, classifies
+  the mismatch as a discontinuity, and replaces the interval start with its end.
+  Correct pose samples alone can therefore hide lost animation events.
+- The paired experiment communicates the actually consumed first step to that
+  discontinuity check, retaining the normal threshold and stored nominal rate.
+  Three short replays pass; normal and disabled controls remain exact. The
+  corrected interval is [0, 1], shared-tick phases remain correct, and all 157
+  recorded RNG-entry tuples still match normal. Audio and final images are
+  still not equivalent to normal cadence.
+- Broaden to six turning/straight-down replays using the same starting save.
+  Both normal runs exactly match the archived normal trajectories, WAVs, audio
+  events and images. The event bridge activates twice during turning and once
+  during straight movement. Higher cadence still produces 49 versus 47
+  nonstream sound starts when turning, and 43 versus 39 going straight. Action
+  transitions differ by up to two engine frames in these recordings. These
+  results prevent promoting the stationary-scene correction as generally valid.
+- The new lifecycle traces expose a missing reset path: straight movement at
+  frame 620 resets the existing walking clip but does not take the traced tail
+  exit. Consequently the private first-step credit is absent, and the walking
+  pose stays half a step behind on shared ticks. Inspect the routine's other
+  return before extending the policy. Turning also has odd-tick action changes
+  and explicit phase transfers that require separate timing treatment.
+- Preserve sources, dependency hashes and outputs privately under animation-
+  lifecycle, animation-reset-trace, animation-first-step, animation-first-event
+  and first-event-movement experiment directories. These are fixture-specific
+  correctness experiments, not performance trials or a playable native-FPS
+  feature; lifetime safety and arbitrary-rate behavior remain unproven.
