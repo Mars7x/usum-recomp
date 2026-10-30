@@ -119,7 +119,7 @@ build recommendation.
 git clone https://github.com/Mars7x/usum-recomp.git
 cd usum-recomp
 tools/install-hooks.sh
-cargo +stable build --release --locked -p usumctl
+cargo +stable build --release --locked -j 1 -p usumctl
 ./target/release/usumctl doctor
 ```
 
@@ -153,11 +153,15 @@ references the source checkout by absolute path, so keep that checkout in place.
 From the **generated translation workspace**, build the windowed program (Vulkan is included by default):
 
 ```bash
-cargo +stable build --release -j 2 -p play
+cargo +stable build --release -j 1 -p play
 ```
 
-The first game build is large. Start with two Cargo jobs; use `-j 1` if the
-compiler runs out of memory. More jobs can help on machines with enough RAM.
+The first game build is large. Start with one Cargo job and run builds and
+test compilation sequentially. Each generated crate can consume substantial
+memory, and overlapping Cargo commands each have their own job limit. Increase
+concurrency only after checking available memory during a build; core count
+alone is not a safe job limit. One job reduces peak usage but does not guarantee
+that every machine has enough memory.
 Build time and disk usage depend on the machine and generated code; early
 research timings are not current guarantees. Avoid debug builds for gameplay.
 
@@ -241,10 +245,10 @@ Return to your source checkout, then rebuild the translator and regenerate:
 ```bash
 cd /path/to/usum-recomp
 git pull --ff-only
-cargo +stable build --release --locked -p usumctl
+cargo +stable build --release --locked -j 1 -p usumctl
 ./target/release/usumctl translate "$usum_rom"
 cd "${XDG_CACHE_HOME:-$HOME/.cache}/usum-recomp/translations/ultra-sun-usa-cart"
-cargo +stable build --release -j 2 -p play
+cargo +stable build --release -j 1 -p play
 ```
 
 Set `usum_rom` again if this is a new terminal. Regeneration picks up discovery
@@ -258,7 +262,7 @@ the separate game-save directory.
 |---|---|
 | `pkg-config` or `libudev` build error | Install the distribution's build dependencies in the same host/container where Cargo runs. `pkg-config --modversion libudev` should succeed. |
 | `linker cc not found` | Install `build-essential` (Debian) or `gcc`/`glibc-devel` (Fedora). |
-| Compiler killed / out of memory | Retry the release build with `-j 1`; close other memory-heavy builds. |
+| Compiler killed / out of memory | Use `-j 1` and wait for other builds to finish before retrying; separate Cargo commands do not share a job limit. |
 | No Vulkan adapter / driver error | Check `vulkaninfo --summary` in the same environment; verify the hardware driver and required features. Software rendering is available at 1×. |
 | Scaling requested without acceleration | Build with the Vulkan feature and set `USUM_VULKAN_ACCELERATE=1`, or return to scale 1. |
 | Window cannot open | Run from your graphical desktop session with its normal Wayland/X11 environment. |

@@ -39,14 +39,15 @@ See [compatibility](docs/COMPATIBILITY.md), [building](docs/BUILDING.md), and
 
 Use a current stable Rust toolchain, Python 3 for the repository data guard,
 and Git. Linux is the tested host. Building translated games can require
-substantial RAM and disk space; start with a low Cargo job count if needed.
+substantial RAM and disk space. Start with one Cargo job and run build/test
+commands sequentially; increase concurrency only with measured memory headroom.
 
 ```bash
 git clone https://github.com/Mars7x/usum-recomp.git
 cd usum-recomp
 tools/install-hooks.sh
-cargo build --release --locked
-cargo test --locked
+cargo build --release --locked -j 1
+cargo test --locked -j 1
 ./target/release/usumctl inspect /path/to/your/ultra-sun.3ds
 ```
 

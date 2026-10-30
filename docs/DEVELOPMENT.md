@@ -71,7 +71,7 @@ names can be overridden with `USUM_ARM_AS`, `USUM_ARM_LD`,
 In the generated translation workspace, build the probe separately:
 
 ```bash
-cargo build --release -j 2 -p probe --features usum-runtime/vulkan-compare
+cargo build --release -j 1 -p probe --features usum-runtime/vulkan-compare
 ./target/release/probe "$usum_rom"
 ```
 
