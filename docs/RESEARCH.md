@@ -4060,3 +4060,75 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   Preserve private artifacts, then rebuild restored probe/play and compare both
   byte-for-byte to the frozen baseline. Vulkan remains the default; no discarded
   seed optimization remains in the runnable build.
+
+### R-124 2026-10-29 — Cache repeated dispatch addresses before hashing
+
+- Fresh user-only CPU stack profiles of 3e42c3b put dispatch resolution at
+  12.30% exclusive/15.65% inclusive intro samples and 1.91%/2.17% in overworld.
+  The frequent matrix helper is 1.57% inclusive in overworld; prioritize the
+  larger movie dispatch cost before extending floating-point transfer batching.
+  Sampling is diagnostic, not an elapsed-time benchmark. User-only callchains
+  avoid changing host profiling permissions.
+- Add 256 tagged address slots ahead of the existing hash cache. Preserve full
+  ARM/Thumb keys and validate module index, base, extent, name and SHA-256 on
+  every module hit. Collisions and invalid owners use the existing resolution
+  path. Share immutable owner metadata between cache levels, avoiding string
+  copies on refill. Instruction budgets, guest state and clocks are unchanged.
+  `USUM_DISPATCH_FRONT_CACHE=0` retains hash-only lookup; the existing master
+  switch disables both. `USUM_DISPATCH_STATS=1` logs observed cache counts.
+- All 109 enabled window/Vulkan runtime tests and 76 non-window tests pass,
+  alongside strict runtime Clippy and formatting. Extend module-lifecycle tests
+  through uncached/hash/front modes, covering unload, replacement, relocation,
+  changed names/hashes/extents, instruction state and removed modules. A forced
+  collision test proves distinct code keys retain the checked backing lookup.
+- Five fixed-input/save fixtures match frozen 3e42c3b and hash-only reference:
+  all 74 images, five WAVs, saves, guest instructions, VBlanks, draw/triangle/
+  video/audio/submission counts agree. Restart also matches. Hardware runs have
+  zero software fallbacks. Observed front hit rates are 95.6% intro and 93.7%
+  overworld. Synthetic lookup timing shows reduced helper work; conditional
+  statistics updates are slower in that component test, so that variant is not
+  adopted. Component throughput is not projected gameplay FPS.
+- Balanced isolated 6× probe trials use four baseline/candidate runs in intro
+  and battle and eight in overworld, with captures/profiling disabled and
+  observed encoder/build overlap rejected without stopping other jobs:
+
+  | Fixture | Baseline mean | Candidate mean | Throughput change |
+  |---|---:|---:|---:|
+  | Intro, 6 guest seconds | 6.12575 s | 6.04300 s | +1.37% |
+  | Overworld, 16 guest seconds | 13.17550 s | 13.12000 s | +0.42% |
+  | Battle, 30 guest seconds | 20.78875 s | 20.67075 s | +0.57% |
+
+- Normal-speed Vulkan window trials retain 6× internal resolution, fixed input/
+  saves and old/new/new/old ordering. Intro game-thread elapsed time averages
+  6.3250 → 6.2090 seconds (+1.87% throughput). Overworld is 16.0905 → 16.1200
+  seconds (-0.18%); battle is 30.0180 → 30.0190. Those gameplay runs remain
+  pacing-limited and do not demonstrate a meaningful FPS gain. Guest counters
+  and saves agree; resident presentation has no materialized source uses.
+- Separate balanced native-counter runs retire 0.26% fewer intro user
+  instructions and 0.17% fewer overworld instructions. Intro user cycles fall
+  1.03%, while overworld cycles rise 3.41% in those four trials. Counters run
+  100% scheduled but include driver/worker activity; this disagreement limits
+  confidence in the small overworld benefit. Retain the measured intro improvement,
+  report gameplay gains as small/uncertain, and keep the comparison switch.
+  No native FPS unlock or timing change is claimed.
+
+### R-125 2026-10-29 — Full native cadence requests still need simulation correction
+
+- Follow the application's process manager into the active FieldRo update and
+  resolve the actor-position getter in the user's private module. These are
+  read-only diagnostics; no module dump, game code or capture is published.
+- Revisit the earlier cadence experiment using the engine's pending-rate
+  request, allowing its normal input-manager transition side effects to run.
+  Start both variants from the same save/input state at VBlank 600. Record
+  actual actor positions at common VBlanks rather than inferring timing from
+  encounter screenshots alone.
+- Align 192 common VBlank samples across the full trace. Restricting path-length
+  comparison to VBlanks 620–800 gives about 932.95 versus 1853.50 units for normal/higher cadence:
+  approximately 1.99× movement for the same guest-time/input interval. Audio
+  differs too. The higher-cadence run submits 675 top-screen buffers versus 498
+  and executes 1533116635 versus 1170318582 guest instructions over 956 VBlanks.
+- More rendering is real, but the simulation behavior is wrong. Do not ship
+  this request as native dynamic FPS. Movement, animation and event advancement
+  need a timing-preserving design before the rate can increase. These runs use
+  the virtual clock and are not normal-speed FPS benchmarks; no timing patch or
+  frame-rate option from the experiment is enabled in normal gameplay.

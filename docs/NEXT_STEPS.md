@@ -33,6 +33,10 @@ See [compatibility](COMPATIBILITY.md), [building and controls](BUILDING.md),
   byte-packed script/area callback discovery (R-116), checked register-list
   memory transfers (R-117), presentation timing/HUD controls (R-118) and exited
   thread TLS reuse with retained handle identity (R-119).
+- Repeated-address dispatch caching adds a small measured intro improvement
+  (R-124). Gameplay FPS gains remain limited/uncertain. The engine's existing
+  higher-cadence request nearly doubles movement in a fixed-input diagnostic
+  (R-125), so it is not enabled as a frame-rate unlock.
 
 ## Active work
 

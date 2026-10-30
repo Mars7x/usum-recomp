@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
+use std::sync::Arc;
 
 use usum_guest::{lookup, Code};
 
@@ -37,10 +38,11 @@ struct Owner {
     sha256: String,
 }
 
+#[derive(Clone)]
 struct CachedCode {
     code: Code,
     delta: Option<u32>,
-    owner: Option<Box<Owner>>,
+    owner: Option<Arc<Owner>>,
 }
 
 impl CachedCode {
@@ -56,11 +58,45 @@ impl CachedCode {
 pub(super) struct CodeCache {
     enabled: bool,
     entries: HashMap<u32, CachedCode, BuildHasherDefault<AddressHasher>>,
+    front_enabled: bool,
+    front: [Option<FrontSlot>; 256],
+    front_hits: u64,
+    hash_hits: u64,
+    misses: u64,
+    log_stats: bool,
+}
+
+struct FrontSlot {
+    key: u32,
+    code: CachedCode,
+}
+
+fn front_index(key: u32) -> usize {
+    // Mix aligned instruction addresses with shifts only. Tags retain the
+    // complete ARM/Thumb key; collisions always use the checked backing cache.
+    ((key ^ (key >> 7) ^ (key >> 15)) & 255) as usize
+}
+
+impl Drop for CodeCache {
+    fn drop(&mut self) {
+        if self.log_stats {
+            eprintln!("dispatch cache: {} front hits, {} hash hits, {} misses", self.front_hits, self.hash_hits, self.misses);
+        }
+    }
 }
 
 impl CodeCache {
     pub fn new(enabled: bool) -> Self {
-        Self { enabled, entries: HashMap::default() }
+        Self {
+            enabled,
+            entries: HashMap::default(),
+            front_enabled: enabled && std::env::var("USUM_DISPATCH_FRONT_CACHE").as_deref() != Ok("0"),
+            front: std::array::from_fn(|_| None),
+            front_hits: 0,
+            hash_hits: 0,
+            misses: 0,
+            log_stats: std::env::var("USUM_DISPATCH_STATS").as_deref() == Ok("1"),
+        }
     }
 
     pub fn resolve(
@@ -70,11 +106,25 @@ impl CodeCache {
         entries: &[(u32, Code)],
         key: u32,
     ) -> Option<(Code, Option<u32>)> {
+        let index = front_index(key);
+        if self.front_enabled {
+            if let Some(slot) = &self.front[index] {
+                if slot.key == key && slot.code.valid(kernel) {
+                    self.front_hits += 1;
+                    return Some((slot.code.code, slot.code.delta));
+                }
+            }
+        }
         if self.enabled {
             if let Some(cached) = self.entries.get(&key).filter(|c| c.valid(kernel)) {
+                self.hash_hits += 1;
+                if self.front_enabled {
+                    self.front[index] = Some(FrontSlot { key, code: cached.clone() });
+                }
                 return Some((cached.code, cached.delta));
             }
         }
+        self.misses += 1;
         let (code, delta) = match lookup(entries, key) {
             Some(code) => (code, None),
             None => {
@@ -90,7 +140,7 @@ impl CodeCache {
                     .iter()
                     .enumerate()
                     .find(|(_, m)| m.base != 0 && address.wrapping_sub(m.base) < m.cro.file_size)?;
-                Some(Box::new(Owner {
+                Some(Arc::new(Owner {
                     index,
                     base: m.base,
                     size: m.cro.file_size,
@@ -100,7 +150,11 @@ impl CodeCache {
             } else {
                 None
             };
-            self.entries.insert(key, CachedCode { code, delta, owner });
+            let cached = CachedCode { code, delta, owner };
+            if self.front_enabled {
+                self.front[index] = Some(FrontSlot { key, code: cached.clone() });
+            }
+            self.entries.insert(key, cached);
         }
         Some((code, delta))
     }
@@ -149,6 +203,32 @@ mod tests {
     }
 
     #[test]
+    fn front_collisions_fall_back_without_confusing_distinct_code_keys() {
+        let kernel = Kernel::default();
+        let first = 0x1000;
+        let collision = (0x2000..0x20000).step_by(4).find(|&key| front_index(key) == front_index(first)).unwrap();
+        let entries: &[(u32, Code)] = &[(first, one), (collision, two)];
+        let modules = Modules { functions: &[], entries: &[], translated: &[] };
+        let mut cache = CodeCache::new(true);
+        cache.front_enabled = true;
+        let mut cpu = Cpu::default();
+        let mut memory = Memory::new();
+        for _ in 0..8 {
+            for (key, expected) in [(first, 1), (collision, 2)] {
+                for _ in 0..2 {
+                    let (code, delta) = cache.resolve(&kernel, &modules, entries, key).unwrap();
+                    assert_eq!(delta, None);
+                    code(&mut cpu, &mut memory).unwrap();
+                    assert_eq!(cpu.r[0], expected);
+                }
+            }
+        }
+        assert!(cache.front_hits > 0 && cache.hash_hits > 0, "exercise both hit paths");
+        assert_eq!(cache.misses, 2, "colliding entries remain in the backing cache");
+        assert_eq!(cache.entries.len(), 2);
+    }
+
+    #[test]
     fn cached_dispatch_tracks_module_unload_replacement_relocation_and_instruction_state() {
         let mut kernel = Kernel::new(
             Process {
@@ -171,8 +251,9 @@ mod tests {
         let mut cpu = Cpu::default();
         let mut mem = Memory::new();
         // Both modes must agree through the same lifecycle, including cached hits.
-        for enabled in [false, true] {
+        for (enabled, front) in [(false, false), (true, false), (true, true)] {
             let mut cache = CodeCache::new(enabled);
+            cache.front_enabled = front;
             kernel.modules = vec![loaded("first", "aaa", 0x8000)];
             for _ in 0..2 {
                 for (key, expected) in [(0x1000, 1), (0x1001, 2)] {
