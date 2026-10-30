@@ -5259,3 +5259,49 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   position-commit-trace experiment directories. Position writes and animation
   updates are not completed rendered frames; no FPS or throughput claim follows
   from their counts. Native dynamic FPS remains correctness research.
+
+### R-152 2026-10-30 — Align a higher-cadence idle transition with logical time
+
+- Continue only native dynamic-FPS correctness work. The private actor-state
+  clock from R-151 restores 157 bounded-random helper entries in engine frames
+  600–650, versus 344 without it. Counts alone hide a remaining ordering error:
+  its first 71 entry tuples match normal cadence, then the player selects an
+  idle threshold at frame 624 instead of 626. The threshold becomes 384 rather
+  than 307. Compare actual helper entries, not instruction-budget checkpoint
+  snapshots, which can observe different points within the same update.
+- Test completion publication separately, retaining higher-cadence animation
+  evaluation. A private player-only positive, nonlooping-animation gate holds
+  the finished flag until the next logical transition can consume it at the
+  normal tick. This diagnostic is tied to the existing fixture and uses a
+  per-state pending deadline. It is not a production binding or a general
+  solution for recycled objects, resets, reverse playback, or arbitrary rates.
+- Three 16-second replays complete. Normal cadence and the disabled completion
+  gate reproduce the previous trajectories, full WAVs, final images, phase
+  traces, random-call traces and generator snapshots exactly. The enabled
+  variant retains the same stationary player positions.
+- With both private clocks enabled, all 157 recorded helper-entry tuples match
+  normal cadence: engine frame, caller, bound, generator identity/index and
+  observed owner. The idle draws now occur at frame 626, indices 184 and 186.
+  The threshold is 307; counter samples at frames 700/800/900 are 37/87/137,
+  matching normal cadence instead of the earlier 38/88/138.
+- The initial idle animation now starts at frame 626 in both modes. This is
+  evidence for separating logical transition timing from pose evaluation, not
+  proof of equivalent animation state: normal completion publishes at 624,
+  whereas the diagnostic publishes at 625. The new idle pose starts at 0.5
+  instead of 1.0, and full audio and final images still differ from normal.
+  Further lifecycle, first-update and event-timing work is required.
+- Extend all three variants to 30 guest seconds. Each preserves its shorter
+  replay's image, bounded phase/RNG traces, trajectory/event prefixes and full
+  WAV prefix exactly. The corrected variant selects the same idle variation
+  (0x2f) as normal and matches every observed animation transition at frames
+  600, 626, 1242 and 1444. The disabled completion control instead transitions
+  at 600, 624, 1394 and 1595. All three have 23 nonstream source starts; equal
+  counts do not resolve the existing audio timing differences.
+- Preserve sources, hashes, controls and actual-entry analysis privately in
+  completion-clock-build/tests, completion-long-build/tests and
+  chance-clock-build/tests. A 3 GiB compiler
+  cap stopped the first dispatch-table rebuild; retry reused the completed
+  animation unit, compiled the dispatch table without optimization, and ran
+  under a 6 GiB cap with no swap and one CPU quota. Normal/disabled output
+  checks passed. Another project was compiling concurrently: these are
+  correctness experiments, with no wall-time performance or FPS claim.
