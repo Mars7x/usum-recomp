@@ -206,10 +206,22 @@ all programs; this process-wide policy is captured at the first successful shade
 compilation so cached programs use one policy.
 
 Hardware draws with at least 16 distinct vertices precompute attribute
-destinations and fixed input registers once per draw. All loader reads retain
+destinations and fixed input registers once per draw. Uncached loader reads retain
 their order and checked-memory fallback; CPU shading keeps the reference loader.
 `USUM_VULKAN_INPUT_PLAN=0` restores that loader for GPU draws too. The probe reports
 planned draws and distinct inputs separately from total GPU vertex counts.
+Decoded hardware inputs may be reused after comparing the complete loader layout,
+ordered indices, fixed-register bits, attribute destinations and current readable
+source bytes. Changed bytes or permissions invalidate reuse; wrapping, gapped or
+oversized spans bypass caching. Every attribute, including discarded values, is
+covered by the source proof. Misses retain the original serial/parallel decoder.
+`USUM_VULKAN_VERTEX_INPUT_CACHE=0` disables this cache. It retains at most 512
+entries and 32 MiB of derived payload, including decoded vector capacities,
+source copies and variable key allocations; fixed entry/map metadata is bounded
+separately by the entry limit. Source copies above 1 MiB and decoded allocations
+above 8 MiB bypass retention. Draw snapshots share immutable decoded inputs;
+cloning PICA starts a cold cache. The probe reports hits, misses and retained
+entry/payload counts. This changes host work, not guest timing or shader execution.
 GPU vertex-input loading uses worker threads at 4096 distinct vertices per draw.
 `USUM_VULKAN_INPUT_PARALLEL_MIN=256` restores the previous scheduling threshold
 for comparisons. This process-wide threshold is read on first use; values below

@@ -99,6 +99,10 @@ pub struct Pica {
     #[cfg(feature = "vulkan-compare")]
     vulkan_input_plan_counts: [u64; 2],
     #[cfg(feature = "vulkan-compare")]
+    vulkan_input_cache_enabled: bool,
+    #[cfg(feature = "vulkan-compare")]
+    vulkan_input_cache: draw::input_cache::Cache,
+    #[cfg(feature = "vulkan-compare")]
     vulkan_defer_readback: bool,
     #[cfg(feature = "vulkan-compare")]
     vulkan_split_encode: bool,
@@ -184,6 +188,10 @@ impl Default for Pica {
             vulkan_input_plan: std::env::var("USUM_VULKAN_INPUT_PLAN").as_deref() != Ok("0"),
             #[cfg(feature = "vulkan-compare")]
             vulkan_input_plan_counts: [0; 2],
+            #[cfg(feature = "vulkan-compare")]
+            vulkan_input_cache_enabled: std::env::var("USUM_VULKAN_VERTEX_INPUT_CACHE").as_deref() != Ok("0"),
+            #[cfg(feature = "vulkan-compare")]
+            vulkan_input_cache: draw::input_cache::Cache::default(),
             #[cfg(feature = "vulkan-compare")]
             vulkan_defer_readback: false,
             #[cfg(feature = "vulkan-compare")]
@@ -341,6 +349,11 @@ impl Pica {
     #[cfg(feature = "vulkan-compare")]
     pub fn vulkan_input_plan_stats(&self) -> [u64; 2] {
         self.vulkan_input_plan_counts
+    }
+
+    #[cfg(feature = "vulkan-compare")]
+    pub fn vulkan_input_cache_stats(&self) -> [u64; 4] {
+        self.vulkan_input_cache.stats()
     }
 
     #[cfg(feature = "vulkan-compare")]

@@ -62,6 +62,12 @@ See [compatibility](COMPATIBILITY.md), [building and controls](BUILDING.md),
 - LCD tile-row conversion reduces measured host instructions by about 4%
   (R-134), with roughly 1% isolated gameplay throughput gains. Normal-speed
   overworld and battle remain limited by the existing engine cadence.
+- Bounded draw-upload reuse (R-142) improves isolated world/battle throughput
+  about 2.8%/2.2%. Exact source-validated decoded input reuse (R-144) adds about
+  7.4%/3.9% versus that build, with identical recorded outputs and lower host CPU
+  work. Intro throughput is slightly worse in the input-cache trials (about
+  0.6–1.3%); it has no eligible input batches. Reference policies remain
+  available, and normal-speed play is still limited by engine cadence.
 - Offline Mystery Gift search cancellation and system network-error dialogs now
   return through the game's normal menu/restart flow (R-131). These are offline
   compatibility paths; gift delivery and communication with peers are absent.

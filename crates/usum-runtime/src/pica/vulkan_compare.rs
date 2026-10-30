@@ -89,7 +89,7 @@ pub struct DrawSnapshot {
 #[derive(Clone, Debug, PartialEq)]
 pub struct VertexSnapshot {
     pub program: Arc<usum_render::VertexProgram>,
-    pub inputs: Vec<[[f32; 4]; 16]>,
+    pub inputs: Arc<Vec<[[f32; 4]; 16]>>,
     pub indices: Vec<u32>,
     pub uniforms: Vec<u32>,
 }
@@ -760,7 +760,7 @@ pub(super) fn capture_gpu_vertices(
     mem: &Memory,
     target_info: CaptureTarget,
     program: Arc<usum_render::VertexProgram>,
-    inputs: Vec<[[f32; 4]; 16]>,
+    inputs: Arc<Vec<[[f32; 4]; 16]>>,
     indices: Vec<u32>,
 ) -> Result<(), String> {
     let (target, textures) = capture_buffers(pica, mem, target_info)?;

@@ -3,9 +3,9 @@
 use super::{element, element_in, Layout, Memory, Pica, Vec4};
 
 pub(super) struct InputPlan<'a> {
-    layout: &'a Layout,
-    initial: [Vec4; 16],
-    destinations: Vec<u8>,
+    pub(super) layout: &'a Layout,
+    pub(super) initial: [Vec4; 16],
+    pub(super) destinations: Vec<u8>,
 }
 
 impl<'a> InputPlan<'a> {

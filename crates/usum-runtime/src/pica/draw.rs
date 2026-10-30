@@ -14,6 +14,8 @@ use usum_guest::Memory;
 
 #[cfg(feature = "vulkan-compare")]
 mod input;
+#[cfg(feature = "vulkan-compare")]
+pub(super) mod input_cache;
 mod stencil;
 
 use super::shader::{self, Vec4};
@@ -94,6 +96,7 @@ fn element(mem: &Memory, address: u32, kind: u32) -> Result<f32, String> {
 /// One attribute loader of a draw, decoded once: where vertex 0's data
 /// is, the stride, the bytes one vertex's data spans, and its fields
 /// (attribute, element kind, element count, offset).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Loader {
     start: u32,
     stride: u32,
@@ -102,6 +105,7 @@ struct Loader {
 }
 
 /// The vertex attribute layout of a draw (GPUREG_ATTRIBBUFFERS_*).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Layout {
     loaders: Vec<Loader>,
     total: usize,
@@ -1398,17 +1402,33 @@ fn draw_inner(p: &mut Pica, mem: &mut Memory, elements: bool) -> Result<(), Stri
                     } else {
                         None
                     };
-                    let load = |index: &u32| match &plan {
-                        Some(plan) => plan.load(mem, *index),
-                        None => load_vertex(p, layout.as_ref().map_err(Clone::clone)?, mem, *index),
-                    };
-                    let inputs: Vec<Result<[Vec4; 16], String>> = if distinct.len() >= input_parallel_min() {
-                        use rayon::prelude::*;
-                        distinct.par_iter().with_min_len(64).map(load).collect()
+                    let cached = if p.vulkan_input_cache_enabled {
+                        plan.as_ref().and_then(|plan| p.vulkan_input_cache.get(plan, mem, &distinct))
                     } else {
-                        distinct.iter().map(load).collect()
+                        None
                     };
-                    let inputs = inputs.into_iter().collect::<Result<Vec<_>, _>>()?;
+                    let inputs = match cached {
+                        Some(inputs) => inputs,
+                        None => {
+                            let load = |index: &u32| match &plan {
+                                Some(plan) => plan.load(mem, *index),
+                                None => load_vertex(p, layout.as_ref().map_err(Clone::clone)?, mem, *index),
+                            };
+                            let inputs: Vec<Result<[Vec4; 16], String>> = if distinct.len() >= input_parallel_min() {
+                                use rayon::prelude::*;
+                                distinct.par_iter().with_min_len(64).map(load).collect()
+                            } else {
+                                distinct.iter().map(load).collect()
+                            };
+                            let inputs = std::sync::Arc::new(inputs.into_iter().collect::<Result<Vec<_>, _>>()?);
+                            if p.vulkan_input_cache_enabled {
+                                if let Some(plan) = &plan {
+                                    p.vulkan_input_cache.insert(plan, mem, &distinct, &inputs);
+                                }
+                            }
+                            inputs
+                        }
+                    };
                     let indices = triangles.iter().flatten().map(|&index| slots[index] as u32).collect();
                     let dim = reg(p, 0x11E);
                     let target = super::vulkan_compare::CaptureTarget {
@@ -1627,13 +1647,14 @@ mod tests {
     #[cfg(feature = "vulkan-compare")]
     #[test]
     fn planned_hardware_inputs_match_captures_for_small_serial_and_parallel_batches() {
-        let run = |planned, count| {
+        let run = |planned, cached, count| {
             let mut p = Pica::default();
             p.enable_vulkan_acceleration();
             p.enable_vulkan_vertex();
             p.enable_vulkan_capture(usize::MAX);
             p.vulkan_skip_software = true;
             p.vulkan_input_plan = planned;
+            p.vulkan_input_cache_enabled = cached;
             p.regs[0x200] = 0x20000000 >> 3;
             p.regs[0x201] = 15;
             p.regs[0x205] = 1 << 28 | 16 << 16;
@@ -1660,16 +1681,24 @@ mod tests {
             let mut memory = Memory::new();
             memory.map(p.linear_base, bytes, usum_guest::Perm::RW).unwrap();
             draw_inner(&mut p, &mut memory, false).unwrap();
-            let mut snapshots = p.take_vulkan_snapshots();
-            assert_eq!(snapshots.len(), 1);
-            (snapshots.remove(0), p.vulkan_input_plan_stats())
+            draw_inner(&mut p, &mut memory, false).unwrap();
+            memory.write_u32(p.linear_base, 0.125f32.to_bits()).unwrap();
+            draw_inner(&mut p, &mut memory, false).unwrap();
+            let snapshots = p.take_vulkan_snapshots();
+            assert_eq!(snapshots.len(), 3);
+            assert_eq!(snapshots[0].gpu_vertex.as_ref().unwrap().inputs, snapshots[1].gpu_vertex.as_ref().unwrap().inputs);
+            assert_ne!(snapshots[0].gpu_vertex.as_ref().unwrap().inputs, snapshots[2].gpu_vertex.as_ref().unwrap().inputs);
+            (snapshots, p.vulkan_input_plan_stats(), p.vulkan_input_cache_stats())
         };
         for count in [3, 33, 257] {
-            let reference = run(false, count);
-            let planned = run(true, count);
-            assert_eq!(reference.0, planned.0);
+            let reference = run(false, false, count);
             assert_eq!(reference.1, [0, 0]);
-            assert_eq!(planned.1, if count >= 16 { [1, u64::from(count)] } else { [0, 0] });
+            for cached in [false, true] {
+                let planned = run(true, cached, count);
+                assert_eq!(reference.0, planned.0);
+                assert_eq!(planned.1, if count >= 16 { [3, 3 * u64::from(count)] } else { [0, 0] });
+                assert_eq!(&planned.2[..2], if cached && count >= 16 { &[1, 2] } else { &[0, 0] });
+            }
         }
     }
 

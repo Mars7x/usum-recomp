@@ -4879,3 +4879,88 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   generated game sources contain none of these private patches. Frozen binaries,
   dependency manifests and diagnostics remain in native-fps-research under
   clock-step-tests, blend-clock-tests and clock-straight-controls.
+
+- Follow up the turning replay audio trace by collapsing dirty-flag-only changes.
+  Nonstream playing/buffer/sample state changes are 94 normally versus 98 with
+  the effective-clock/blend experiment, including 47 versus 49 source starts.
+  Streaming sources 0/1 match exactly. Additional starts and changed sample
+  choices confirm that the remaining audio difference is more than logging
+  noise; no higher-cadence behavior is enabled.
+
+### R-144 2026-10-30 — Reuse exactly validated decoded vertex inputs
+
+- Follow the acknowledged gameplay-only R-142 profile: `InputPlan::load` takes
+  6.66% inclusive samples (2.17% self), `element_in` 2.70% self, and input packing
+  1.77% self. Repeated decoding is now a larger target than upload allocation.
+  Keep the existing 3DS memory, shader and rendering paths.
+- Add a bounded cache only for planned hardware input batches. Hash lookup is an
+  index, never proof: compare the complete integer layout, ordered distinct
+  indices, initial float bits and register destinations, then compare every
+  current readable source span byte-for-byte. Include overwritten/discarded
+  attributes. Source changes, missing permissions and remapping cannot reuse
+  stale inputs. Wrapped, gapped or oversized span proofs bypass retention.
+- Misses keep the original serial/parallel decoder and its first error. Insert
+  only after successful decoding. Share immutable decoded vectors with command
+  snapshots; never cache shader results or uniforms. PICA clones start cold.
+  Retain at most 512 entries and 32 MiB of derived payload, including capacities,
+  source copies and variable keys. Individual source/output limits are 1/8 MiB;
+  fixed metadata is separately bounded by the entry limit. Keep
+  `USUM_VULKAN_VERTEX_INPUT_CACHE=0` as the same-binary comparison path.
+- All 128 enabled runtime tests pass with both cache policies, all 12 Vulkan
+  runtime integration tests pass, and strict Clippy/formatting pass. Synthetic
+  checks cover NaN payloads/signed zero, fixed aliases, index ordering, changed
+  bytes, discarded inputs, unreadable/unmapped/remapped memory, wrapping and
+  holes, deferred replacement/failure, eviction bounds and cold clones. Repeated
+  complete draw snapshots agree with the original loader before and after a
+  source mutation, including serial and parallel input counts.
+- Five frozen baseline/candidate recordings preserve 74 native/scaled images,
+  five complete WAVs, saves and guest instruction/VBlank/render/audio/conversion
+  counters, with zero software fallbacks. The three short recordings also match
+  the same-binary uncached decoder. World/battle hits are 37,318/42,502 versus
+  226/349 misses; retained payloads are 33,358,996/33,081,199 bytes. The long run
+  retains 33,419,521 bytes in 204 entries; restart retains 2,266,942 in 25. Intro
+  draws are ineligible, with zero cache lookups/entries.
+- Four balanced isolated 6× trials per executable, without captures/profiling:
+
+  | Fixture | R-142 baseline mean | Cached mean | Throughput change |
+  |---|---:|---:|---:|
+  | Intro, 6 guest seconds | 5.50350 s | 5.57425 s | -1.27% |
+  | Overworld, 16 guest seconds | 12.01525 s | 11.18825 s | +7.39% |
+  | Battle, 30 guest seconds | 19.07650 s | 18.36050 s | +3.90% |
+
+- Same-binary uncached means are 5.5255/11.925/18.919 seconds. Separate native
+  counter pairs are 100% scheduled. Retired host instructions change
+  +0.0026%/-12.9574%/-9.3278% for intro/world/battle; cycles change
+  +0.2488%/-10.3905%/-7.5928%. Guest work is identical. The small intro slowdown
+  is recorded explicitly and receives additional balanced confirmation trials;
+  this input-cache change does not accelerate movie playback. Four additional
+  balanced intro trials average 5.57175 s baseline, 5.60375 s cached and
+  5.59500 s same-binary uncached: a 0.57% baseline-relative slowdown, versus
+  0.16% between cache policies. Retain both sets; the cache has no eligible
+  intro draws, so the elapsed-time difference is not evidence of lookup cost.
+  Code layout and ordinary measurement variation remain possible causes.
+- Normal-speed window means are 6.005/6.005, 16.019/16.0165 and 30.018/30.0165
+  seconds before/after. Resident presentation has no materialized source uses;
+  saves and guest counters agree. Existing cadence still limits those runs.
+  Wait for encoders and reject benchmark overlap; no external process is stopped.
+  Private executables, source snapshots and results are in
+  vertex-input-cache-validation. This does not enable native dynamic FPS or
+  establish broader game compatibility.
+- A fresh acknowledged VBlank-600–900 gameplay profile preserves native images,
+  full WAV/save and guest instructions. InputPlan/element decoding falls below
+  the 0.1% report threshold; cache lookup is 1.17% inclusive. Target import is
+  12.03% inclusive (3.53% self), deferred plane encoding 8.35% inclusive,
+  D24S8 decode/encode 2.13%/1.41% self, and vertex-input packing 2.93% self.
+  These overlapping percentages select subsequent targets, not extra gains.
+  Profiles remain private under steady-gameplay-profile-v4b. The first harness
+  link lacked configured native-library paths; preserve that failed build and
+  rerun with the normal build environment. A fresh intro profile reproduces four
+  native images, WAV/save and guest count; scaled tracing is disabled in that
+  profile and remains verified by the separate full replay comparisons.
+- Final release `probe` and `play` text-section hashes equal the frozen measured
+  candidates after the additional synthetic tests. Fresh intro exclusive samples
+  still highlight the guest call wrapper (7.06%), MovieLib helpers
+  0x990021c4/0x99002548/0x99002ea8 (6.72%/4.60%/4.19%), executable iterator helper
+  0x004bed34 (5.14%) and several separately instantiated word writers. These
+  remain candidates for narrowly scoped native/helper work; whole-function
+  replacements must preserve budget exits, memory faults, registers and timing.
