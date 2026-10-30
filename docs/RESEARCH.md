@@ -5112,3 +5112,41 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   as the corrected hypothesis for subsequent composition tests; actor timer
   scope is being tested separately against the old broad policy to isolate its
   effect. No throughput gain or released native-FPS unlock is claimed.
+
+### R-149 2026-10-30 — Trace an unscaled idle-animation counter
+
+- Test broader field-timer ownership separately from R-148's getter correction.
+  A private controller-vtable guard still matches only the existing player
+  component. The other 23 observed candidates appear in constructor stores with
+  zero at the tested identity location. Turning and idle variants with this
+  broader guard exactly reproduce the player-only outputs. This does not prove
+  that other actors have no timers; it rejects this guard as an explanation for
+  the current discrepancy.
+- The idle fixture releases controls at VBlank 600. Normal and higher cadence
+  have identical sampled player positions and 23 nonstream source starts / 46
+  state changes. Two starts shift by one DSP frame (2075 to 2076 and 2116 to
+  2117); stream traces agree. The final native images differ at 6,951 pixels.
+  Matching source counts is not evidence of exact audio or animation timing.
+- Actor snapshots isolate a different integer field at component offset 0x48:
+
+  | Engine frame | Normal counter | Higher-cadence counter |
+  |---|---:|---:|
+  | 700 | 37 | 76 |
+  | 800 | 87 | 176 |
+  | 900 | 137 | 276 |
+
+- The higher-cadence counter reaches 324 against a threshold of 323 at frame
+  948, when animation 0 changes to 0x30. Normally the counter is only 161 then
+  and animation 0 continues. The increment is present in two overlapping
+  generated copies of block 0x6f051110. Initialization clears this field and
+  chooses a threshold from a random result plus 300.
+- Threshold values also differ: 307 normally versus 323 at higher cadence in
+  this recording. Correcting the counter rate alone therefore cannot establish
+  identical random choices or event timing. Preserve that uncertainty rather
+  than attributing every observed difference to one clock.
+- Prepare an opt-in private half-step counter with reset tracking, original-path
+  controls and a composition with R-148's nominal-rate correction. Queue both
+  short comparisons and longer idle replays that can observe expiration after
+  the corrected wait. Those experiments are not yet validation results here.
+  The completed attribution remains in field-timer-scope-tests and its offline
+  reports; no production FPS feature or throughput gain is claimed.
