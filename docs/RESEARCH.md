@@ -5474,3 +5474,59 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   action-flag-reset evidence. These are timing-correctness results without a
   throughput claim. Interactive native FPS, other actors and lifecycles,
   arbitrary cadence, battles, movies and transitions still require validation.
+
+### R-157 2026-10-30 — Trace direction-driven turning before imposing delays
+
+- Complete six read-only direction/selector traces with exact preceding outputs
+  at normal and corrected higher cadence. Capture the actual direction
+  comparisons before the turning flag and counter, plus complete bounded RNG
+  state snapshots before and after selection. All 141 paired selections leave
+  that RNG state unchanged in the observed window; this does not prove that
+  selection has no other side effects in every scene.
+- The normal turning direction comparison remains negative at 628
+  (-0.0040339548) and becomes positive at 630 (0.0081022121). Higher cadence
+  records corresponding values at 627 (-0.0040339604) and 629 (0.0081022084),
+  with an intermediate positive value at 628 (0.0034007765). The turning flag
+  consequently clears at 628 instead of 630. The earlier movement request was
+  sampled at 619 instead of 620. These observations support earlier input and
+  intermediate direction updates, rather than an unscaled one-update timer,
+  as the cause of this remaining transition difference.
+- Do not add a minimum action lifetime or force action publication onto even
+  ticks solely to reproduce normal capture timing. The preceding two-count
+  flag correction had direct timer-rate evidence; this transition needs a
+  different interpretation. Overall motion correctness remains unproven.
+- Turning still makes 161 observed bounded RNG calls. Earlier action
+  applications shift calls relative to NPC calls, so equal counts do not mean
+  identical draw assignment, even after ignoring timestamps. Broader audio
+  differences remain to be separated from changed random choices and actual
+  timing errors. Preserve the private action-geometry-trace evidence.
+
+### R-158 2026-10-30 — Move fractional timer arithmetic into the guest library
+
+- Add `usum_guest::timing::TickAccumulator` as core, game-data-free arithmetic.
+  It converts explicit elapsed guest-time units to whole logical ticks while
+  retaining the fraction. Its fixed scale is nonzero; quotient/remainder
+  splitting avoids overflow even for the largest elapsed value. Explicit clear
+  handles a reset whose guest counter remains zero. The caller remains
+  responsible for elapsed-time sourcing, timer eligibility and object lifetime.
+- All 40 guest-library unit tests pass, including new checks for zero-to-zero
+  reset, changing intervals, zero elapsed time, large-value overflow and cadence
+  partitions from 24 to 240 updates per second. These establish arithmetic
+  properties; they do not establish game correctness at those frame rates.
+- Replace the private field timer helper's manual fractional arithmetic with
+  this public implementation in all four existing timer domains. Preserve its
+  prior first-step, reset, expected-value, frame-gap and fixture policies. For
+  bounded-memory validation, compile the identical public source as a small
+  standalone dependency of the instrumented module, retaining frozen guest and
+  runtime libraries rather than recompiling every translated unit.
+- All nine integration controls reproduce their previous outputs exactly:
+  idle/turning/down at normal and corrected higher cadence, plus interrupted
+  movement at normal, disabled and enabled settings. Comparisons include full
+  WAVs, captured images, trajectory/audio traces, RNG snapshots and the existing
+  timer, selector, geometry and reset traces. Source and dependency hashes are
+  retained in native-clock-core-trace evidence.
+- This is a tested core building block used by the private native-FPS path, not
+  an interactive FPS unlock. Object lifecycle policies, non-fixture identities,
+  arbitrary-rate game scheduling, native rendered-frame measurement and broader
+  battle/movie/transition validation remain unfinished. No performance gain is
+  inferred from these correctness checks.
