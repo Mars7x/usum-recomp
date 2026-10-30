@@ -79,8 +79,8 @@ pub(super) fn resolve(mut result: LiveResult, scale: u32) -> LiveResult {
 
 pub(in crate::pica) fn capture_transfer(
     pica: &mut Pica,
-    input_address: u32,
-    output_address: u32,
+    mem: &Memory,
+    (input_address, output_address): (u32, u32),
     dims: ((u32, u32), (u32, u32)),
     flags: u32,
     input: &[u8],
@@ -126,19 +126,25 @@ pub(in crate::pica) fn capture_transfer(
         return Ok(());
     };
     let target = &pica.vulkan_live_target_cache[index];
-    let Some(contents) = &target.contents else {
-        trace(|| format!("source {input_address:#x}: missing native contents"));
-        return Ok(());
-    };
-    // CPU writes or an aliased target must not leave a stale high-resolution image.
-    for y in 0..oh * sy {
-        for x in 0..ow * sx {
-            let at = tiled_offset(x, y, source_dims.0) as usize * 4;
-            let src = ((origin.1 + y) * target.info.width + origin.0 + x) as usize * 4;
-            let pixel = &contents.color[src..src + 4];
-            if input.get(at..at + 4) != Some(&[pixel[3], pixel[2], pixel[1], pixel[0]]) {
-                trace(|| format!("source {input_address:#x}: native bytes differ at {x},{y}"));
-                return Ok(());
+    // The caller just read input from this memory without an intervening write.
+    // An exact immutable color-plane owner proves the sampled crop belongs to
+    // this GPU generation. CPU writes, unmaps and aliased generations lose it.
+    let resident = std::env::var("USUM_VULKAN_DISPLAY_IDENTITY").as_deref() != Ok("0")
+        && deferred::resident_color(pica, mem, target.info).is_some();
+    if !resident {
+        let Some(contents) = &target.contents else {
+            trace(|| format!("source {input_address:#x}: missing native contents"));
+            return Ok(());
+        };
+        for y in 0..oh * sy {
+            for x in 0..ow * sx {
+                let at = tiled_offset(x, y, source_dims.0) as usize * 4;
+                let src = ((origin.1 + y) * target.info.width + origin.0 + x) as usize * 4;
+                let pixel = &contents.color[src..src + 4];
+                if input.get(at..at + 4) != Some(&[pixel[3], pixel[2], pixel[1], pixel[0]]) {
+                    trace(|| format!("source {input_address:#x}: native bytes differ at {x},{y}"));
+                    return Ok(());
+                }
             }
         }
     }
@@ -317,10 +323,11 @@ mod tests {
         let renderer = live_renderer().unwrap();
         let mut pica = Pica::default();
         pica.enable_vulkan_acceleration();
+        pica.enable_vulkan_deferred_readback();
         pica.set_vulkan_resolution_scale(6).unwrap();
         let info = CaptureTarget {
             color_address: 0x2000_0000,
-            depth_address: 0,
+            depth_address: 0x2008_0000,
             width: 256,
             height: 512,
             color_format: 0,
@@ -371,8 +378,8 @@ mod tests {
         let address = pica.linear_base + 0x10_0000;
         capture_transfer(
             &mut pica,
-            memory.regions().next().unwrap().0 + 0x1c000,
-            address,
+            &memory,
+            (memory.regions().next().unwrap().0 + 0x1c000, address),
             ((256, 512), (240, 400)),
             0x1004,
             &input,
@@ -396,14 +403,26 @@ mod tests {
             })
         });
         assert!(varied, "presented native pixel blocks must retain subpixel raster edges");
+        // Repeat with an immutable guest-plane owner, including a cropped
+        // input inside the larger allocation. Both proofs must freeze the
+        // same high-resolution generation.
+        let ticket = Arc::new(renderer.begin_batch(&pica.vulkan_live_target_cache[0].gpu).submit_resolved_readback(6).unwrap());
+        deferred::install(&mut pica, &mut memory, info, ticket).unwrap();
+        let input_address = memory.regions().next().unwrap().0 + 0x1c000;
+        let input = memory.read_range(input_address, 409088).unwrap();
+        assert!(deferred::resident_color(&pica, &memory, info).is_some());
+        capture_transfer(&mut pica, &memory, (input_address, address), ((256, 512), (240, 400)), 0x1004, &input, &raw.bytes)
+            .unwrap();
+        assert_eq!(presented(&pica, &present, 400, &raw).unwrap().rgb().unwrap().as_ref(), expected_lcd);
         raw.bytes[0] ^= 1;
         assert!(presented(&pica, &present, 400, &raw).is_none(), "CPU changes invalidate stale display snapshots");
-        let mut changed_input = input;
-        changed_input[0] ^= 1;
+        memory.write_u8(input_address, input[0] ^ 1).unwrap();
+        assert!(deferred::resident_color(&pica, &memory, info).is_none());
+        let changed_input = memory.read_range(input_address, 409088).unwrap();
         capture_transfer(
             &mut pica,
-            memory.regions().next().unwrap().0 + 0x1c000,
-            address,
+            &memory,
+            (memory.regions().next().unwrap().0 + 0x1c000, address),
             ((256, 512), (240, 400)),
             0x1004,
             &changed_input,

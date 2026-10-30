@@ -361,13 +361,14 @@ impl Pica {
     #[cfg(feature = "vulkan-compare")]
     pub(crate) fn capture_scaled_transfer(
         &mut self,
+        mem: &Memory,
         addresses: (u32, u32),
         dims: ((u32, u32), (u32, u32)),
         flags: u32,
         input: &[u8],
         output: &[u8],
     ) -> Result<(), String> {
-        vulkan_compare::scale::capture_transfer(self, addresses.0, addresses.1, dims, flags, input, output)
+        vulkan_compare::scale::capture_transfer(self, mem, addresses, dims, flags, input, output)
     }
     #[cfg(feature = "vulkan-compare")]
     pub(crate) fn scaled_frame(

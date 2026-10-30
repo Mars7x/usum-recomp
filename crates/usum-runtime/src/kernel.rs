@@ -606,7 +606,7 @@ impl Kernel {
                     let input = mem.read_range(c[1], input_len).map_err(|f| format!("DisplayTransfer input: {f}"))?;
                     let out = crate::pica::display_transfer(&input, input_dims, output_dims, flags)?;
                     #[cfg(feature = "vulkan-compare")]
-                    self.pica.capture_scaled_transfer((c[1], c[2]), (input_dims, output_dims), flags, &input, &out)?;
+                    self.pica.capture_scaled_transfer(mem, (c[1], c[2]), (input_dims, output_dims), flags, &input, &out)?;
                     mem.device_write(c[2], &out).map_err(|f| format!("DisplayTransfer output: {f}"))?;
                     self.pica.display_transfer_time += started.elapsed();
                     self.pica.display_transfers += 1;

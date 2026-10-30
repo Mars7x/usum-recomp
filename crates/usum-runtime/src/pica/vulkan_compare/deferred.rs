@@ -119,7 +119,7 @@ pub(super) fn eligible(pica: &Pica, info: CaptureTarget) -> bool {
             .is_some_and(|size| !ranges_overlap(info.color_address, size, info.depth_address, size))
 }
 
-fn resident_color<'a>(pica: &'a Pica, mem: &Memory, info: CaptureTarget) -> Option<&'a Arc<DeferredTarget>> {
+pub(super) fn resident_color<'a>(pica: &'a Pica, mem: &Memory, info: CaptureTarget) -> Option<&'a Arc<DeferredTarget>> {
     if !eligible(pica, info) {
         return None;
     }

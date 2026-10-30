@@ -4648,3 +4648,49 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   and remaining movement/camera/event timing instead. Keep fixture addresses and
   generated diagnostic code private; validated engine bindings are still required
   before any core native-FPS implementation can use these findings.
+
+### R-139 2026-10-30 — Prove scaled LCD source ownership without a pixel scan
+
+- Fresh profiles after R-137 attribute 2.35%/1.93%/2.21% exclusive intro/world/
+  battle user-cycle samples to scaled transfer capture. That path compares every
+  sampled native pixel against a cached target even when guest memory still
+  holds its exact immutable GPU color-plane owner. Other visible costs include
+  dispatch/movie helpers, vertex input preparation, uploads and seed/readback.
+- After the unchanged guest input read and LCD conversion, use the existing
+  exact-range deferred color owner to prove the selected GPU generation. Retain
+  crop/stride/format/scale bounds. A CPU write, unmap or different aliased owner
+  loses the proof and uses the original byte comparison; ordinary RAM sources
+  also retain that path. Neither readback nor guest framebuffer output becomes
+  lazy. Depth ownership is unnecessary for a color-only LCD transfer.
+  `USUM_VULKAN_DISPLAY_IDENTITY=0` retains the per-pixel source check.
+- All 123 enabled window/Vulkan runtime tests, strict Clippy and formatting pass.
+  Extend the Vulkan 6× cropped-target test through ordinary bytes, an immutable
+  deferred owner, rotation/full-resolution presentation and a one-byte CPU write
+  invalidating the source. It passes with both policies. The remaining hardware
+  tests are not implied by this targeted invocation.
+- Preserve R-137's frozen binaries and verified baseline fixtures. Intro/world/
+  battle/long/restart replays keep all 74 images, five WAVs, saves and guest,
+  rendering, conversion and audio counters identical. Short fixtures also match
+  with the same-binary reference. There are zero software fallbacks.
+- Four balanced isolated trials per executable, at 6× without captures/profiling:
+
+  | Fixture | Baseline mean | Candidate mean | Throughput change |
+  |---|---:|---:|---:|
+  | Intro, 6 guest seconds | 5.73350 s | 5.74350 s | -0.17% |
+  | Overworld, 16 guest seconds | 12.44750 s | 12.32500 s | +0.99% |
+  | Battle, 30 guest seconds | 19.69625 s | 19.44575 s | +1.29% |
+
+- Intro candidate times are 6.154/5.607/5.588/5.625 seconds. Keep the slower first
+  accepted trial in the result; do not infer a reliable intro wall-time gain.
+  Same-binary reference means are 5.782/12.4075/19.7305 seconds. Discard observed
+  compiler/diagnostic/encoder overlap and wait for other work; no external job
+  is paused or stopped.
+- Separate fully scheduled user-counter pairs reduce instructions 3.28% intro,
+  3.53% overworld and 4.12% battle, with cycles down 1.91%/1.96%/1.35%. Normal-speed
+  windowed means are 6.0055/6.0050, 16.0200/16.0195 and 30.0185/30.0190 seconds
+  before/after: no meaningful windowed gain at the existing cadence. Saves and
+  guest counters match; resident presentation has no materialized source uses.
+- Keep the change for lower host work and the measured gameplay throughput gains.
+  Native simulation timing is unchanged, and this does not unlock dynamic FPS.
+  Broader compatibility and performance remain unverified outside these fixtures.
+  Private binaries, input/save hashes and results are in display-identity-validation.
