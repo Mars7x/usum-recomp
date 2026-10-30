@@ -5602,3 +5602,32 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   writes that leave values unchanged. Other actors, arbitrary cadence and
   battle/movie/transition behavior remain unvalidated. No throughput claim is
   made from these bounded correctness runs.
+
+### R-161 2026-10-30 — Move per-state event credits into the guest library
+
+- Add `usum_guest::timing::FrameCredits<K, V>` as game-data-free core storage.
+  Credits belong to a caller-supplied guest frame and state identity. Lookup and
+  consumption require the publication frame; consuming or invalidating one
+  state preserves other states. Publishing in a different frame discards older
+  entries, and explicit clear handles session replacement. Callers remain
+  responsible for validating live ownership and invalidating lifecycle changes.
+- All seven standalone timing-module tests pass. New coverage includes
+  interleaved states, single consumption, explicit same-value reset/address
+  reuse, frame changes, rewind on publication and session clear. The existing
+  fractional-timer arithmetic tests remain passing. These tests exercise core
+  metadata and arithmetic, not complete game scheduling or actor lifetimes.
+- Replace the private registry's hand-written map handling with this exact
+  public source, preserving its eligibility, reset policy and singleton
+  comparison path. Compile an identical source snapshot as a small standalone
+  dependency to retain the frozen translated units and bounded-memory workflow.
+  The integrated actual-helper guard checks also pass.
+- All nine extraction controls are exact: idle/turning/straight movement at
+  normal cadence, corrected higher cadence with the registry disabled, and
+  corrected higher cadence with it enabled. Compare every existing CSV, WAV,
+  PPM and RNG binary, including owner traces. Independently verify source-save,
+  input, case-binary, harness and manifest hashes; the public source hash equals
+  the compiled snapshot's hash. Preserve event-credit-core evidence.
+- This core component is now used by the private native-FPS experiment. It does
+  not enable interactive native FPS, broaden actor eligibility, or settle the
+  field-writer/reset distinction noted in R-160. Arbitrary cadence and broader
+  gameplay validation remain necessary; these runs do not measure throughput.

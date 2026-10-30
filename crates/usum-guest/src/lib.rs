@@ -3,8 +3,8 @@
 //! Generated code may use only what this crate exports: [`Cpu`] (registers
 //! and flags), [`Memory`] (the 32-bit guest address space), the helpers in
 //! [`ops`] (instruction semantics shared by all generated code, so each is
-//! written and tested once), [`timing`] (explicit elapsed-time arithmetic for
-//! cadence adaptations), and the [`Exit`]/[`Fault`] protocol. Guest
+//! written and tested once), [`timing`] (elapsed-time arithmetic and per-state
+//! event credits for cadence adaptations), and the [`Exit`]/[`Fault`] protocol. Guest
 //! addresses are plain `u32` values, never host pointers, and every guest
 //! integer operation is explicitly wrapping or checked.
 

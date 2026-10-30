@@ -1,10 +1,70 @@
-//! Fractional guest timer arithmetic for native cadence adaptations.
+//! Guest timing helpers for native cadence adaptations.
 //!
 //! Callers supply elapsed guest-time units, choose which timers advance, and
 //! clear state at actual resets or object-lifetime boundaries. This module does
 //! not read wall time, schedule the guest, or count rendered frames.
 
+use std::collections::BTreeMap;
 use std::num::NonZeroU32;
+
+/// Single-use timing credits owned by individual states in one guest frame.
+///
+/// A credit can pair a pose update with its later event query without allowing
+/// another state's update to overwrite it. Frame identifiers come from the
+/// caller's guest update domain, not presentation or wall time. The caller must
+/// validate the live owner and animation fields before consuming a credit, and
+/// invalidate it on reset, rebinding, destruction or address reuse, even when
+/// guest values do not change. This container does not infer object lifetimes.
+#[derive(Clone, Debug)]
+pub struct FrameCredits<K, V> {
+    frame: Option<u64>,
+    entries: BTreeMap<K, V>,
+}
+
+impl<K: Ord, V> Default for FrameCredits<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K: Ord, V> FrameCredits<K, V> {
+    pub const fn new() -> Self {
+        Self { frame: None, entries: BTreeMap::new() }
+    }
+
+    /// Publish a credit, replacing this state's previous credit. Publishing in
+    /// a different frame discards all older metadata, including on a rewind.
+    pub fn insert(&mut self, frame: u64, state: K, value: V) -> Option<V> {
+        if self.frame != Some(frame) {
+            self.entries.clear();
+            self.frame = Some(frame);
+        }
+        self.entries.insert(state, value)
+    }
+
+    /// Inspect a credit before checking the caller's live ownership guards.
+    pub fn peek(&self, frame: u64, state: &K) -> Option<&V> {
+        if self.frame != Some(frame) { return None; }
+        self.entries.get(state)
+    }
+
+    /// Consume only this state's credit, and only in its publication frame.
+    pub fn take(&mut self, frame: u64, state: &K) -> Option<V> {
+        if self.frame != Some(frame) { return None; }
+        self.entries.remove(state)
+    }
+
+    /// Invalidate a state at a lifecycle boundary, independently of other states.
+    pub fn invalidate(&mut self, state: &K) -> Option<V> {
+        self.entries.remove(state)
+    }
+
+    /// Discard every credit, for example when replacing the guest session.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.frame = None;
+    }
+}
 
 /// Converts elapsed units to whole logical ticks without discarding fractions.
 ///
@@ -46,8 +106,47 @@ impl TickAccumulator {
 
 #[cfg(test)]
 mod tests {
-    use super::TickAccumulator;
+    use super::{FrameCredits, TickAccumulator};
     use std::num::NonZeroU32;
+
+    #[test]
+    fn interleaved_states_consume_independently_once() {
+        let mut credits = FrameCredits::new();
+        credits.insert(20, "player", 1);
+        credits.insert(20, "npc", 2);
+        assert_eq!(credits.peek(20, &"player"), Some(&1));
+        assert_eq!(credits.take(20, &"player"), Some(1));
+        assert_eq!(credits.take(20, &"player"), None);
+        assert_eq!(credits.take(20, &"npc"), Some(2));
+    }
+
+    #[test]
+    fn same_value_reset_and_address_reuse_need_a_new_credit() {
+        let mut credits = FrameCredits::new();
+        credits.insert(20, 0x1000, 1);
+        credits.insert(20, 0x2000, 1);
+        credits.invalidate(&0x1000);
+        assert_eq!(credits.take(20, &0x1000), None);
+        assert_eq!(credits.take(20, &0x2000), Some(1));
+        credits.insert(20, 0x1000, 1);
+        assert_eq!(credits.take(20, &0x1000), Some(1));
+    }
+
+    #[test]
+    fn frame_changes_and_session_reset_do_not_resurrect_credits() {
+        let mut credits = FrameCredits::new();
+        credits.insert(20, 1, 7);
+        assert_eq!(credits.peek(21, &1), None);
+        assert_eq!(credits.take(21, &1), None);
+        credits.insert(21, 2, 8);
+        assert_eq!(credits.take(20, &1), None);
+        credits.insert(19, 3, 9);
+        assert_eq!(credits.take(21, &2), None);
+        credits.clear();
+        assert_eq!(credits.take(19, &3), None);
+        credits.insert(19, 3, 10);
+        assert_eq!(credits.take(19, &3), Some(10));
+    }
 
     #[test]
     fn zero_to_zero_reset_discards_pending_half_tick() {
