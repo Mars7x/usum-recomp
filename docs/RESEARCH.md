@@ -5082,3 +5082,33 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
 - Compile and test sequentially at one job. The temporary memory monitor never
   triggered and was removed before benchmarking. Wait for external work; stop
   no encoder. No game-derived source or captured media is published.
+
+### R-148 2026-10-30 — Separate temporary FPS rate reads from nominal save/restore
+
+- Trace a private higher-cadence animation state whose stored nominal rate changes
+  from 1.0 to 0.5. A getter consumer saves the rate, invokes a temporary virtual
+  setter, then restores the saved value. Broadly halving getter results leaks
+  the effective per-update step into permanent animation state. This differs
+  from deliberately scaling the time advanced by an update.
+- In the frozen diagnostic harness, scope effective-rate reads to the observed
+  movement consumer using its wrapper return address and saved caller. Other
+  consumers receive the nominal value. Keep the previous broad policy and normal
+  cadence as controls. This is a private, fixture-specific ABI proof, not a
+  production engine binding or general caller/lifecycle guarantee.
+- Six turning/down replays complete. Both normal-cadence and broad-policy controls
+  reproduce their archived trajectories, final native image, full WAV and audio
+  events exactly. In the new higher-cadence variant, all 356 noninitial reads of
+  the affected state retain nominal 1.0. Previously the turning trace had 283
+  reads at 0.5 after 73 at 1.0; down had 278 after 78. Normal cadence has 179
+  noninitial reads at 1.0. The initial zero sample is unchanged in every case.
+- Correcting that state does not resolve the remaining cadence differences.
+  Turning still has 49 nonstream source starts versus 47 normally; down has 43
+  versus 39. The new variant and broad control have identical final images,
+  complete WAVs, audio-event traces and per-row positions. Their trajectory CSVs
+  differ only in the guest-time column; do not describe those files as byte-exact.
+  Stream traces remain exact against normal cadence in both scenes.
+- Preserve source/dependency hashes, controls and diagnostics privately in
+  effective-rate-caller-build/effective-rate-caller-tests. Treat the scoped getter
+  as the corrected hypothesis for subsequent composition tests; actor timer
+  scope is being tested separately against the old broad policy to isolate its
+  effect. No throughput gain or released native-FPS unlock is claimed.
