@@ -5570,3 +5570,35 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   guard checks. Singleton credit storage, reset/rebinding invalidation, other
   actors, arbitrary game cadence and interactive integration remain open.
   No performance improvement is inferred from these correctness checks.
+
+### R-160 2026-10-30 — Keep event credits per animation state
+
+- Add an opt-in private event-credit registry keyed by the live selected
+  animation state. Publishing in a new guest frame removes older credits;
+  consuming one state's credit leaves other states intact. Retain the original
+  singleton path for comparison and keep first-step eligibility restricted to
+  the existing player fixture.
+- Exercise reset/rebinding invalidation separately from event consumption. The
+  first candidate incorrectly cleared a pending first-pose step on a routine
+  same-rate assignment after reset. Idle replay lost its frame-626 credit and
+  diverged in poses, RNG snapshots and the final image. Reject that candidate.
+  The corrected version preserves the pending pose step through that assignment
+  while retaining the existing value checks and explicit reset/binding clears.
+- All twelve corrected controls pass: idle, turning and straight movement at
+  normal cadence with the registry off/on and corrected higher cadence with it
+  off/on. An independent audit compares every captured CSV, WAV, PPM and RNG
+  binary, including owner traces initially excluded from the worker's strict
+  comparison. All are exact. The audit also verifies source-save, recorded-input,
+  case-binary and manifest hashes against their recorded references.
+- Actual-helper synthetic checks cover independent credits for two states,
+  single-use consumption, stale-frame removal, invalidating one state without
+  clearing another, and the producer-to-consumer path across the routine rate
+  assignment. These establish metadata behavior, not real multi-actor gameplay
+  coverage. Preserve failed event-registry-trace and corrected event-registry-v2
+  evidence rather than overwriting the failed run.
+- This removes singleton storage as a prerequisite for broader ownership work.
+  It does not complete lifecycle policy: simple rate/bounds/loop/phase writers
+  must be distinguished from actual reset and binding operations, including
+  writes that leave values unchanged. Other actors, arbitrary cadence and
+  battle/movie/transition behavior remain unvalidated. No throughput claim is
+  made from these bounded correctness runs.
