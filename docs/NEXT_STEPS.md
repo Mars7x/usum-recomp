@@ -68,6 +68,9 @@ See [compatibility](COMPATIBILITY.md), [building and controls](BUILDING.md),
   work. Intro throughput is slightly worse in the input-cache trials (about
   0.6–1.3%); it has no eligible input batches. Reference policies remain
   available, and normal-speed play is still limited by engine cadence.
+- Morton tile-row target conversion (R-145) adds about 1.9% intro, 3.6% world
+  and 3.1% battle throughput versus R-144 in isolated replays, with identical
+  outputs and lower host CPU work. Its scalar comparison path is retained.
 - Offline Mystery Gift search cancellation and system network-error dialogs now
   return through the game's normal menu/restart flow (R-131). These are offline
   compatibility paths; gift delivery and communication with peers are absent.

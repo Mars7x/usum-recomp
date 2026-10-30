@@ -6,6 +6,7 @@ mod deferred;
 pub use deferred::FrozenTexture;
 mod resident;
 pub(super) mod scale;
+mod target_rows;
 
 use std::sync::Arc;
 use usum_guest::Memory;
@@ -648,6 +649,9 @@ fn uniform_d24s8_target(raw: &[u8], width: u32, pixels: usize) -> Option<(f32, u
 // their loads and stores fixed-size avoids per-pixel variable slice copies,
 // format dispatch and Vec growth checks in every command-list snapshot.
 fn decode_rgba8_target(raw: &[u8], output: &mut [u8], width: u32) {
+    if target_rows::enabled() && target_rows::decode_color(raw, output, width) {
+        return;
+    }
     if width == 0 {
         return;
     }
@@ -660,6 +664,9 @@ fn decode_rgba8_target(raw: &[u8], output: &mut [u8], width: u32) {
 }
 
 fn decode_d24s8_target(raw: &[u8], output: &mut [f32], stencil: &mut [u8], width: u32) {
+    if target_rows::enabled() && target_rows::decode_depth(raw, output, stencil, width) {
+        return;
+    }
     if width == 0 {
         return;
     }
@@ -892,6 +899,9 @@ fn write_depth_stencil_result(
 }
 
 fn encode_rgba8_target(color: &[u8], tiled: &mut [u8], width: u32) {
+    if target_rows::enabled() && target_rows::encode_color(color, tiled, width) {
+        return;
+    }
     if width == 0 {
         return;
     }
@@ -904,6 +914,9 @@ fn encode_rgba8_target(color: &[u8], tiled: &mut [u8], width: u32) {
 }
 
 fn encode_d24s8_target(depth: &[f32], stencil: Option<&[u8]>, tiled: &mut [u8], width: u32) {
+    if target_rows::enabled() && target_rows::encode_depth(depth, stencil, tiled, width) {
+        return;
+    }
     if width == 0 {
         return;
     }

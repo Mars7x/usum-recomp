@@ -4964,3 +4964,48 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   0x004bed34 (5.14%) and several separately instantiated word writers. These
   remain candidates for narrowly scoped native/helper work; whole-function
   replacements must preserve budget exits, memory faults, registers and timing.
+
+### R-145 2026-10-30 — Convert framebuffer targets by Morton tile row
+
+- Follow the fresh R-144 gameplay-only profile: target import is 12.03%
+  inclusive (3.53% self), deferred plane encoding 8.35% inclusive, and D24S8
+  decode/encode 2.13%/1.41% self. These overlap. Extend the R-134 display-row
+  approach to the separate RGBA8 and D24S8 target converters: compute one
+  Morton base per eight-pixel row, then use fixed within-tile offsets.
+- Preserve every color byte, depth clamp/division/quantization and stencil byte.
+  Complete aligned tile shapes use the row converters. Unsupported dimensions,
+  incomplete tiles and short/mismatched buffers retain the original scalar
+  path and its bounds behavior. `USUM_VULKAN_TARGET_TILE_ROWS=0` restores the
+  per-pixel converters; the comparison policy is captured at first use.
+- Two synthetic tests compare against scalar Morton oracles across tile widths
+  and native framebuffer sizes, randomized raw bytes, NaNs/subnormals/infinities,
+  signed zero, rounding boundaries, supplied/preserved stencil and untouched
+  trailing bytes. Ineligible shapes leave outputs untouched for scalar fallback.
+  All 130 enabled runtime tests pass under both policies, all 12 Vulkan runtime
+  integration tests pass, and strict Clippy/formatting pass.
+- Five frozen R-144/candidate replays preserve all 74 native/scaled images,
+  five WAVs, saves and guest instruction/VBlank/draw/triangle/update/audio/movie
+  counters, with zero software fallbacks. Short fixtures also match the
+  same-binary scalar converters. Source snapshots match the measured release
+  candidate. No game-derived artifact is published.
+- Four balanced isolated 6× trials per executable, without captures/profiling:
+
+  | Fixture | R-144 baseline mean | Tile-row mean | Throughput change |
+  |---|---:|---:|---:|
+  | Intro, 6 guest seconds | 5.53300 s | 5.43000 s | +1.90% |
+  | Overworld, 16 guest seconds | 11.20100 s | 10.81375 s | +3.58% |
+  | Battle, 30 guest seconds | 18.35300 s | 17.79300 s | +3.15% |
+
+- Same-binary scalar means are 5.5495/11.2110/18.2905 seconds. Separate fully
+  scheduled native-counter pairs reduce host instructions 6.1004%/13.9382%/
+  11.9336% and cycles 3.5475%/5.7125%/5.1970% for intro/world/battle. Guest work
+  remains identical. Sample/instruction reductions are not rendered-FPS counts.
+- Normal-speed window means are 6.005/6.0045, 16.0165/16.0155 and 30.016/30.017
+  seconds before/after. Saves/counters agree, with no materialized display-source
+  uses. Existing cadence still limits these runs. No regression appears in the
+  tested recordings; broader scenes/adapters remain uncertain.
+- Wait for encoders and reject observed benchmark overlap. A brief private
+  synthetic helper experiment overlaps one trial; retain that discarded log
+  and use its isolated rerun. Stop no external process. Private evidence and
+  frozen executables remain in target-tile-rows-validation. Native dynamic FPS
+  remains separate correctness work and is not enabled by this optimization.

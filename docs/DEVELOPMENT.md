@@ -295,6 +295,12 @@ layout. Both planes still come from the same immutable GPU ticket, and reading
 both counts as one materialized target. `USUM_VULKAN_SPLIT_ENCODE=0` restores
 eager conversion of both planes for reference comparisons.
 
+Complete RGBA8/D24S8 target conversions process eight-pixel Morton rows with a
+shared base offset, preserving color bytes, depth arithmetic and stencil values.
+Incomplete tiles, short buffers and unsupported shapes retain the scalar
+converter. `USUM_VULKAN_TARGET_TILE_ROWS=0` selects the original per-pixel offset
+calculation; this process-wide comparison policy is captured on first use.
+
 D24S8 imports recognize complete, exactly uniform depth/stencil planes and fill
 their linear buffers with the decoded value. Nonuniform planes retain the tiled
 decoder. `USUM_VULKAN_UNIFORM_DEPTH=0` selects that decoder for every import.
