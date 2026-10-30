@@ -41,6 +41,10 @@ See [compatibility](COMPATIBILITY.md), [building and controls](BUILDING.md),
   still differ (R-127). Scaling only player movement still changes encounter
   behavior (R-130). Separate movement accumulation is now traced (R-133);
   correcting it avoids one early encounter, but movement and audio still differ.
+  Coordinated animation and movement-cap stepping now matches intended steady
+  movement in straight replays and produces additional distinct game images
+  (R-136). Position, effects and timing differences remain; the prototype is
+  private and native dynamic FPS is still being developed.
   Higher presentation counts alone are not native FPS.
 - Coarser GPU input scheduling reduces worker overhead (R-128), with about 3%
   overworld and 2.5% battle throughput gains in isolated replays. Normal-speed
@@ -70,7 +74,9 @@ See [compatibility](COMPATIBILITY.md), [building and controls](BUILDING.md),
    game-time checkpoints, and compare encounter decisions, event ordering and
    audio start times against the original cadence. Additional frames must come
    from engine rendering with correctly advanced scene state; matching travel
-   distance or increasing framebuffer submissions alone is insufficient.
+   distance or increasing framebuffer submissions alone is insufficient. R-136
+   next requires effective animation steps that preserve nominal rates, plus
+   checks of blend clocks, camera behavior and integer timers.
 2. **Profile-led optimization.** Revisit intro/movie helpers, checked memory,
    frequent guest helpers, vertex preparation and GPU synchronization using
    fresh profiles. Retain a reference path and frozen before/after executables.

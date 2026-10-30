@@ -4507,3 +4507,58 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
 - Private binaries, hashes, captures and benchmark results are retained under
   `module-revision-validation`. Guest code, instruction charges, clocks and
   native frame cadence are unchanged. Full-game behavior remains unverified.
+
+### R-136 2026-10-30 — Coordinate animation stepping and movement caps
+
+- A hardware watchpoint in the private diagnostic child identifies animation
+  state with a stored rate, current phase and previous phase. Root-motion
+  extraction also consumes the stored rate. Halving only phase advancement
+  leaves movement extraction inconsistent; it still produces roughly double
+  travel in the recorded higher-cadence run. Instrumented controls preserve
+  their prior trajectories, final images, WAVs and audio-event logs exactly.
+- A second diagnostic normalizes the observed player's stored unit rates to
+  half steps. It changes the steady movement vector from 19 to about 11.78
+  units, rather than the required 9.5. Trace the subsequent per-update cap:
+  the original movement exceeds the 19-unit cap, while the half-step vector
+  falls below it. The cap therefore needs the same timestep treatment.
+- Cover both overlapping generated copies of the cap block. An initial probe
+  changed only the resume translation and did not exercise the intended path;
+  its unchanged result cannot test the hypothesis. Corrected instrumentation
+  records 62 primary cap executions normally and 126 at the higher cadence.
+  It preserves the original block instruction charges and scales the complete
+  cap expression, producing steady 9.5-unit steps.
+- Across 100 shared samples in the turning replay, normal/rate-only/coordinated
+  travel is 932.95/1197.96/980.23 units. The coordinated run still differs by up
+  to 54.76 units and produces 323 non-music source events versus 349 normally.
+  It submits 675 top buffers versus 498 normal; additional rendering alone
+  does not validate movement, collision, event or audio timing. Normalizing
+  observed animation channels globally produces similar player results, with
+  980.29 units of travel.
+- Build a separate replay-input harness and retain the original replay as a
+  control. Adding pose readbacks preserves that control's trajectory, final
+  image, waveform and audio-event log. Four cardinal-direction scripts use
+  the same starting save and pre-transition inputs, then hold a fixed circle
+  direction before releasing it. For engine-frame interval [640,680), the
+  downward and rightward runs each deliver 380 intended movement units at
+  both cadences: 20 original steps versus 40 half steps. Upward intended
+  movement is 347.20 units in each run; leftward differs about 0.23%.
+- Between VBlanks 650 and 670, each straight replay captures 11 distinct
+  guest-rendered top images normally and 21 at the higher cadence. These are
+  game framebuffer outputs from additional engine work, with fractional
+  animation stepping; no window repeats, generated frames or extrapolation
+  are counted. These traced virtual-clock runs are correctness diagnostics,
+  not normal-speed FPS benchmarks.
+- World positions still diverge, with 26.7–38.4-unit maximum offsets in the
+  sampled steady intervals. Audio source-zero events match in the turning
+  and downward cases checked, while effects differ. Probe snapshots can lag
+  the engine's current frame, so separate input/pipeline sampling effects from
+  actual collision and timing defects before accepting broader equivalence.
+- This remains private research under `native-fps-research/motion-*` and
+  `straight-controls`, including input/save/source/binary hashes and frozen
+  diagnostic libraries. The constant-rate rewrite handles only the observed
+  rates and must not become production policy. Next, preserve nominal rates
+  and apply an effective per-frame step consistently to advancement and root
+  extraction; investigate blend clocks, camera updates and integer timers.
+  Replace save-object addresses with validated engine bindings before exposing
+  native dynamic FPS as a core feature. The normal build contains no timing
+  diagnostic hooks, and its existing cadence is unchanged.
