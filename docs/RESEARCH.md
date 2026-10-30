@@ -5356,3 +5356,42 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   and first-event-movement experiment directories. These are fixture-specific
   correctness experiments, not performance trials or a playable native-FPS
   feature; lifetime safety and arbitrary-rate behavior remain unproven.
+
+### R-154 2026-10-30 — Cover the completed reset return used by walking
+
+- Inspect the reset routine's alternate return in both generated copies. It
+  writes current and previous phase before branching, so this path completes a
+  reset even when it does not rebind a different clip. Add a private opt-in
+  first-step credit at that return, retaining the existing identity, frame,
+  phase, loop and rate guards and the paired event-step calculation.
+- Three short idle replays and six turning/down replays complete. Normal paths
+  reproduce archived outputs; disabled-feature paths reproduce the previous
+  candidate, including trajectories, full WAVs, audio events, images, phase/RNG
+  traces and first-step/event logs. The additional read-only return trace is
+  compared after removing its newly added rows. The enabled idle outputs are
+  unchanged from the preceding candidate.
+- Straight walking now receives the missing first-step credit at engine frame
+  620. The pose advances to 1, the event interval is [0, 1], and subsequent
+  shared-tick phases are 2, 3, 4, and so on, matching normal cadence until later
+  action changes. All 157 bounded RNG-entry tuples still match normal. Turning
+  does not activate an additional credit and retains the previous outputs.
+- Some straight-movement audio timings improve: observed source starts at DSP
+  frames 2137 and 2171 now match normal instead of 2141 and 2175. Later starts
+  and sample choices still differ. Nonstream source-start counts remain 43
+  versus 39 normally for down movement, and 49 versus 47 for turning. Action
+  transition frames are unchanged, including the still-early special action.
+  These remaining differences prevent treating this as a complete motion fix.
+- The frame-620 movement setter records zero translation in all variants;
+  matching its animation phase does not prove that movement needs the same
+  exceptional first-step adjustment. Investigate consumers from their actual
+  call timing and arguments instead of broadly changing nominal-rate getters.
+- Extend all three idle variants to 30 guest seconds. Each preserves its short
+  image, bounded phase/RNG traces, trajectory/event prefixes and full WAV prefix.
+  Normal, disabled and enabled variants select the same observed idle variation
+  and transition at frames 600, 626, 1242 and 1444. Each has 23 nonstream source
+  starts; matching counts and transition frames do not erase the remaining
+  audio or pose differences.
+- Preserve the private animation-reset-return, reset-return-movement and
+  reset-return-long sources, hashes and captures. Queue read-only field
+  action-entry traces to locate the remaining early changes before altering
+  their scheduling. These results do not enable interactive native FPS.
