@@ -7,6 +7,27 @@
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
+/// Convert a per-logical-tick exponential blend to an elapsed-time blend.
+///
+/// `elapsed_ticks` is elapsed guest time divided by the nominal tick duration,
+/// not a render-frame count. With a constant target, splitting an interval
+/// preserves its total decay: the remaining fraction is `(1 - blend)^time`.
+/// Callers retain responsibility for moving targets and discrete event timing.
+/// Unsupported values return `None` so the caller can retain guest behavior.
+pub fn blend_for_elapsed(blend: f64, elapsed_ticks: f64) -> Option<f64> {
+    if !blend.is_finite() || !(0.0..=1.0).contains(&blend)
+        || !elapsed_ticks.is_finite() || elapsed_ticks < 0.0
+    {
+        return None;
+    }
+    if elapsed_ticks == 0.0 || blend == 0.0 { return Some(0.0); }
+    if elapsed_ticks == 1.0 || blend == 1.0 { return Some(blend); }
+    // Preserve the previously audited half-tick calculation, including its
+    // rounding, while avoiding cancellation for small nominal blends.
+    if elapsed_ticks == 0.5 { return Some(blend / (1.0 + (1.0 - blend).sqrt())); }
+    Some(-((-blend).ln_1p() * elapsed_ticks).exp_m1())
+}
+
 /// Single-use timing credits owned by individual states in one guest frame.
 ///
 /// A credit can pair a pose update with its later event query without allowing
@@ -106,8 +127,46 @@ impl TickAccumulator {
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameCredits, TickAccumulator};
+    use super::{blend_for_elapsed, FrameCredits, TickAccumulator};
     use std::num::NonZeroU32;
+
+    #[test]
+    fn changing_cadence_preserves_constant_target_decay() {
+        for blend in [1e-12, 0.01, 0.25, 0.75, 0.99] {
+            // Changing cadence, including a zero-time update and a long step.
+            let steps = [0.125, 0.5, 0.0, 0.3, 1.25, 0.025, 0.8];
+            let remaining = steps.into_iter().fold(1.0, |r, dt| {
+                r * (1.0 - blend_for_elapsed(blend, dt).unwrap())
+            });
+            let expected = 1.0 - blend_for_elapsed(blend, steps.into_iter().sum()).unwrap();
+            assert!((remaining - expected).abs() < 2e-15);
+        }
+    }
+
+    #[test]
+    fn elapsed_blend_preserves_known_steps_and_small_values() {
+        for blend in [f64::from(f32::MIN_POSITIVE), 1e-12, 0.1, 0.9, 1.0] {
+            assert_eq!(blend_for_elapsed(blend, 0.0), Some(0.0));
+            assert_eq!(blend_for_elapsed(blend, 1.0), Some(blend));
+            assert_eq!(blend_for_elapsed(blend, 0.5), Some(blend / (1.0 + (1.0 - blend).sqrt())));
+            for hz in [24, 30, 40, 60, 90, 120, 144, 165, 240] {
+                let step = blend_for_elapsed(blend, 30.0 / f64::from(hz)).unwrap();
+                assert!(step > 0.0 && step <= 1.0);
+            }
+        }
+        assert_eq!(blend_for_elapsed(0.0, f64::MAX), Some(0.0));
+        assert_eq!(blend_for_elapsed(1.0, 0.1), Some(1.0));
+    }
+
+    #[test]
+    fn unsupported_blends_and_elapsed_times_are_not_silently_clamped() {
+        for blend in [-0.1, 1.1, f64::NAN, f64::INFINITY] {
+            assert_eq!(blend_for_elapsed(blend, 0.5), None);
+        }
+        for dt in [-0.1, f64::NAN, f64::INFINITY] {
+            assert_eq!(blend_for_elapsed(0.5, dt), None);
+        }
+    }
 
     #[test]
     fn interleaved_states_consume_independently_once() {

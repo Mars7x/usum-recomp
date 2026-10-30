@@ -5683,3 +5683,69 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   infer that the latter ordering occurred in those gameplay recordings or that
   this produces a measurable speedup. Other field writers, non-fixture actor
   binding, arbitrary cadence and broader gameplay validation remain open.
+
+### R-164 2026-10-30 — Bind first-step timing to live player model components
+
+- Complete six read-only reset-context controls without changing any preceding
+  CSV, WAV, PPM or RNG binary. The audited caller walks fourteen inline model
+  components, then the main model. Captured caller context agrees with the live
+  player pointer chain in all three recordings at both cadences. This establishes
+  actual model composition independently of the allocation context in R-162.
+- Add a private opt-in producer policy that resolves the live player model and
+  its component animation owners. Only primary-bank layer zero with a matching
+  live resource is eligible. Record the root/model/owner binding when arming a
+  first step, and revalidate it before consumption. Keep the prior resource-only
+  policy selectable. Synthetic helper checks cover independent main/component
+  credits, missing banks, wrong resources, unrelated states, rebinding, reset,
+  frame changes and invalid pointer chains.
+- Complete nine replay comparisons. All six normal-cadence and old-policy
+  controls remain exact. Independently verify all nine input, starting-save,
+  binary, harness and manifest records. In the enabled idle case, the previously
+  lagging component matches 92/92 shared phase samples instead of 4/92. In
+  straight movement, two component states improve from 12/64 to 49/64 and from
+  12/61 to 47/61 matching shared phase samples; their changed samples match.
+- Turning illustrates why shared timestamps alone are insufficient. At frame
+  790 the higher-cadence path resets both main and component models; normal
+  cadence resets them at 792. The correction synchronizes both models from
+  phases 1 through 6 at frames 790–800, removing their former half-phase offset.
+  It increases the component's difference from normal at five shared timestamps
+  because the action itself starts earlier. That action-start difference remains
+  unresolved by this change and is not evidence of arbitrary-cadence correctness.
+- All three enabled cases retain the prior higher-cadence position samples,
+  audio captures/events and RNG state binaries. Changed trajectory/RNG CSV
+  fields are timestamps only. Some trace VBlank boundaries and instruction
+  budgets change; rendered poses change with the corrected component phase.
+  Preserve component-step evidence and comparisons rather than claiming byte
+  identity for the new policy or a throughput improvement.
+- This removes a fixed resource address from this eligibility decision, not the
+  experiment's remaining fixture gates, half-step arithmetic or normal-launch
+  integration gap. Freely varying native cadence remains the required feature.
+
+### R-165 2026-10-30 — Use elapsed-time arithmetic for rotation smoothing
+
+- Add core `blend_for_elapsed` arithmetic. Convert a nominal exponential blend
+  to `1 - (1 - blend)^elapsed_ticks`, using stable logarithm/exponential forms
+  for arbitrary elapsed intervals. Preserve the audited half-tick calculation
+  and exact zero/one-tick cases. Reject unsupported inputs instead of silently
+  clamping guest behavior. The caller supplies elapsed guest time and retains
+  responsibility for moving targets, events and floating-point guest semantics.
+- All ten standalone timing-module tests pass. New tests cover partitioning a
+  constant-target decay across changing intervals, zero elapsed time, small
+  blend factors, nominal/half-tick identity, invalid values and step sizes
+  corresponding to 24–240 Hz. These prove arithmetic properties, not full-game
+  behavior at those rates.
+- Compile an identical public-source snapshot as a small dependency and use it
+  in the private rotation consumer, retaining the existing half-tick input and
+  guest float conversion. Reuse the preceding stable frozen game dependencies;
+  this comparison is independent of R-164's new component policy.
+- All six idle/turning/straight-movement controls at normal and higher cadence
+  preserve every preceding CSV, WAV, PPM and RNG binary. Independently verify
+  all six starting saves, input recordings, binaries, harness and manifest
+  hashes, and the identity of the public source and compiled snapshot. Preserve
+  elapsed-blend evidence and the original harness for comparison.
+- The smoothing calculation now supports varying elapsed intervals, but the
+  existing consumer still supplies a half tick. Animation increments, integer
+  timers and engine scheduling must share elapsed guest time before freely
+  varying native gameplay cadence is available. Hardware VBlank/audio timing
+  must remain independent of presentation and native update rates. No FPS
+  throughput result or complete dynamic-FPS feature is claimed here.
