@@ -88,6 +88,8 @@ See [compatibility](COMPATIBILITY.md), [building and controls](BUILDING.md),
    audio start times against the original cadence. Additional frames must come
    from engine rendering with correctly advanced scene state. R-143 tests clocks
    anchored to observed counter resets and adjusts effective turning/blend steps.
+   R-146 records actual reset stores and preserves the previous best diagnostic
+   with explicit resets; immediate-first countup makes it worse.
    Straight travel is close, but transition positions and effect timing still
    diverge. General lifecycle/reset integration remains necessary; the private
    diagnostic is not a shipped unlock.

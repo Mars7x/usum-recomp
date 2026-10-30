@@ -5009,3 +5009,30 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   and use its isolated rerun. Stop no external process. Private evidence and
   frozen executables remain in target-tile-rows-validation. Native dynamic FPS
   remains separate correctness work and is not enabled by this optimization.
+
+### R-146 2026-10-30 — Anchor private FPS timer clocks to actual reset stores
+
+- Locate the field component's countdown initialization, countup reset,
+  conditional countdown clear and constructor-zero stores. Instrument those
+  stores in the private cadence libraries, including overlapping generated
+  function copies. Keep the normal generated workspace untouched by this
+  experiment. The fixture-specific component address remains a research guard.
+- The original turning replay executes two countdown initializations to four,
+  348 countup resets to zero and 278 conditional countdown clears. Constructor
+  sites are mapped but do not execute after the diagnostic starts; this fixture
+  does not validate component destruction/reuse or other actors' lifecycles.
+- With resetting disabled, the new instrumented control exactly reproduces
+  R-143's trajectory, final native image, complete WAV and audio-source trace.
+  Clearing fractional clock state at actual stores while retaining half-first
+  countup behavior reproduces that control byte-for-byte too. It replaces a
+  value-change inference with actual reset evidence, without claiming improved
+  trajectory or audio parity in this fixture.
+- Starting countup immediately instead makes mean common-checkpoint position
+  error worse: 9.34 versus 8.54 game units, maximum 26.52 versus 26.37. Reject
+  that policy. The matching half-first variant still has 49 nonstream source
+  starts versus 47 normally, along with remaining travel/event differences.
+- These are correctness experiments, not throughput/FPS measurements. No native
+  FPS unlock is shipped. Source/dependency hashes, reset-site traces, controls
+  and variants remain in effective-reset-clock-build/explicit-reset-clock-tests.
+  Preserve the initial private harness link failure and recover it with the
+  configured local native-library path; the normal game builds are unaffected.
