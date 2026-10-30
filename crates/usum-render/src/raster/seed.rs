@@ -182,7 +182,7 @@ impl Renderer {
             pass.set_bind_group(0, &group, &[]);
             pass.draw(0..3, 0..1);
         }
-        Ok(RasterBatch { renderer: self, target, encoder: Some(encoder), errors: Some(errors), draws: 0 })
+        Ok(RasterBatch { renderer: self, target, encoder: Some(encoder), errors: Some(errors), draws: 0, uploads: Vec::new() })
     }
 }
 

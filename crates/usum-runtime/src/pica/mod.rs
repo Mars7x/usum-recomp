@@ -354,6 +354,14 @@ impl Pica {
     }
 
     #[cfg(feature = "vulkan-compare")]
+    pub fn vulkan_draw_upload_stats(&self) -> (u64, u64, usize, u64) {
+        if !self.vulkan_accelerate {
+            return (0, 0, 0, 0);
+        }
+        vulkan_compare::live_renderer().map(|renderer| renderer.draw_upload_stats()).unwrap_or_default()
+    }
+
+    #[cfg(feature = "vulkan-compare")]
     pub fn vulkan_capture_times(&self) -> [std::time::Duration; 3] {
         self.vulkan_live_resources.capture_times()
     }

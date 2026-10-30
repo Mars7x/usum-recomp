@@ -5,6 +5,7 @@ mod pack;
 mod readback;
 mod seed;
 mod stencil;
+mod upload;
 pub use stencil::{StencilOperation, StencilState};
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32FloatStencil8;
 pub use display::{DisplayCopy, DisplayFrame};
@@ -315,6 +316,12 @@ pub struct RasterBatch<'a> {
     encoder: Option<wgpu::CommandEncoder>,
     errors: Option<wgpu::ErrorScopeGuard>,
     draws: u32,
+    uploads: Vec<upload::Lease>,
+}
+
+struct DrawEncoder<'a> {
+    encoder: &'a mut wgpu::CommandEncoder,
+    uploads: &'a mut Vec<upload::Lease>,
 }
 
 enum VertexSource<'a> {
@@ -647,6 +654,8 @@ struct PipelineKey {
 }
 
 pub(super) struct RasterPipelines {
+    uploads: Arc<Mutex<upload::Pool>>,
+    pooled_uploads: bool,
     shader: wgpu::ShaderModule,
     fragment_layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
@@ -1249,7 +1258,15 @@ impl Renderer {
         let errors = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let mut encoder =
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("PICA raster commands") });
-        self.encode_vertices(&mut encoder, target, vertices, viewport, state, inputs)?;
+        let mut uploads = Vec::new();
+        self.encode_vertices(
+            &mut DrawEncoder { encoder: &mut encoder, uploads: &mut uploads },
+            target,
+            vertices,
+            viewport,
+            state,
+            inputs,
+        )?;
         let submitted = self.submit([encoder.finish()]);
         self.wait(submitted)?;
         check_errors(errors, "raster draw")
@@ -1257,7 +1274,7 @@ impl Renderer {
 
     fn encode_vertices(
         &self,
-        encoder: &mut wgpu::CommandEncoder,
+        encoder: &mut DrawEncoder<'_>,
         target: &ColorTarget,
         vertices: &[RasterVertex],
         viewport: Viewport,
@@ -1269,7 +1286,7 @@ impl Renderer {
 
     fn encode_draw(
         &self,
-        encoder: &mut wgpu::CommandEncoder,
+        encoder: &mut DrawEncoder<'_>,
         target: &ColorTarget,
         source: VertexSource<'_>,
         viewport: Viewport,
@@ -1281,8 +1298,12 @@ impl Renderer {
         let (vertex_buffer, index_buffer, vertex_group, count, program, vertex_mapping) = match source {
             VertexSource::Cpu(vertices) => {
                 validate_vertices(vertices.len())?;
-                let buffer =
-                    self.upload_draw_buffer("PICA shaded vertices", &vertex_bytes(vertices), wgpu::BufferUsages::VERTEX)?;
+                let buffer = self.upload_draw_buffer(
+                    encoder.uploads,
+                    "PICA shaded vertices",
+                    &vertex_bytes(vertices),
+                    wgpu::BufferUsages::VERTEX,
+                )?;
                 (Some(buffer), None, None, vertices.len() as u32, None, [0; 10])
             }
             VertexSource::Pica(draw) => {
@@ -1291,17 +1312,26 @@ impl Renderer {
                 if bytes.len() as u64 > self.device.limits().max_storage_buffer_binding_size {
                     return Err("PICA vertex input exceeds device storage limit".into());
                 }
-                let input = self.upload_draw_buffer("PICA vertex inputs", &bytes, wgpu::BufferUsages::STORAGE)?;
-                let uniform =
-                    self.upload_draw_buffer("PICA vertex uniforms", &words_bytes(draw.uniforms), wgpu::BufferUsages::STORAGE)?;
-                let index =
-                    self.upload_draw_buffer("PICA triangle indices", &words_bytes(draw.indices), wgpu::BufferUsages::INDEX)?;
+                let input =
+                    self.upload_draw_buffer(encoder.uploads, "PICA vertex inputs", &bytes, wgpu::BufferUsages::STORAGE)?;
+                let uniform = self.upload_draw_buffer(
+                    encoder.uploads,
+                    "PICA vertex uniforms",
+                    &words_bytes(draw.uniforms),
+                    wgpu::BufferUsages::STORAGE,
+                )?;
+                let index = self.upload_draw_buffer(
+                    encoder.uploads,
+                    "PICA triangle indices",
+                    &words_bytes(draw.indices),
+                    wgpu::BufferUsages::INDEX,
+                )?;
                 let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("PICA vertex inputs/uniforms"),
                     layout: &self.raster_pipelines.vertex_layout,
                     entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 1, resource: uniform.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 0, resource: input.binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: uniform.binding() },
                     ],
                 });
                 (
@@ -1404,7 +1434,7 @@ impl Renderer {
             }
         });
         {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut pass = encoder.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("PICA raster pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &target.view,
@@ -1430,33 +1460,21 @@ impl Renderer {
             pass.set_viewport(viewport.x, viewport.y, viewport.width, viewport.height, 0.0, 1.0);
             if let (Some(indices), Some(group)) = (&index_buffer, &vertex_group) {
                 pass.set_bind_group(1, group, &[]);
-                pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.set_index_buffer(indices.slice(), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..count, 0, 0..1);
             } else if let Some(vertices) = &vertex_buffer {
-                pass.set_vertex_buffer(0, vertices.slice(..));
+                pass.set_vertex_buffer(0, vertices.slice());
                 pass.draw(0..count, 0..1);
             }
         }
         Ok(())
     }
 
-    fn upload_draw_buffer(&self, label: &str, bytes: &[u8], usage: wgpu::BufferUsages) -> Result<wgpu::Buffer, String> {
-        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(label),
-            size: bytes.len() as u64,
-            usage,
-            mapped_at_creation: true,
-        });
-        buffer.get_mapped_range_mut(..).map_err(|e| e.to_string())?.copy_from_slice(bytes);
-        buffer.unmap();
-        Ok(buffer)
-    }
-
     /// Starts a command buffer which can collect many draws before one submit.
     pub fn begin_batch<'a>(&'a self, target: &'a ColorTarget) -> RasterBatch<'a> {
         let errors = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("PICA raster batch") });
-        RasterBatch { renderer: self, target, encoder: Some(encoder), errors: Some(errors), draws: 0 }
+        RasterBatch { renderer: self, target, encoder: Some(encoder), errors: Some(errors), draws: 0, uploads: Vec::new() }
     }
 
     /// Starts a draw batch by replacing its color and depth from a guest
@@ -1533,7 +1551,7 @@ impl Renderer {
             pass.set_bind_group(0, &depth_group, &[]);
             pass.draw(0..3, 0..1);
         }
-        Ok(RasterBatch { renderer: self, target, encoder: Some(encoder), errors: Some(errors), draws: 0 })
+        Ok(RasterBatch { renderer: self, target, encoder: Some(encoder), errors: Some(errors), draws: 0, uploads: Vec::new() })
     }
 
     /// Reads a target as tightly packed, top-to-bottom RGBA8 rows.
@@ -1707,7 +1725,8 @@ impl RasterBatch<'_> {
         inputs: FragmentInputs<'_>,
     ) -> Result<(), String> {
         let encoder = self.encoder.as_mut().ok_or("Vulkan raster batch was already submitted")?;
-        self.renderer.encode_draw(encoder, self.target, VertexSource::Pica(vertices), viewport, state, inputs)?;
+        let mut encoder = DrawEncoder { encoder, uploads: &mut self.uploads };
+        self.renderer.encode_draw(&mut encoder, self.target, VertexSource::Pica(vertices), viewport, state, inputs)?;
         self.draws = self.draws.checked_add(1).ok_or("too many draws in one Vulkan batch")?;
         Ok(())
     }
@@ -1723,7 +1742,8 @@ impl RasterBatch<'_> {
         inputs: FragmentInputs<'_>,
     ) -> Result<(), String> {
         let encoder = self.encoder.as_mut().ok_or("Vulkan raster batch was already submitted")?;
-        self.renderer.encode_vertices(encoder, self.target, vertices, viewport, state, inputs)?;
+        let mut encoder = DrawEncoder { encoder, uploads: &mut self.uploads };
+        self.renderer.encode_vertices(&mut encoder, self.target, vertices, viewport, state, inputs)?;
         self.draws = self.draws.checked_add(1).ok_or("too many draws in one Vulkan batch")?;
         Ok(())
     }
@@ -2061,6 +2081,8 @@ pub(super) fn create_pipelines(device: &wgpu::Device, queue: &wgpu::Queue) -> Ra
         immediate_size: 0,
     });
     RasterPipelines {
+        uploads: Default::default(),
+        pooled_uploads: std::env::var("USUM_VULKAN_DRAW_UPLOAD_POOL").as_deref() != Ok("0"),
         shader,
         fragment_layout,
         pipeline_layout,

@@ -4781,3 +4781,63 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   as a core native-FPS unlock. These are timing-correctness experiments, with no
   controlled wall-time/FPS gain claimed. Fixture addresses, private generated
   patches, dependency hashes and results remain in native-fps-research.
+
+### R-142 2026-10-30 — Reuse draw uploads with submission-scoped leases
+
+- Obtain a normal-cadence gameplay-only profile after R-140, enabling user-space
+  sampling at VBlank 600 and disabling it at 900 through acknowledged perf
+  controls. Startup and output captures are outside this interval. Both native
+  screen images at 900, the complete WAV/save and guest instructions match the
+  normal replay. Draw-buffer upload accounts for 11.76% inclusive CPU samples;
+  GPU allocation itself is 3.15% exclusive. Sampling is diagnostic, not FPS.
+- Pool vertex-input, vertex-uniform, index and CPU-shaded-vertex allocations.
+  Hold each allocation until its command batch is submitted or discarded;
+  following queue writes occur after the preceding submitted commands. Exact
+  binding lengths and vertex/index slices expose only current data, even when
+  capacity is larger. Keep usage classes separate. Evicted handles are destroyed
+  outside the pool lock. Fixed-function fragment-uniform uploads remain separate.
+  `USUM_VULKAN_DRAW_UPLOAD_POOL=0` keeps the original mapped-allocation writer.
+- A 128-entry linear prototype passes output checks but still allocates 72,366
+  of 137,496 overworld uploads; four-pair replay gains are only about 1.44% world
+  and 1.11% battle. Retain that prototype privately. The final pool bins capacity
+  by power of two and buffer usage, holds at most 512 idle allocations and
+  32 MiB, and does not retain allocations above 8 MiB. This avoids a long linear
+  lookup while accommodating a larger command batch within the same byte cap.
+- Ten Vulkan renderer tests pass, including new reverse-order submission,
+  reuse before immutable readback materializes, discarded batches, exact shorter
+  binding lengths, usage separation, and actual entry/byte/oversize limits.
+  Respect wgpu's existing LIFO validation-scope ordering in the batch test.
+  All 21 ordinary renderer tests, 123 enabled runtime tests with both writers,
+  12 Vulkan runtime tests, strict Clippy and formatting pass.
+- Five frozen baseline/candidate replays preserve all 74 images, five WAVs,
+  saves and guest/render/conversion/audio counters, with zero software fallbacks.
+  Short fixtures also match the same-binary original writer. The final overworld
+  capture has 523 allocations and 136,973 reuses; battle has 524/187,714 and the
+  long fixture 524/497,020. Retained storage is about 23.6 MiB in those scenes,
+  below the 32 MiB bound. These counts concern the pooled upload categories,
+  not every allocation in the renderer or driver.
+- Four balanced isolated 6× trials per executable, without captures/profiling:
+
+  | Fixture | Baseline mean | Final candidate mean | Throughput change |
+  |---|---:|---:|---:|
+  | Intro, 6 guest seconds | 5.60125 s | 5.56175 s | +0.71% |
+  | Overworld, 16 guest seconds | 12.37925 s | 12.04525 s | +2.77% |
+  | Battle, 30 guest seconds | 19.46575 s | 19.04450 s | +2.21% |
+
+- Same-binary original-writer means are 5.5965/12.398/19.412 seconds. Separate
+  fully scheduled native-counter pairs reduce user cycles 2.03%/4.30%/4.17% in
+  intro/world/battle. Retired instructions change -0.02%/+0.35%/+0.02%: this
+  trades some instruction work for lower allocation/upload latency. Report that
+  increase rather than treating allocation counts as a speed measurement.
+- Normal-speed window means are 6.005/6.005, 16.020/16.0195 and 30.0185/30.017
+  seconds before/after. Existing cadence limits those runs; resident presentation
+  preserves counters/saves and has no materialized source uses. No native-FPS
+  unlock or full-game compatibility is implied. Wait for encoders and other
+  workloads, reject observed benchmark overlap, and stop no external process.
+- A second acknowledged VBlank-600–900 profile preserves the same native images,
+  WAV, save and guest count. Upload self-plus-callees drops from 11.76% to 4.92%
+  of samples; allocator self samples fall 3.15% → 1.67%. Vertex-input assembly,
+  framebuffer import and deferred readback remain significant. These proportions
+  select future investigations; the controlled replay/counter trials establish
+  this change's gain. Private evidence is in draw-upload-binned-validation and
+  native-fps-research/steady-gameplay-profile-v2/-v3.
