@@ -4609,3 +4609,42 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
 - Private sources, frozen binaries, input/save hashes, captures and accepted
   trial results remain under `native-f32-validation`. Native dynamic FPS
   continues separately using the effective-step research from R-136.
+
+### R-138 2026-10-30 — Preserve nominal animation rates and trace effective-step consumers
+
+- Continue R-136 in private generated-code copies and a manually linked diagnostic
+  harness. Production translations and timing policy remain unchanged. Replace
+  stored-rate rewrites with local half-steps at phase advance 0x0036a880 and both
+  root-extraction copies containing 0x004b805c; scale the complete movement cap in
+  both overlapping translations containing 0x003a9988. Nominal rates remain 0/1.
+  Run the same starting save and replay through VBlank 956. The normal and raw
+  higher-cadence controls match the previous trajectory, image, WAV and source
+  event logs exactly. These correctness diagnostics are not speed benchmarks.
+- Effective phase/root/cap steps alone travel 980.641 units across the 100 common
+  trajectory checkpoints at VBlanks 620–800, versus 932.947 normally. Maximum
+  position error is 54.766 units, mean 24.811. Keeping stored rates intact exposes
+  another interval consumer: a hardware read/write watchpoint on our own child
+  identifies the getter at 0x004b7f94, besides phase/root reads and observer reads.
+  A separate getter wrapper traces 8,189 calls through 0x005ada88; outer callers
+  resolve to movement update 0x003a975c (8,188 calls) and one field-module call.
+  The movement update stores the result at controller offset 0x130.
+- Give this getter an effective half-step in a separate private operation, without
+  changing stored rates or guest instruction charges. Travel becomes 980.287,
+  maximum error 54.763, mean 24.766. Non-streaming source events improve from
+  131 to 225 against 251 normally; the two streaming source logs remain exact.
+  For comparison with R-136's older metric, excluding source 0 alone gives
+  229 → 323 against 349 normally. That metric also includes streaming source 1;
+  it should not be interpreted as a count solely of effects or footsteps.
+- Combine the effective getter with a half-speed blend clock: travel 980.455,
+  maximum error 54.763, mean 25.088, 225 non-streaming events. Also adjust the
+  identified turning response with f / (1 + sqrt(1 - f)): travel 978.372,
+  maximum error 53.336, mean 25.354, 298 non-streaming events. Neither combination
+  preserves the reference trajectory/event behavior. Reject them as a complete
+  unlock, despite additional genuine engine-rendered frames in R-136.
+- Record integer timer bits rather than formatting them as floats. All 24 observed
+  controllers have 0xffffffff at offset 0xd4 throughout this experiment: the
+  signed -1 sentinel, not a positive countdown. There is no evidence here for
+  scaling that field. Preserve it and trace the effective-rate field's consumers
+  and remaining movement/camera/event timing instead. Keep fixture addresses and
+  generated diagnostic code private; validated engine bindings are still required
+  before any core native-FPS implementation can use these findings.

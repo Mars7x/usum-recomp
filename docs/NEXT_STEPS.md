@@ -78,9 +78,10 @@ See [compatibility](COMPATIBILITY.md), [building and controls](BUILDING.md),
    game-time checkpoints, and compare encounter decisions, event ordering and
    audio start times against the original cadence. Additional frames must come
    from engine rendering with correctly advanced scene state; matching travel
-   distance or increasing framebuffer submissions alone is insufficient. R-136
-   next requires effective animation steps that preserve nominal rates, plus
-   checks of blend clocks, camera behavior and integer timers.
+   distance or increasing framebuffer submissions alone is insufficient. R-138
+   preserves nominal rates experimentally and traces the effective movement-rate
+   getter, but trajectory and effect events still diverge. Trace its consumers
+   and remaining camera/event timing; the observed integer timer is a -1 sentinel.
 2. **Profile-led optimization.** Revisit intro/movie helpers, checked memory,
    frequent guest helpers, vertex preparation and GPU synchronization using
    fresh profiles. Retain a reference path and frozen before/after executables.
