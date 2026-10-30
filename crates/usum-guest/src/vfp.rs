@@ -15,8 +15,9 @@
 //!   result of a multiply and is within one rounding of the exact result
 //!   otherwise; for double precision it is made after rounding (a known,
 //!   narrow difference at the boundary).
-//! - Single-precision add, subtract, multiply, divide and square root are
-//!   computed in f64 and rounded to f32. Rounding twice is harmless here
+//! - Ordinary single-precision binary arithmetic can use host f32 directly.
+//!   NaN/subnormal operands, delicate result boundaries and square root retain
+//!   an f64 intermediate rounded to f32. Double rounding there is harmless
 //!   because 53 >= 2 * 24 + 2.
 //! - Arithmetic supports only round-to-nearest. Another FPSCR.RMode, or
 //!   short vectors whose length or stride the code below rejects, make the
@@ -204,6 +205,45 @@ fn apply(op: Arith, a: f64, b: f64) -> f64 {
 /// A two-operand single-precision operation in round-to-nearest.
 #[inline]
 pub fn arith32(cpu: &Cpu, op: Arith, a: u32, b: u32) -> u32 {
+    if native_f32_enabled() {
+        if let Some(value) = native_arith32(op, a, b) {
+            return value;
+        }
+    }
+    arith32_reference(cpu, op, a, b)
+}
+
+fn native_f32_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("USUM_GUEST_NATIVE_F32").as_deref() != Ok("0"))
+}
+
+#[inline]
+fn native_arith32(op: Arith, a: u32, b: u32) -> Option<u32> {
+    let ordinary = |bits: u32| {
+        let magnitude = bits & !SIGN32;
+        magnitude == 0 || magnitude.wrapping_sub(0x0080_0000) < 0x7F00_0000
+    };
+    if !ordinary(a) || !ordinary(b) {
+        return None;
+    }
+    let (a, b) = (f32::from_bits(a), f32::from_bits(b));
+    let value = match op {
+        Arith::Add => a + b,
+        Arith::Sub => a - b,
+        Arith::Mul => a * b,
+        Arith::Div => a / b,
+    }
+    .to_bits();
+    let magnitude = value & !SIGN32;
+    // A tiny exact result can round up to MIN_POSITIVE, yet ARM FZ must
+    // still flush it. Retain the exact-intermediate check at that boundary,
+    // as well as subnormal results and every NaN/payload decision.
+    (magnitude == 0 || (magnitude > 0x0080_0000 && magnitude <= 0x7F80_0000)).then_some(value)
+}
+
+#[inline]
+fn arith32_reference(cpu: &Cpu, op: Arith, a: u32, b: u32) -> u32 {
     let (a, b) = (flush_in32(cpu, a), flush_in32(cpu, b));
     if let Some(nan) = nans32(cpu, a, b) {
         return nan;
@@ -459,6 +499,83 @@ mod tests {
 
     fn bits(x: f32) -> u32 {
         x.to_bits()
+    }
+
+    #[test]
+    fn native_binary_arithmetic_matches_reference_bits_and_flush_modes() {
+        let cpus = [cpu(0), cpu(FZ), cpu(DN), cpu(FZ | DN)];
+        let compare = |a: u32, b: u32| {
+            for c in &cpus {
+                for op in [Arith::Add, Arith::Sub, Arith::Mul, Arith::Div] {
+                    let expected = arith32_reference(c, op, a, b);
+                    assert_eq!(arith32(c, op, a, b), expected, "{op:?} {a:08x} {b:08x}, FPSCR {:08x}", c.fpscr);
+                    if let Some(native) = native_arith32(op, a, b) {
+                        assert_eq!(native, expected, "native {op:?} {a:08x} {b:08x}, FPSCR {:08x}", c.fpscr);
+                    }
+                }
+            }
+        };
+        let boundaries = [
+            0,
+            SIGN32,
+            1,
+            0x007F_FFFF,
+            0x0080_0000,
+            0x0080_0001,
+            0x0080_0002,
+            0x3F00_0000,
+            0x3F7F_FFFF,
+            0x3F80_0000,
+            0x3F80_0001,
+            0x4000_0000,
+            0x7F7F_FFFF,
+            0x7F80_0000,
+            0xFF80_0000,
+            0x7F80_0001,
+            0x7FC0_0001,
+            0xFFC0_0002,
+        ];
+        for a in boundaries {
+            for b in boundaries {
+                compare(a, b);
+                compare(a ^ SIGN32, b);
+            }
+        }
+        let mut seed = 0xAD13_7229u32;
+        for _ in 0..100_000 {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let a = seed;
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            compare(a, seed);
+        }
+    }
+
+    #[test]
+    fn native_binary_arithmetic_retains_exact_tiny_result_check() {
+        let (a, b) = (f32::MIN_POSITIVE.to_bits(), 0x3F7F_FFFF);
+        assert_eq!((f32::from_bits(a) * f32::from_bits(b)).to_bits(), a);
+        assert_eq!(native_arith32(Arith::Mul, a, b), None);
+        assert_eq!(arith32(&cpu(0), Arith::Mul, a, b), a);
+        assert_eq!(arith32(&cpu(FZ), Arith::Mul, a, b), 0);
+        assert_eq!(arith32(&cpu(FZ), Arith::Mul, a | SIGN32, b), SIGN32);
+        assert_eq!(native_arith32(Arith::Add, bits(1.0), bits(2.0)), Some(bits(3.0)));
+    }
+
+    #[test]
+    fn native_multiply_accumulate_still_rounds_the_product_first() {
+        let (n, m, d) = std::hint::black_box((0x3F80_0001, 0x3F7F_FFFE, bits(-1.0)));
+        assert_ne!(f32::from_bits(n).mul_add(f32::from_bits(m), f32::from_bits(d)).to_bits(), 0);
+        for flags in [0, FZ, DN, FZ | DN] {
+            let c = cpu(flags);
+            assert_eq!(mla32(&c, d, n, m, false, false), 0);
+            for negate_product in [false, true] {
+                for negate_d in [false, true] {
+                    let product = arith32_reference(&c, Arith::Mul, n, m) ^ if negate_product { SIGN32 } else { 0 };
+                    let expected = arith32_reference(&c, Arith::Add, d ^ if negate_d { SIGN32 } else { 0 }, product);
+                    assert_eq!(mla32(&c, d, n, m, negate_product, negate_d), expected);
+                }
+            }
+        }
     }
 
     #[test]

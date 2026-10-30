@@ -4562,3 +4562,50 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   Replace save-object addresses with validated engine bindings before exposing
   native dynamic FPS as a core feature. The normal build contains no timing
   diagnostic hooks, and its existing cadence is unchanged.
+
+### R-137 2026-10-30 — Native single-precision arithmetic on a proven domain
+
+- Fresh post-R-135 overworld samples put `round32` at 2.81% self time and
+  `nans32` at 1.43%. The intro still centers on movie functions, calls, the
+  tree accessor and dispatch. Target the common guest floating-point helper
+  without changing translated instructions or the compatibility runtime's clock.
+- Normal finite and signed-zero binary operands can use host f32 arithmetic.
+  NaN/subnormal operands, NaN/subnormal results and the smallest-normal result
+  retain the original f64/reference handling. The last exclusion matters:
+  an exact tiny result may round up to the smallest normal float, while ARM FZ
+  must still flush it. Directed conversions and square root are unchanged.
+  No global fast-math setting is enabled. `USUM_GUEST_NATIVE_F32=0` retains
+  the original arithmetic path.
+- Test boundary bit patterns and 100,000 random operand pairs across add,
+  subtract, multiply and divide with each FZ/DN combination, comparing exact
+  result bits. Include signed zero, infinities, signaling/quiet NaN payloads
+  and the tiny-result boundary. A native-CPU release test also verifies that
+  multiply/accumulate rounds the product first, preserving VFP's non-fused
+  semantics. All 36 guest tests and 123 enabled window/Vulkan runtime tests
+  pass with both policies; strict Clippy and formatting checks pass. The 12
+  hardware-specific runtime unit tests remain ignored in that invocation.
+- Arithmetic-only microbenchmarks favored the prototype and justified the full
+  generated rebuild; their speedups are not gameplay FPS estimates. Freeze a
+  fresh production baseline and verify all five prior fixture outputs before
+  comparing the new build. Intro, overworld, battle, long and restart replays
+  preserve 74 byte-identical images, five identical WAVs, saves and guest/render/
+  audio counters. Short fixtures also match with the reference path selected.
+- Four alternating isolated baseline/candidate 6× replay runs average
+  5.725/5.672 seconds for the intro, 12.544/12.067 for the overworld and
+  19.561/19.130 for battle: approximately 0.93%, 3.95% and 2.25% higher
+  throughput. Same-binary reference pairs average 5.696/12.521/19.606 seconds.
+- Two fully scheduled counter trials per executable reduce host instructions
+  3.69% in the overworld and 2.31% in battle. Intro instructions increase
+  0.10%. Battle cycles fall 2.89%, intro cycles fall 0.38%, while overworld
+  cycles average 0.09% higher with substantial trial variation. The cycle
+  result therefore does not independently establish an overworld gain. Wait
+  for other jobs and encoders and discard observed overlaps; none are stopped.
+- Normal-speed windowed means are 6.005/6.005 seconds for the intro,
+  16.021/16.020 for the overworld and 30.018/30.017 for battle. Existing cadence
+  still limits presentation; no native frame-rate unlock is claimed. All runs
+  use resident Vulkan presentation with zero software fallbacks and no
+  materialized display-source uses. These fixture gains and exact outputs
+  do not establish full-game performance or compatibility.
+- Private sources, frozen binaries, input/save hashes, captures and accepted
+  trial results remain under `native-f32-validation`. Native dynamic FPS
+  continues separately using the effective-step research from R-136.

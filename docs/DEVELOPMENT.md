@@ -98,6 +98,7 @@ The probe runs on a virtual clock, so runs repeat exactly. Its options:
 | `USUM_SAVE_FROM=dir` | start from a copy of those saves (to replay a `play` recording) |
 | `USUM_PROFILE=first:last` | count guest calls (target, caller) between those VBlanks; reported as `profile` lines |
 | `USUM_GUEST_PAGE_INDEX=0` | disable the checked full-page region index for a reference run; partial pages always use the original region search |
+| `USUM_GUEST_NATIVE_F32=0` | retain reference single-precision guest arithmetic; the default native path preserves NaNs, denormals and ARM flush-to-zero boundaries through guarded fallback |
 | `USUM_GUEST_BLOCK_WORDS=0` | use ordered scalar memory accesses for translated register-list transfers; by default, lists of four or more words share one checked lookup when the entire span is ordinary RAM |
 | `USUM_DISPATCH_CACHE=0` | disable the host code-lookup cache for a reference run; enabled by default, with module identity checked on cached module entries |
 | `USUM_DISPATCH_FRONT_CACHE=0` | disable the small address cache ahead of the identity-checked hash cache; keep the hash lookup for a same-binary comparison |
