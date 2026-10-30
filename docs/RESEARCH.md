@@ -5395,3 +5395,35 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   reset-return-long sources, hashes and captures. Queue read-only field
   action-entry traces to locate the remaining early changes before altering
   their scheduling. These results do not enable interactive native FPS.
+
+### R-155 2026-10-30 — Separate action requests from selector decisions
+
+- Complete six read-only action-entry replays: idle, turning and straight-down
+  movement at normal cadence and with the private higher-cadence corrections.
+  Every run reproduces its preceding trajectory, full WAV, audio events, image,
+  phase/RNG traces and lifecycle logs exactly. The instrumentation is placed
+  after successful budget charging so a resumed block cannot log a false call.
+- Turning makes the same seven action applications, in the same order through
+  the same caller, at both cadences. Several higher-cadence applications occur
+  one or two engine ticks earlier. Straight movement makes the same four
+  applications; its special-action change occurs at 684 instead of 686. Merely
+  suppressing changes on odd ticks would not account for that difference.
+- Trace the virtual selection call and its return before action application.
+  All six additional replays preserve the previous outputs and action-entry
+  traces exactly. Each normal trace has 76 paired selections in the observed
+  window; each higher-cadence trace has 150. Every observed call uses the same
+  selector. The idle transition remains aligned at 626.
+- The straight-movement caller continues requesting the same movement category
+  when the selector changes its result early. Turning likewise retains that
+  category across its intermediate action changes. This narrows the next
+  investigation to selector inputs and branches, rather than assuming the
+  application routine itself introduces the timing difference.
+- The traced action-component bytes do not change across selection, but this
+  does not establish a pure query: source inspection finds reads and writes to
+  a separate component obtained inside the selector. Queue branch and component
+  traces before skipping calls or deferring their results. Some one-tick changes
+  may reflect earlier input sampling; do not classify every cadence-dependent
+  transition as a bug without identifying its cause.
+- Preserve the private action-transition-trace and action-decision-trace source
+  snapshots, dependency hashes and captures. These are correctness diagnostics,
+  not performance measurements or a production native-FPS implementation.
