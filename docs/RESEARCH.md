@@ -5419,11 +5419,58 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   investigation to selector inputs and branches, rather than assuming the
   application routine itself introduces the timing difference.
 - The traced action-component bytes do not change across selection, but this
-  does not establish a pure query: source inspection finds reads and writes to
-  a separate component obtained inside the selector. Queue branch and component
-  traces before skipping calls or deferring their results. Some one-tick changes
+  does not establish a pure query: source inspection finds a component lookup,
+  memory writes and calls to other routines. The subsequent branch trace
+  resolves that lookup to the same action component, correcting the initial
+  assumption that it referred to a separate object. Compare actual branches
+  before skipping calls or deferring their results. Some one-tick changes
   may reflect earlier input sampling; do not classify every cadence-dependent
   transition as a bug without identifying its cause.
 - Preserve the private action-transition-trace and action-decision-trace source
   snapshots, dependency hashes and captures. These are correctness diagnostics,
   not performance measurements or a production native-FPS implementation.
+
+### R-156 2026-10-30 — Clock the two-count action flag and test interruption
+
+- Complete six selector-branch traces with exact preceding outputs. Resolve
+  the queried component to the already observed action component. The early
+  special-action decision reads its byte flag, which is produced by a separate
+  two-count conditional timer. That timer still increments once per update,
+  reaches two, and saturates; its predicate's broader meaning is not established.
+- In straight movement, the normal timer is zero at 682, one at 684 and two at
+  686. Higher cadence reaches one at 683 and two at 684. Turning similarly
+  reaches two at 736 instead of 738. The selector consumes that flag to choose
+  the observed special action. This is direct evidence of a clock-rate error,
+  distinct from simply sampling a new input on an earlier native update.
+- Add a private opt-in fractional clock for this timer, retaining the original
+  path. Begin with a half-step at higher cadence, and clear fractional state at
+  the actual constructor, conditional reset, explicit reset and saturation
+  stores, including both overlapping generated copies. Saturated updates retain
+  the original increment/clamp sequence. Keep the fixture and cadence guards;
+  this is not yet a general actor-lifecycle or arbitrary-rate implementation.
+- Nine idle/turning/down replays complete using identical starting saves and
+  inputs. All normal and disabled controls reproduce the preceding captures
+  and traces exactly. Enabled idle output is also unchanged. The corrected
+  special-action changes now occur at 686 going straight and 738 while turning,
+  matching normal cadence. Other turning action changes remain earlier.
+- Both movement cases retain their preceding bounded RNG, phase-boundary and
+  first-step/event traces. Straight movement still matches all 157 normal RNG
+  tuples; turning retains its existing differences among 161 calls. Final
+  captured images are unchanged from the disabled higher-cadence control.
+  Turning's full WAV and audio-source trace are unchanged too. Straight
+  movement's source start at DSP frame 2346 now occurs at 2343 with the normal
+  sample choice; normal is 2342. Remaining sample/timing differences persist,
+  and source-start counts remain 49 versus 47 normally for turning and 43 versus
+  39 going straight. A changed budget-sampled trajectory CSV alone does not
+  establish a change in actual travel distance.
+- Add an interrupted-and-resumed movement recording. Five replays include old
+  normal/higher binaries, new normal/disabled controls and the enabled clock.
+  Normal and disabled captures match their old binaries exactly; starting-save
+  hashes remain unchanged. The enabled trace clears a pending half-step at 736
+  while the guest counter is still zero, then begins the next eligible update
+  at 746 with a fresh half-step. Thus this exercised zero-to-zero reset does
+  discard fractional progress rather than carrying it into the next action.
+- Preserve private action-selector-path-trace, action-flag-clock-trace and
+  action-flag-reset evidence. These are timing-correctness results without a
+  throughput claim. Interactive native FPS, other actors and lifecycles,
+  arbitrary cadence, battles, movies and transitions still require validation.
