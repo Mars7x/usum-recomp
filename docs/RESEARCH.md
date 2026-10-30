@@ -5549,8 +5549,24 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   actually returned by the query instead of relying on fixed controller/model
   identities. It does not justify extending first-step eligibility to every
   animation or actor.
-- Preserve private animation-owner-trace evidence and its analyzer. An opt-in
-  owner-bound consumer is under separate replay validation; the original path
-  remains available. Singleton credit storage, reset/rebinding invalidation,
-  other actors, arbitrary game cadence and interactive integration remain open.
-  No performance improvement is inferred from this tracing work.
+- Implement the opt-in private owner-bound consumer after the actual phase
+  query, retaining the original pre-query fixed-identity path for comparison.
+  Require the selected primary state to own the pending credit and its current
+  phase to equal the query result, alongside the existing frame, rate, bounds,
+  previous-phase and floating-point-mode checks. First-step eligibility remains
+  restricted to the existing player fixture.
+- All twelve replay controls pass: idle/turning/down at normal cadence with the
+  new flag off/on, and corrected higher cadence with it off/on. Every preceding
+  output matches exactly, including full WAVs, images, RNG snapshots and owner
+  traces. The enabled higher-cadence path consumes all five expected credits;
+  the other modes consume none through that new path.
+- Compile the actual handwritten consumer helpers into a small synthetic test.
+  It accepts valid non-fixture controller/model addresses, consumes a credit
+  only once, follows alternate-bank selection, and rejects another state at
+  the same phase, a mismatched queried phase, a stale frame, an invalid bank,
+  an empty channel and a missing model. This validates guard behavior without
+  claiming that the game produces credits correctly for other actors.
+- Preserve private animation-owner-trace and owned-event-trace evidence plus
+  guard checks. Singleton credit storage, reset/rebinding invalidation, other
+  actors, arbitrary game cadence and interactive integration remain open.
+  No performance improvement is inferred from these correctness checks.
