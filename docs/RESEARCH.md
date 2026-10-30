@@ -5150,3 +5150,60 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   the corrected wait. Those experiments are not yet validation results here.
   The completed attribution remains in field-timer-scope-tests and its offline
   reports; no production FPS feature or throughput gain is claimed.
+
+### R-150 2026-10-30 — Borrow immutable vertex input bytes for Vulkan uploads
+
+- Remove the temporary vertex-input allocation and CPU packing copy. A safe
+  bytemuck view preserves the native-endian bits of the padding-free input arrays;
+  the existing uploader copies them before the borrow ends. GPU upload ownership
+  and submission lifetimes are unchanged. `USUM_VULKAN_BORROW_INPUTS=0` keeps the
+  previous block writer, and `USUM_VULKAN_BLOCK_PACK=0` still forces the scalar
+  writer. No guest timing, instructions or shader behavior changes.
+- The preceding steady-gameplay profile attributed 2.94% self samples to input
+  packing. That profile used the subsequently rejected R-147 native-helper build;
+  packing itself was unchanged. Regenerate and rebuild from the accepted emitter
+  for this experiment, explicitly checking that the rejected helper is absent.
+  Freeze sources, executables, dependency hashes, input recordings and initial saves.
+- Five 6× Vulkan replay fixtures cover intro, overworld, battle, a longer gameplay
+  recording and the restart/Mystery Gift recording. All 74 captured images, five
+  complete WAVs, resulting save files and guest/render/audio/movie counters match
+  the previous binary exactly, with zero software fallbacks. The shorter fixtures
+  also match the same-binary reference path. This validates the recordings, not
+  every possible menu transition or save.
+- Four balanced unpaced trials per binary measure the following means. Retain all
+  trials, including the slow intro sample; these are replay-throughput results,
+  not native dynamic FPS or projections from guest-clock speed.
+
+  | Fixture | Previous binary | Borrowed inputs | Throughput change |
+  |---|---:|---:|---:|
+  | Intro | 5.34725 s | 5.44400 s | -1.78% |
+  | Overworld | 10.51075 s | 10.32000 s | +1.85% |
+  | Battle | 17.33000 s | 17.17750 s | +0.89% |
+
+- Same-binary reference means for overworld/battle are 10.439/17.245 seconds,
+  corresponding to +1.15%/+0.39% versus borrowing. Two fully scheduled hardware
+  counter pairs reduce host instructions by 1.3954%/0.9302% and cycles by
+  2.2083%/0.9524%, supporting the small gameplay gains independently of wall time.
+- Intro is a limitation, not a claimed improvement. The initial candidate set
+  includes a 5.777-second run. Twelve additional balanced trials, four per policy,
+  give previous/borrowed/same-binary-reference means of 5.34975/5.40175/5.44625
+  seconds; the reference set includes a 5.763-second run. Thus the separate
+  confirmation is 0.96% slower than the previous binary, while same-binary means
+  swing in both directions across sets. Keep both full sets and their spreads.
+  Intro host instructions change by +0.00004% and cycles by -1.3909%; these do not
+  explain the wall-time regression. Before/after memory-pressure snapshots also
+  do not isolate its cause. Accept the narrow gameplay improvement with this
+  unresolved intro cost documented and the comparison path retained.
+- Paced window pairs preserve guest work and remain at normal game timing:
+  previous/borrowed means are 6.0040/6.0045, 16.015/16.014 and 30.0185/30.0155
+  seconds. These paced measurements cannot establish an uncapped FPS gain.
+- Validation passes: 21 renderer tests in both policies, 122 enabled runtime
+  tests, 10 renderer and 12 runtime Vulkan hardware tests in both policies,
+  formatting and strict window/Vulkan Clippy. Direct hardware vertex checks pass
+  in borrowed/block/scalar modes, including float bit patterns, indexed raster
+  identity and sparse output/UV mappings. Unit checks verify borrowed pointer
+  identity, fallback ownership, random float bits and offset-containing arrays.
+- Builds and heavyweight checks run sequentially with one compiler job; no encoder
+  is stopped. Preserve detailed private evidence in borrow-inputs-validation.
+  Native engine cadence remains separate correctness research; this change does
+  not ship or claim the dynamic-FPS feature.

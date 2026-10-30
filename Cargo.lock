@@ -2047,6 +2047,7 @@ dependencies = [
 name = "usum-render"
 version = "0.0.1"
 dependencies = [
+ "bytemuck",
  "pollster",
  "wgpu",
 ]

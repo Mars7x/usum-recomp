@@ -227,9 +227,12 @@ GPU vertex-input loading uses worker threads at 4096 distinct vertices per draw.
 for comparisons. This process-wide threshold is read on first use; values below
 256 are clamped. CPU vertex shading and the decoded input bits are unchanged.
 
-GPU vertex uploads pack each complete 256-byte input as one block while preserving
-native-endian float bits. `USUM_VULKAN_BLOCK_PACK=0` retains the scalar float-by-float
-packer; the process captures this policy at its first hardware vertex upload.
+GPU vertex uploads borrow the immutable input arrays as bytes, preserving every
+native-endian float bit without allocating or packing a temporary buffer. The
+upload copies these bytes before the borrow ends. `USUM_VULKAN_BORROW_INPUTS=0`
+retains the previous 256-byte block packer; `USUM_VULKAN_BLOCK_PACK=0` forces the
+scalar float-by-float packer even when borrowing is enabled. The process captures
+both policies at its first hardware vertex upload.
 
 The synthetic hardware vertex checks use no game data:
 

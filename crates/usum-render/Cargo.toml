@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 wgpu.workspace = true
 pollster.workspace = true
+bytemuck.workspace = true
 
 [lints]
 workspace = true

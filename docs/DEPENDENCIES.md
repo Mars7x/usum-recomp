@@ -23,12 +23,13 @@ window, Vulkan and controller features; this is not a security advisory scan.
 | rayon 1 (+ rayon-core, crossbeam-deque, crossbeam-epoch, crossbeam-utils, either) | A persistent worker pool for the renderer's parallel bands and vertex shading (R-037): no thread is started per draw, and borrowed draw state is shared without `unsafe` in our code | No |
 | wgpu 30.0.1 (`default-features = false`, features `std vulkan wgsl`) + naga 30.0.1 | The isolated `usum-render` host-GPU backend; WGSL validation/translation and Vulkan command submission | No compiled C. `ash` loads the OS Vulkan driver at run time; the selected Linux backend is Vulkan only |
 | pollster 1.0.1 | Blocks on wgpu's adapter/device and validation futures during native bring-up | No |
+| bytemuck 1.25.2 | Safe borrowed byte views of padding-free vertex input arrays; preserves float bit patterns | No |
 | gilrs 0.11.2 + gilrs-core 0.6.8 (window feature) | Standard controller mappings, analog sticks and hot plugging | Linux links the OS libudev through libudev-sys; pkg-config/libudev development files are required at build time. OS interface exception; no bundled C/C++ gamepad implementation. Windows uses the OS Windows Gaming Input interface |
 
 For the original CLI-only dependency set audited at that checkpoint, no
 crate had a `links` key or a `-sys` suffix. The optional window and Vulkan
 backends have additional platform dependencies; see the sections below. Our crates forbid `unsafe` (`unsafe_code = "forbid"`). Some
-dependencies (memchr, serde_json, typenum) contain audited `unsafe`
+dependencies (including bytemuck, memchr, serde_json and typenum) contain `unsafe`
 internally, as most of the Rust ecosystem does. This is disclosed, not
 avoided.
 

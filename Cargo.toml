@@ -39,6 +39,7 @@ pulseaudio = "0.3"
 # builds; naga is used internally for WGSL validation and translation.
 wgpu = { version = "30", default-features = false, features = ["std", "vulkan", "wgsl"] }
 pollster = "1"
+bytemuck = "1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

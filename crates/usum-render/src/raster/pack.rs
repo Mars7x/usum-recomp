@@ -1,9 +1,24 @@
 //! Native-endian vertex upload bytes, preserving every float's bit pattern.
-use std::sync::OnceLock;
+use std::{borrow::Cow, sync::OnceLock};
 
-pub(super) fn vertex_inputs(inputs: &[[[f32; 4]; 16]]) -> Vec<u8> {
+pub(super) fn vertex_inputs(inputs: &[[[f32; 4]; 16]]) -> Cow<'_, [u8]> {
     static BLOCKS: OnceLock<bool> = OnceLock::new();
-    encode(inputs, *BLOCKS.get_or_init(|| std::env::var("USUM_VULKAN_BLOCK_PACK").as_deref() != Ok("0")))
+    static BORROW: OnceLock<bool> = OnceLock::new();
+    prepare(
+        inputs,
+        *BORROW.get_or_init(|| std::env::var("USUM_VULKAN_BORROW_INPUTS").as_deref() != Ok("0")),
+        *BLOCKS.get_or_init(|| std::env::var("USUM_VULKAN_BLOCK_PACK").as_deref() != Ok("0")),
+    )
+}
+
+fn prepare(inputs: &[[[f32; 4]; 16]], borrow: bool, blocks: bool) -> Cow<'_, [u8]> {
+    if borrow && blocks {
+        // Arrays of f32 have no padding. Keep the original native-endian bits,
+        // and borrow only until upload_draw_buffer has copied the bytes.
+        Cow::Borrowed(bytemuck::cast_slice(inputs))
+    } else {
+        Cow::Owned(encode(inputs, blocks))
+    }
 }
 
 fn encode(inputs: &[[[f32; 4]; 16]], blocks: bool) -> Vec<u8> {
@@ -47,6 +62,15 @@ mod tests {
             let blocks = encode(&inputs, true);
             assert_eq!(blocks.len(), count * 256);
             assert_eq!(blocks, scalar);
+            let borrowed = prepare(&inputs, true, true);
+            assert!(matches!(borrowed, Cow::Borrowed(_)));
+            assert_eq!(borrowed.as_ref(), scalar);
+            assert_eq!(borrowed.as_ptr(), inputs.as_ptr().cast::<u8>());
+            for flags in [(false, true), (false, false), (true, false)] {
+                let fallback = prepare(&inputs, flags.0, flags.1);
+                assert!(matches!(fallback, Cow::Owned(_)));
+                assert_eq!(fallback.as_ref(), scalar);
+            }
             for (word, value) in blocks.as_chunks::<4>().0.iter().zip(inputs.iter().flatten().flatten()) {
                 assert_eq!(*word, value.to_bits().to_ne_bytes());
             }
@@ -65,5 +89,9 @@ mod tests {
         }
         let offset = Offset { prefix: 7, input };
         assert_eq!(encode(std::slice::from_ref(&offset.input), true), encode(&[input], false));
+        let view = prepare(std::slice::from_ref(&offset.input), true, true);
+        assert!(matches!(view, Cow::Borrowed(_)));
+        assert_eq!(view.as_ptr(), std::ptr::from_ref(&offset.input).cast::<u8>());
+        assert_eq!(view.as_ref(), encode(&[input], false));
     }
 }
