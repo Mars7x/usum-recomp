@@ -2664,6 +2664,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn network_exclusive_state_can_be_entered_and_left_repeatedly() {
+        let mut kernel = Kernel::default();
+        let mut cpu = Cpu { tls: 0x1000, ..Cpu::default() };
+        let mut mem = Memory::new();
+        mem.map(cpu.tls, vec![0; 0x1000], Perm::RW).unwrap();
+        let buffer = cpu.tls + services::COMMAND_BUFFER;
+        for _ in 0..3 {
+            for words in [[0x0001_0042, 2, services::fs::PROCESS_ID, 1].as_slice(), &[0x0002_0002, services::fs::PROCESS_ID, 1]] {
+                for (i, word) in words.iter().enumerate() {
+                    mem.write_u32(buffer + 4 * i as u32, *word).unwrap();
+                }
+                let before = (kernel.virtual_clock, kernel.vblanks);
+                assert!(matches!(kernel.request(&mut cpu, &mut mem, "ndm:u".into()), Outcome::Continue));
+                assert_eq!(mem.read_u32(buffer).unwrap(), services::header((words[0] >> 16) as u16, 1, 0));
+                assert_eq!(mem.read_u32(buffer + 4).unwrap(), RESULT_SUCCESS);
+                assert_eq!(cpu.r[0], RESULT_SUCCESS);
+                assert_eq!((kernel.virtual_clock, kernel.vblanks), before);
+                assert_eq!(kernel.settings.get(&("ndm:u".into(), words[0])), Some(&words[1..].to_vec()));
+            }
+        }
+        // A translated handle is not a process-ID descriptor. Keep unsupported
+        // messages visible instead of accepting every command with this ID.
+        for words in [[0x0002_0002, 0, 1], [0x0002_0040, 0, 0], [0x0003_0000, 0, 0]] {
+            for (i, word) in words.iter().enumerate() {
+                mem.write_u32(buffer + 4 * i as u32, *word).unwrap();
+            }
+            assert!(matches!(kernel.request(&mut cpu, &mut mem, "ndm:u".into()), Outcome::Unimplemented(_)));
+        }
+    }
+
+    #[test]
     fn friend_logout_is_idempotent_and_replies_through_guest_ipc() {
         let mut kernel = Kernel::default();
         let mut cpu = Cpu { tls: 0x1000, ..Cpu::default() };

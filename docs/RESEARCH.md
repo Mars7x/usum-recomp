@@ -4132,3 +4132,30 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   need a timing-preserving design before the rate can increase. These runs use
   the virtual clock and are not normal-speed FPS benchmarks; no timing patch or
   frame-rate option from the experiment is enabled in normal gameplay.
+
+### R-126 2026-10-29 — Let Mystery Gift release its network-exclusive state
+
+- Replayed the reported back-out stop with its original starting save and input.
+  The old runtime stops at VBlank 4443 on `ndm:u` request `0x00020002`, after
+  entering exclusive local communication state at VBlank 4385. This is a missing
+  service reply, not a GPU crash.
+- Implement the explicit `LeaveExclusiveState` command, accepting only its
+  process-ID descriptor and returning a result-only reply. It matches the existing
+  offline `EnterExclusiveState` handling: no network daemons run in this runtime.
+  Protocol reference: [libctru NDM requests](https://github.com/devkitPro/libctru/blob/master/libctru/source/services/ndm.c).
+  Unknown requests and invalid descriptors still stop with diagnostics.
+- The same replay now reaches 90 game seconds / 5384 VBlanks and the Mystery Gift
+  menu. All 56 periodic images before the old stop and all 2,430,560 preceding
+  audio sample frames are byte-identical; saves remain unchanged. Appending Back
+  leaves Mystery Gift through the normal application restart and resumes the
+  intro. That longer movie replay needs a larger diagnostic instruction budget;
+  exhausting the probe's default budget is not a guest service failure.
+- All five established regression fixtures preserve 74 images, five WAVs, saves,
+  instruction/VBlank/draw/triangle/video/audio/submission counts exactly. Runtime
+  tests: 110 passed with window/Vulkan, 12 hardware tests ignored; strict Clippy
+  and formatting pass. New IPC coverage checks repeated entry/exit, replies,
+  unchanged clocks and rejection of malformed/unknown messages.
+- Wider menu testing is ongoing: the Internet option reaches a separate missing
+  `ac:u` client-version request. This fix does not implement online gift delivery
+  or establish complete Mystery Gift compatibility. No performance gain claimed.
+  Private recordings, saves, captures and executables are retained outside Git.

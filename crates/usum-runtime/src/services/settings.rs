@@ -67,6 +67,10 @@ pub const RESULT_ONLY_WITH_PROCESS_ID: &[(&str, u32, &str)] = &[
     // 3dbrew "NDM Services": which exclusive state (2: local
     // communications) the caller enters; no daemons run to be held off
     ("ndm:u", 0x0001_0042, "EnterExclusiveState"),
+    // LeaveExclusiveState is the matching teardown (libctru ndm.c): no
+    // normal words, only the process-ID descriptor. No network daemons
+    // run in this offline runtime, so there is no daemon to resume.
+    ("ndm:u", 0x0002_0002, "LeaveExclusiveState"),
     // 3dbrew "SSL Services": SSLC:Initialize; no connection is ever made
     // (the console is offline), so nothing to set up
     ("ssl:C", 0x0001_0002, "Initialize"),

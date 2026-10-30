@@ -22,6 +22,10 @@ recycling TLS from exited threads (R-119). The latter reproduces the reported
 stop with ten live and 22 exited threads, then successfully retries the failed
 SVC in that same state. It does not claim a completed playthrough beyond it.
 
+The recorded Mystery Gift back-out failure on network-exclusive-state release
+is fixed (R-126), including the subsequent application restart. Online gift
+delivery is not implemented; broader receive-method handling is still under test.
+
 Native dynamic FPS remains unfinished. Neither host presentation caps nor
 unthrottled deterministic replay throughput establish normal-speed uncapped
 gameplay. See
