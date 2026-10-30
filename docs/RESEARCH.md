@@ -5207,3 +5207,55 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   is stopped. Preserve detailed private evidence in borrow-inputs-validation.
   Native engine cadence remains separate correctness research; this change does
   not ship or claim the dynamic-FPS feature.
+
+### R-151 2026-10-30 — Validate idle clocks and isolate higher-cadence random checks
+
+- Complete R-149's private idle-counter experiment: eight short replays and four
+  longer idle replays. Normal-cadence and disabled controls reproduce the archived
+  outputs; each longer run also matches its short WAV/trajectory prefix and
+  VBlank-900 image. Track both increment copies and all observed reset stores.
+  No fixture-specific hook is promoted into the production runtime.
+- The corrected higher-cadence idle counter is 38/88/138 at engine frames
+  700/800/900, versus the old 76/176/276 and normal 37/87/137. It now advances at
+  the right rate, with a remaining initialization offset. In the longer replay,
+  the first idle variation moves from frame 948 to 1272; normally it starts at
+  1242. The selected threshold is still 323 versus 307, and the selected animation
+  is still different. Correct rate alone does not establish correct event timing.
+- Read-only animation entry/exit traces preserve all prior outputs. The player
+  reaches phase 15 at frame 622 in both modes. Higher cadence sets the completion
+  flag at 623 and begins the next clip at 624; normal cadence sets it at 624 and
+  begins the next clip at 626. The nonlooping update clamps and finishes when
+  the newly advanced phase exceeds the endpoint. Both endpoint handling and
+  when the state machine consumes completion matter; merely halving the step
+  leaves this boundary discrepancy.
+- Full random-generator snapshots agree before the cadence request. At the first
+  differing shared observation, VBlank 604, generator words still agree but the
+  indices are 54 normally and 76 at higher cadence. Probe callbacks occur at
+  instruction-budget checkpoints, not every VBlank, so these observations are
+  neither complete per-frame traces nor counts of random calls.
+- Instrument actual entries to the resolved bounded-random helper, including
+  direct generated calls. Both modes retain exact trajectories, audio, images,
+  phase traces and complete generator snapshots against their uninstrumented
+  controls. Across engine frames 600–650 there are 157 normal entries and 344
+  higher-cadence entries. Caller 0x00420824 with bound 128 accounts for 153 versus
+  340. The two bound-3 calls and the idle threshold/choice calls account for the
+  remaining four in each mode. These are observed helper entries, not inferred
+  from generator indices or presented as a universal RNG inventory.
+- That dominant caller belongs to a small actor state machine with a countdown,
+  discrete states and a random callback. Its parent applies changed state to the
+  actor separately. Prepare a private fixed-time test of this state machine,
+  retaining higher-cadence pose evaluation and original/normal controls. The new
+  clock is queued after controlled GPU benchmarks; it has no result yet here.
+- Also validate read-only traces after completed movement-position setters.
+  All four turning/down controls preserve the prior outputs and step traces;
+  every recorded setter stores its target and charges its original 11 guest
+  instructions. In frames 640–679, summed committed movement distances are
+  379.9961/380.0149 for normal/higher down movement and 380.0006/379.9994 for
+  turning. Thus this steady segment does not move twice as far. Unshifted
+  matched-frame position differences still reach 9.5006 and 10.3654 units;
+  shifting comparison frames is diagnostic only and does not fix them.
+- Preserve sources, hashes and controls in the private idle-timer-clock,
+  idle-timer-long, phase-boundary-trace, rng-stream-trace, rng-call-trace and
+  position-commit-trace experiment directories. Position writes and animation
+  updates are not completed rendered frames; no FPS or throughput claim follows
+  from their counts. Native dynamic FPS remains correctness research.
