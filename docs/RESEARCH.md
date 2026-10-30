@@ -4159,3 +4159,73 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   `ac:u` client-version request. This fix does not implement online gift delivery
   or establish complete Mystery Gift compatibility. No performance gain claimed.
   Private recordings, saves, captures and executables are retained outside Git.
+
+### R-127 2026-10-29 — Isolate the field simulation cadence before enabling native dynamic FPS
+
+- Extend R-125 with a private diagnostic around the active field process's main
+  update and pre-update callbacks. Request the higher cadence through the normal
+  engine transition at VBlank 600, then omit alternating steady-field updates.
+  This tests which callback advances simulation; it is not a production policy.
+  Fixture object addresses and modified callback tables stay outside Git.
+- Repeat the same starting save and recorded input in four variants: normal
+  cadence, higher cadence, higher cadence with alternating main updates, and
+  higher cadence with alternating main/pre updates. All reach 956 VBlanks.
+  Normal main/pre callback counts are 345/334. Higher cadence runs 522/511;
+  gating restores 345 main calls (177 skipped), or 345/334 with both gated.
+- Across 98 common position samples in VBlanks 620–800, path lengths are 932.95,
+  1853.48, 932.50 and 932.07 units respectively. Both gated variants end at the
+  normal run's position, while intermediate positions differ by up to about
+  19.2 units. Top-screen submissions remain 675 versus 498 at normal cadence.
+- Audio and rendered output still differ. Extra submissions with held simulation
+  updates do not prove additional smooth animation poses or native FPS. This
+  establishes the field update as a timing domain worth separating, not a usable
+  unlock. Investigate the remaining input/update phase and audio differences,
+  then movement, animation and event timestep handling. Preserve battle/menu
+  transitions and the original compatibility path throughout.
+- These virtual-clock runs are behavioral diagnostics, not normal-speed FPS
+  measurements. No hardcoded field gate, clock acceleration, generated frames
+  or unlocked-rate setting is enabled in the shipped runtime.
+
+### R-128 2026-10-29 — Reduce worker scheduling for GPU vertex-input preparation
+
+- Fresh post-dispatch user-cycle profiles put overworld `InputPlan::load` at
+  3.78% self samples and worker waiting/yielding high in the call stacks. Intro
+  remains dominated by dispatch, movie helpers and checked word writes; changing
+  vertex scheduling does not target that movie work. Profiles are diagnostic,
+  not FPS measurements.
+- Raise the GPU vertex-input parallel threshold from 256 to 4096 distinct inputs
+  per draw. The existing decoder, input ordering, floating-point bits, checked
+  memory and GPU shader path remain unchanged. CPU shading retains its original
+  scheduling. `USUM_VULKAN_INPUT_PARALLEL_MIN=256` restores the old threshold in
+  the same binary; the process reads this setting on first use.
+- Frozen baseline, candidate and same-binary reference runs of intro, overworld,
+  battle, longer gameplay and restart agree on all 74 images, five WAVs, saves
+  and guest execution/render/audio counters. All Vulkan runs have zero software
+  fallbacks. Capture/profiling are disabled for isolated timing trials, encoders
+  are allowed to finish, and overlapping measurements are discarded.
+
+  | Fixture | Baseline mean | Candidate mean | Throughput change |
+  |---|---:|---:|---:|
+  | Intro, 6 guest seconds | 6.22425 s | 6.18000 s | +0.72% |
+  | Overworld, 16 guest seconds | 13.45075 s | 13.06175 s | +2.98% |
+  | Battle, 30 guest seconds | 20.67475 s | 20.16500 s | +2.53% |
+
+- Four trials per baseline/candidate are interleaved, with two old-threshold
+  reference trials per scene. Reference means are 6.1695/13.5565/20.736 seconds.
+  The tiny headless intro change is not a reliable improvement; its draws have
+  about four distinct inputs and never used the parallel branch.
+- Normal-speed window runs use old/new/new/old ordering and identical replay
+  inputs/saves at 6×. Intro averages 6.230 → 6.317 seconds (1.38% lower throughput
+  in this short window set); overworld 16.1835 → 16.0210 (+1.01%); battle stays
+  30.0190 seconds. Report that observed intro regression rather than inferring a
+  universal win. Gameplay remains cadence-limited; these timings demonstrate
+  modest headroom, not a native FPS unlock. Guest counters and saves match, and
+  resident presentation uses no materialized display sources.
+- Separate balanced user-only hardware-counter runs show 9.77% fewer retired
+  host instructions and 22.04% fewer cycles in overworld, and 7.06%/17.21% fewer
+  in battle. All counters were fully scheduled. These include worker/driver
+  activity and support reduced scheduling overhead, not proportional FPS gains.
+  One overlapping battle trial was discarded and repeated.
+- The frozen optimization candidate passed all 110 enabled window/Vulkan runtime
+  tests (12 hardware tests ignored), strict Clippy and formatting. No guest clock,
+  frame pacing, native timestep or game-service behavior changes in this patch.

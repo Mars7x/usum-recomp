@@ -36,6 +36,14 @@ fn reg(p: &Pica, r: u16) -> u32 {
     p.regs[usize::from(r)]
 }
 
+#[cfg(feature = "vulkan-compare")]
+fn input_parallel_min() -> usize {
+    static MIN: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *MIN.get_or_init(|| {
+        std::env::var("USUM_VULKAN_INPUT_PARALLEL_MIN").ok().and_then(|v| v.parse().ok()).unwrap_or(4096).max(256)
+    })
+}
+
 /// Builds a vertex from the shader's outputs through the output map: the
 /// k-th *enabled* output register uses map slot k (3dbrew "GPU/Pitfalls").
 fn map_outputs(p: &Pica, mask: u16, o: &[Vec4; 16]) -> Vertex {
@@ -1394,7 +1402,7 @@ fn draw_inner(p: &mut Pica, mem: &mut Memory, elements: bool) -> Result<(), Stri
                         Some(plan) => plan.load(mem, *index),
                         None => load_vertex(p, layout.as_ref().map_err(Clone::clone)?, mem, *index),
                     };
-                    let inputs: Vec<Result<[Vec4; 16], String>> = if distinct.len() >= 256 {
+                    let inputs: Vec<Result<[Vec4; 16], String>> = if distinct.len() >= input_parallel_min() {
                         use rayon::prelude::*;
                         distinct.par_iter().with_min_len(64).map(load).collect()
                     } else {

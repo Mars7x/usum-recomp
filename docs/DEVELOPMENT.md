@@ -203,6 +203,10 @@ destinations and fixed input registers once per draw. All loader reads retain
 their order and checked-memory fallback; CPU shading keeps the reference loader.
 `USUM_VULKAN_INPUT_PLAN=0` restores that loader for GPU draws too. The probe reports
 planned draws and distinct inputs separately from total GPU vertex counts.
+GPU vertex-input loading uses worker threads at 4096 distinct vertices per draw.
+`USUM_VULKAN_INPUT_PARALLEL_MIN=256` restores the previous scheduling threshold
+for comparisons. This process-wide threshold is read on first use; values below
+256 are clamped. CPU vertex shading and the decoded input bits are unchanged.
 
 GPU vertex uploads pack each complete 256-byte input as one block while preserving
 native-endian float bits. `USUM_VULKAN_BLOCK_PACK=0` retains the scalar float-by-float
