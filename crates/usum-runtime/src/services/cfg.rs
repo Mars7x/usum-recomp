@@ -90,6 +90,10 @@ impl Console {
                 Some(b)
             }
             0x000C_0001 => Some(vec![0; 0x14]),
+            // EULA versions (agreed, latest), two u16 values. This offline
+            // virtual console has neither an accepted agreement nor a fetched
+            // version.
+            0x000D_0000 => Some(vec![0; 4]),
             // country name per language (12 used slots of 0x80 bytes, 16
             // in all): the English name in each (not translated, a
             // choice); the state name: none, as no state is set

@@ -24,7 +24,10 @@ SVC in that same state. It does not claim a completed playthrough beyond it.
 
 The recorded Mystery Gift back-out failure on network-exclusive-state release
 is fixed (R-126), including the subsequent application restart. Online gift
-delivery is not implemented; broader receive-method handling is still under test.
+delivery is not implemented. Offline initialization and read-only self-content
+access are covered in R-129. The Internet failure path still needs the system
+error dialog, and confirmed infrared needs its communication service. Code entry
+and online submission remain unverified.
 
 Native dynamic FPS remains unfinished. Neither host presentation caps nor
 unthrottled deterministic replay throughput establish normal-speed uncapped

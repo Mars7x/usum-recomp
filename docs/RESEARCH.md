@@ -4229,3 +4229,63 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
 - The frozen optimization candidate passed all 110 enabled window/Vulkan runtime
   tests (12 hardware tests ignored), strict Clippy and formatting. No guest clock,
   frame pacing, native timestep or game-service behavior changes in this patch.
+
+### R-129 2026-10-29 — Extend offline Mystery Gift initialization and self-content reads
+
+- The shortened fixed-input menu replay reaches AC client-version registration,
+  default configuration creation, disconnect-event registration, the EULA-version
+  config block and SelfNCCH reads. Previously each missing request stopped the
+  guest. Add only the observed protocol operations; do not report an Internet
+  connection, accept an agreement or emulate successful gift delivery.
+- AC reports disconnected/no configured access-point slot. Its empty default
+  configuration writes only the validated 512-byte static buffer. Registration
+  validates an event handle and does not signal a disconnection that never
+  happened. Last-error queries return no AC error when no connection was attempted;
+  the observed setup failure originates in the guest before ConnectAsync.
+  See [libctru AC requests](https://github.com/devkitPro/libctru/blob/master/libctru/source/services/ac.c).
+- CFG exposes zero agreed/latest EULA versions. SelfNCCH archive handles share
+  the archive allocator but never map into host save paths. Read-only raw RomFS
+  and icon/banner/logo ExeFS sessions read bounded ranges from the user's dump.
+  Missing menu files return not-found; unsupported paths and writes remain
+  rejected. Open files survive archive closure; process restart retains the
+  source images but discards old archive handles. See
+  [SelfNCCH access paths](https://www.3dbrew.org/wiki/Filesystem_services).
+- Synthetic tests cover high-word archive handles, independent file lifetime,
+  bounded reads, missing menu files, executable-path/write rejection, restart
+  retention, offline status, event validation and static-buffer permissions.
+  All 115 enabled window/Vulkan runtime tests pass (12 hardware tests ignored),
+  with strict Clippy and formatting.
+- Menu coverage confirms local-wireless searching can be cancelled to the root
+  menu, then exited through normal application restart. Card-album and Read Info
+  navigation also return. Code/password warning pages can be cancelled, but that
+  does not validate the keyboard or submission path. Internet now reaches the
+  missing Error Display library applet (0x406); confirmed infrared reaches missing
+  InitializeIrnopShared. These remain explicit compatibility gaps, not completed
+  menu support. No networking or performance improvement is claimed here.
+
+- Five fixed-input/save regression fixtures retain all 74 images, five WAVs,
+  saves and execution/render/audio counters exactly against the frozen R-128
+  candidate. Restart coverage also matches; no Vulkan software fallbacks occur.
+
+### R-130 2026-10-29 — Narrow native movement timing and distinguish audio events
+
+- Extend R-127 with DSP source-event logs. The two streaming music channels have
+  identical event records at normal/higher/gated cadences. Non-music events differ:
+  the first observed 3041-sample effect starts at DSP frame 2075 normally, 2069
+  with unrestricted higher cadence and 2076 with field gating. Later effect
+  choices also differ. This implicates event timing/selection; it does not prove
+  all audio playback or animation timing correct.
+- A private write watchpoint on the active actor's X coordinate identifies two
+  position-writing callers through a common setter. A narrower diagnostic scales
+  only the primary player's movement increment by half at the higher cadence,
+  leaving field updates active. The setter keeps its original guest instruction
+  charge; no generic memcpy/vector helper or shipped runtime is replaced.
+- Over 86 common samples in VBlanks 620–800, normal/higher/scaled path lengths
+  are 932.95/1853.50/960.07 units. The scaled run still differs by up to 54.7 units,
+  and its VBlank-900 capture has already entered an encounter transition. It
+  submits 590 top-screen buffers, versus 498 normal and 675 unrestricted.
+  Movement scaling alone therefore fails to preserve behavior: collision,
+  animation and event/encounter advancement need coordinated timing work.
+- Keep these fixture-address diagnostics outside the product. Their wall times
+  include tracing and sometimes concurrent correctness work, so they are not
+  performance comparisons. Neither experiment is enabled as native dynamic FPS.

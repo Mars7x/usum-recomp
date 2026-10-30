@@ -58,6 +58,9 @@ pub const RESULT_ONLY: &[(&str, u32, &str)] = &[
 /// The same, for commands whose only translate parameter is the
 /// process-ID descriptor (0x20) the kernel fills in.
 pub const RESULT_ONLY_WITH_PROCESS_ID: &[(&str, u32, &str)] = &[
+    // AC SetClientVersion: SDK version followed by the process-ID
+    // descriptor; the reply does not establish a network connection.
+    ("ac:u", 0x0040_0042, "SetClientVersion"),
     // 3dbrew "Friend Services"
     ("frd:u", 0x0032_0042, "SetClientSdkVersion"),
     ("frd:a", 0x0032_0042, "SetClientSdkVersion"),

@@ -46,6 +46,7 @@ impl BootImage {
             frame_out,
             save_dir,
             romfs,
+            exefs,
             console,
             program_id,
             sleep_limit,
@@ -107,6 +108,12 @@ mod tests {
         kernel.virtual_clock = Some(5_000_000_000);
         kernel.vblanks = 299;
         kernel.save_dir = Some("/private/saves".into());
+        let metadata_path = std::env::temp_dir().join(format!("usum-restart-exefs-{}", std::process::id()));
+        std::fs::write(&metadata_path, [1, 2, 3, 4]).unwrap();
+        let metadata = fs::Image::open(&metadata_path, usum_import::romfs::Image { offset: 0, size: 4 }).unwrap();
+        std::fs::remove_file(metadata_path).unwrap();
+        kernel.exefs.insert("icon".into(), metadata);
+        kernel.self_ncch_archives.insert(1);
         kernel.pica.regs[0x41] = 0xffff;
         kernel.pica.draws = 47;
         #[cfg(feature = "vulkan-compare")]
@@ -143,6 +150,8 @@ mod tests {
         assert_eq!(kernel.vblanks, 299);
         assert_eq!(kernel.restarts, 1);
         assert_eq!(kernel.save_dir.as_deref(), Some(std::path::Path::new("/private/saves")));
+        assert_eq!(kernel.exefs["icon"].read(0, 4).unwrap(), [1, 2, 3, 4]);
+        assert!(kernel.self_ncch_archives.is_empty(), "archive handles belong to the exited process");
         assert!(Arc::ptr_eq(kernel.live_pad.as_ref().unwrap(), &pad));
         assert_eq!(kernel.pica.regs[0x41], 0);
         assert_eq!(kernel.pica.draws, 47, "profiling remains cumulative");

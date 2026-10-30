@@ -8,12 +8,14 @@
 //! settles a detail, the code says so. An SVC not implemented here stops
 //! execution with a report; nothing is guessed.
 
+#[cfg(test)]
+mod network_menu_tests;
 mod restart;
 #[cfg(test)]
 mod thread_tls_tests;
 pub(crate) use restart::BootImage;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use usum_guest::{Cpu, Memory, Perm};
 
@@ -76,6 +78,11 @@ pub enum Object {
     Directory {
         entries: Vec<fs::Entry>,
         read: usize,
+    },
+    /// A read-only system-menu metadata file in the dump's ExeFS.
+    ExeFsFile {
+        name: String,
+        size: u64,
     },
     /// A file session onto `size` bytes of the RomFS image from `start`.
     RomFsFile {
@@ -310,6 +317,8 @@ pub struct Kernel {
     pub console: cfg::Console,
     /// The RomFS level 3 image (SelfNCCH), if the dump has one.
     pub romfs: Option<fs::Image>,
+    /// Read-only system-menu metadata from the dump's ExeFS.
+    pub exefs: BTreeMap<String, fs::Image>,
     /// Where the game's save data (archive 4) lives on the host. Never
     /// next to the dump; the probe uses a scratch directory of its own.
     pub save_dir: Option<std::path::PathBuf>,
@@ -334,6 +343,9 @@ pub struct Kernel {
     pub idle_wait: Option<u64>,
     /// Open FS archives by handle.
     pub archives: BTreeMap<u64, fs::Archive>,
+    /// Read-only SelfNCCH archives, backed by the original dump rather than
+    /// a host save directory. Share the archive-handle allocator below.
+    self_ncch_archives: BTreeSet<u64>,
     next_archive: u64,
     /// Titles whose contents the game asked for but that are not here
     /// (system data such as the NGWord list).
@@ -342,7 +354,7 @@ pub struct Kernel {
     pub save_bytes_read: u64,
     pub save_bytes_written: u64,
     pub save_commits: u64,
-    /// Bytes the game has read from the RomFS.
+    /// Bytes the game has read from dump-backed RomFS and ExeFS files.
     pub romfs_read: u64,
     /// Settings the game handed to services (services::settings), by
     /// service and command: the last parameters.
@@ -1280,6 +1292,16 @@ impl Kernel {
                         None => Some(vec![services::header(0x845, 1, 0), fs::RESULT_NOT_FOUND]),
                     }
                 }
+                fs::Request::OpenArchive { archive: fs::ARCHIVE_SELF_NCCH, path } if path.kind == fs::PATH_EMPTY => {
+                    if self.romfs.is_some() || !self.exefs.is_empty() {
+                        self.next_archive += 1;
+                        let handle = self.next_archive;
+                        self.self_ncch_archives.insert(handle);
+                        Some(vec![services::header(0x80C, 3, 0), 0, handle as u32, (handle >> 32) as u32])
+                    } else {
+                        Some(srv::error_reply(0x80C, fs::RESULT_NOT_FOUND))
+                    }
+                }
                 // OpenArchive: result, u64 handle. Missing save data is "not
                 // formatted", missing extra data "not found" (R-029)
                 fs::Request::OpenArchive { archive, path } => {
@@ -1350,6 +1372,39 @@ impl Kernel {
                     }
                     Err(what) => return Outcome::Unimplemented(what),
                 },
+                fs::Request::OpenFile { archive, path, flags } if self.self_ncch_archives.contains(&archive) => {
+                    let bytes = mem.read_range(path.address, path.size.min(0x400)).unwrap_or_default();
+                    let menu_name = if path.kind == fs::PATH_BINARY && bytes.len() == 12 && bytes[..4] == 2u32.to_le_bytes() {
+                        let name = bytes[4..].split(|b| *b == 0).next().unwrap_or_default();
+                        std::str::from_utf8(name).ok().filter(|name| {
+                            matches!(*name, "icon" | "banner" | "logo") && bytes[4 + name.len()..].iter().all(|b| *b == 0)
+                        })
+                    } else {
+                        None
+                    };
+                    // SelfNCCH access type 2 exposes menu metadata, never executable code.
+                    if let Some(name) = menu_name.filter(|_| flags == fs::OPEN_READ) {
+                        if let Some(image) = self.exefs.get(name) {
+                            let size = image.size();
+                            let handle = self.open(Object::ExeFsFile { name: name.into(), size });
+                            Some(fs::open_file_reply_for(0x802, handle))
+                        } else {
+                            Some(srv::error_reply(0x802, fs::RESULT_NOT_FOUND))
+                        }
+                    } else if path.kind == fs::PATH_BINARY && bytes == [0; 12] && flags == fs::OPEN_READ {
+                        let Some(image) = &self.romfs else {
+                            return Outcome::Unimplemented("SelfNCCH archive lost its RomFS image".into());
+                        };
+                        let size = image.size();
+                        let handle = self.open(Object::RomFsFile { start: 0, size });
+                        Some(fs::open_file_reply_for(0x802, handle))
+                    } else {
+                        return Outcome::Unimplemented(format!(
+                            "SelfNCCH file path type {} {bytes:02x?}, flags {flags:#x}",
+                            path.kind
+                        ));
+                    }
+                }
                 // OpenFile: a session; a missing file without the create flag
                 // is "not found"
                 fs::Request::OpenFile { archive, path, flags } => match self.archive_file(mem, archive, path) {
@@ -1431,7 +1486,7 @@ impl Kernel {
                     Err(what) => return Outcome::Unimplemented(what),
                 },
                 fs::Request::CloseArchive(handle) => {
-                    if self.archives.remove(&handle).is_none() {
+                    if !self.self_ncch_archives.remove(&handle) && self.archives.remove(&handle).is_none() {
                         return Outcome::Unimplemented(format!("CloseArchive of {handle:#x}, which is not open"));
                     }
                     Some(services::result_reply(0x80E))
@@ -1680,6 +1735,34 @@ impl Kernel {
             }
             "hid:USER" | "hid:SPVR" if matches!(header, 0x0011_0000 | 0x0012_0000 | 0x0013_0000 | 0x0014_0000) => {
                 self.hid_motion.request(header)
+            }
+            // ACU_GetStatus / GetWifiStatus (libctru ac.h): this runtime
+            // has no Internet connection or configured access-point slot.
+            "ac:u" if header == 0x000C_0000 => Some(vec![services::header(0xC, 2, 0), 0, 1]),
+            "ac:u" if header == 0x000D_0000 => Some(vec![services::header(0xD, 2, 0), 0, 0]),
+            // LastErrorCode / LastDetailErrorCode: no AC connection has been
+            // attempted. Guest-side setup failures do not invent an AC error.
+            "ac:u" if matches!(header, 0x000A_0000 | 0x000B_0000) => {
+                Some(vec![services::header((header >> 16) as u16, 2, 0), 0, 0])
+            }
+            // CreateDefaultConfig: a 512-byte static output buffer (libctru
+            // ac.c). An empty configuration describes no configured AP here.
+            "ac:u" if header == 0x0001_0000 && message.statics[0] == (0x200 << 14) | 2 => {
+                let address = message.statics[1];
+                if let Err(f) = mem.write_range(address, &[0; 0x200]) {
+                    return Outcome::Unimplemented(format!("AC configuration output at {address:#x}: {f}"));
+                }
+                Some(vec![services::header(1, 1, 2), 0, (0x200 << 14) | 2, address])
+            }
+            // RegisterDisconnectEvent: retain the request without signaling;
+            // an already-offline console has not just lost a connection.
+            "ac:u" if header == 0x0030_0004 && message.words[1] == fs::PROCESS_ID && message.words[3] == srv::COPY_HANDLE => {
+                if matches!(self.handles.get(&message.words[4]), Some(Object::Event { .. })) {
+                    self.settings.insert((service.clone(), header), message.words[1..5].to_vec());
+                    Some(services::result_reply(0x30))
+                } else {
+                    Some(srv::error_reply(0x30, RESULT_INVALID_HANDLE))
+                }
             }
             // InitializeWithVersion(shared memory size, NodeInfo, version,
             // shared memory): result, 0, a copy descriptor, the event
@@ -1988,7 +2071,11 @@ impl Kernel {
         let header = message.words[0];
         let reply = match fs::parse_file(&message) {
             fs::FileRequest::Read { offset, size: len, buffer: out } => {
-                let Some(image) = &self.romfs else { return Outcome::Unimplemented("RomFS read without an image".into()) };
+                let image = match self.handles.get(&handle) {
+                    Some(Object::ExeFsFile { name, .. }) => self.exefs.get(name),
+                    _ => self.romfs.as_ref(),
+                };
+                let Some(image) = image else { return Outcome::Unimplemented("dump file read without an image".into()) };
                 let len = u64::from(len).min(size.saturating_sub(offset)) as u32;
                 match image.read(start + offset, len) {
                     Ok(bytes) => match mem.write_range(out, &bytes) {
@@ -2611,8 +2698,10 @@ impl Kernel {
             // SendSyncRequest(r0 = session)
             // OpenLinkFile on a file session: another session to the same
             // file (3dbrew lists it among the file commands)
-            0x32 if matches!(self.handles.get(&cpu.r[0]), Some(Object::RomFsFile { .. } | Object::SaveFile { .. }))
-                && _mem.read_u32(cpu.tls + services::COMMAND_BUFFER) == Ok(0x080C_0000) =>
+            0x32 if matches!(
+                self.handles.get(&cpu.r[0]),
+                Some(Object::RomFsFile { .. } | Object::ExeFsFile { .. } | Object::SaveFile { .. })
+            ) && _mem.read_u32(cpu.tls + services::COMMAND_BUFFER) == Ok(0x080C_0000) =>
             {
                 let object = self.handles[&cpu.r[0]].clone();
                 let h = self.open(object);
@@ -2638,6 +2727,7 @@ impl Kernel {
                     self.request(cpu, _mem, service)
                 }
                 Some(&Object::RomFsFile { start, size }) => self.file_request(cpu, _mem, cpu.r[0], start, size),
+                Some(&Object::ExeFsFile { size, .. }) => self.file_request(cpu, _mem, cpu.r[0], 0, size),
                 Some(Object::Directory { .. }) => self.directory_request(cpu, _mem, cpu.r[0]),
                 Some(Object::SaveFile { path, flags }) => {
                     let (path, flags) = (path.clone(), *flags);

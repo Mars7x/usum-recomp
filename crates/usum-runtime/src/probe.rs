@@ -170,6 +170,14 @@ pub fn setup(
     if let Some(range) = inspection.romfs_image {
         kernel.romfs = Some(crate::services::fs::Image::open(dump, range).map_err(|e| format!("{}: {e}", dump.display()))?);
     }
+    for entry in inspection.exefs.iter().filter(|e| matches!(e.name.as_str(), "icon" | "banner" | "logo")) {
+        let range = usum_import::romfs::Image {
+            offset: inspection.partition_offset + inspection.ncch.exefs.offset + entry.offset,
+            size: entry.size,
+        };
+        let image = crate::services::fs::Image::open(dump, range).map_err(|e| format!("{}: {e}", dump.display()))?;
+        kernel.exefs.insert(entry.name.clone(), image);
+    }
     Ok((cpu, mem, kernel, inspection.ncch.program_id))
 }
 
