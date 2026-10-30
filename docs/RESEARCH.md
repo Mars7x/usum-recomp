@@ -5631,3 +5631,32 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   not enable interactive native FPS, broaden actor eligibility, or settle the
   field-writer/reset distinction noted in R-160. Arbitrary cadence and broader
   gameplay validation remain necessary; these runs do not measure throughput.
+
+### R-162 2026-10-30 — Separate reset ownership from allocation context
+
+- Complete six read-only reset-owner traces at normal and corrected higher
+  cadence for idle, turning and straight movement. Extend phase tracing from
+  engine frames 610–632 to 600–800 and capture reset-call descriptors plus a
+  larger owner snapshot. All previous captures remain exact; the original
+  phase-window rows also match exactly.
+- At audited reset callers, the descriptor identifies an animation owner and
+  layer. The two looping states reset at idle frame 626 belong to different
+  owners' primary banks. One advances to phase 1 at both cadences through the
+  existing correction; the other advances to 1 normally and 0.5 at higher
+  cadence, then remains half a phase behind at shared update points.
+- Their owners share a pointer used by the state-allocation path. This is an
+  allocation context, not sufficient evidence of shared actor identity. Do not
+  broaden eligibility solely on that pointer. Other candidate resets at frame
+  668 belong to non-primary channels and have no updates in this particular
+  phase-updater trace, reinforcing the need to identify actual consumers.
+- Separately reproduce a credit-lifetime counterexample using the actual
+  translated rate setter and synthetic guest objects. A same-rate assignment
+  after a credited pose leaves the guest state bytes unchanged, but the current
+  invalidation policy discards the credit before its event query. The baseline
+  fails the expected-credit assertion; a candidate preserving the credit only
+  when the stored and assigned rates match passes. Changed rates still clear
+  that state's credit, other states survive, and the before-pose case passes.
+- This counterexample is a targeted instruction/helper test, not an observed
+  failure in the recorded gameplay runs. Preserve reset-owner-trace and
+  rate-assignment-guard evidence. Full replay validation of the opt-in rate
+  policy is separate; actor eligibility remains unchanged.
