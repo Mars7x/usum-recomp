@@ -347,6 +347,9 @@ pub struct Kernel {
     pub snapshot_next: u64,
     /// The virtual clock in nanoseconds, if one is used.
     pub virtual_clock: Option<u64>,
+    /// Publish guest time to native timing hooks during dispatch. Does not
+    /// change cadence or enable a native FPS mode by itself.
+    pub native_timing: bool,
     /// Nanoseconds the host has slept with every thread waiting.
     pub slept: u64,
     /// Set when `switch` gave up: nanoseconds until the next timeout.
@@ -2262,6 +2265,17 @@ impl Kernel {
         match self.virtual_clock {
             Some(ns) => ns,
             None => self.started.map_or(0, |t| t.elapsed().as_nanos() as u64),
+        }
+    }
+
+    pub(crate) fn native_dispatch_clock(&self, budget: i64) -> crate::native_timing::DispatchClock {
+        match self.virtual_clock {
+            Some(ns) => crate::native_timing::DispatchClock::Virtual {
+                ns,
+                budget,
+                cycles_per_second: std::num::NonZeroU64::new(TICKS_PER_SECOND).unwrap(),
+            },
+            None => crate::native_timing::DispatchClock::Host { started: self.started },
         }
     }
 

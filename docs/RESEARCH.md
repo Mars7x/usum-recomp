@@ -5774,3 +5774,39 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   the wait would also discard its synchronization behavior.
 - Preserve scheduler-trace and scheduler-wait evidence. These are read-only
   scheduling observations, not a new native frame-rate mode or speed benchmark.
+
+### R-167 2026-10-30 — Connect native timing hooks to the runtime guest clock
+
+- Add an opt-in runtime clock context around translated dispatch. A native hook
+  reads guest nanoseconds using its current instruction budget. Virtual reads
+  include work since the dispatch origin with the kernel's integer cycle/time
+  conversion; live reads use the kernel's monotonic origin. Reading the context
+  never advances time or changes hardware events. No context is available
+  outside an enabled dispatch.
+- Scope the context to the host thread and restore it across nested runs,
+  disabled sessions and unwinding. Refresh it after each dispatch so SVC waits,
+  budget refills and thread switches cannot retain an earlier clock origin.
+  Preserve the opt-in setting across application restart. This is a runtime
+  timing source, not an FPS setting or a changed scheduling policy.
+- Five clock tests cover uncharged instructions, repeated reads, invalid budget
+  movement, nested scopes, thread isolation, unwind cleanup, new dispatch origins,
+  host time and overflow. Two restart tests pass, including preservation of the
+  timing setting. An additional integration test runs real dispatch and a
+  GetSystemTick SVC with timing disabled/enabled; observations agree with kernel
+  accounting and the context is cleared after returning.
+- Build from isolated committed sources plus these timing changes. Rebuild the
+  committed renderer baseline needed by the current runtime API; exclude the
+  separate in-progress GPU changes. All nine idle/turning/straight-movement
+  controls preserve every previous CSV, WAV, PPM and RNG binary. Actual engine
+  hooks observe time when enabled and no context when disabled; within-dispatch
+  time differences agree with instruction charges to integer-rounding precision.
+- Independently verify all nine input/save/binary/harness/manifest records and
+  the compiled runtime snapshots. Final formatting-only changes to the kernel
+  and dispatch source match the snapshots after rustfmt normalization. Preserve
+  runtime-clock-build-v2/runtime-clock-tests-v2 evidence; the first build's old
+  renderer dependency lacked the required API and produced no executable.
+- Native consumers can now obtain a common guest-time source in the ordinary
+  runtime. Publishing one elapsed step per engine update, converting the existing
+  half-step/counter policies, and separating update deadlines from the hardware
+  frame wait remain required for freely varying native FPS. These controls do
+  not establish throughput or arbitrary-rate gameplay correctness.

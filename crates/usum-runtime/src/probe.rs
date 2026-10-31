@@ -76,6 +76,7 @@ pub fn run_with(
     max_refills: u64,
     hook: &mut dyn FnMut(&mut Kernel, &Memory) -> bool,
 ) -> (Outcome, u64) {
+    let _timing_session = crate::native_timing::enter_dispatch(None);
     let boot = kernel::BootImage::capture(cpu, mem, kernel);
     let mut refills = 0u64;
     let mut ran = 0u64;
@@ -94,7 +95,11 @@ pub fn run_with(
         };
         cpu.depth = 0;
         let before = cpu.budget;
-        let exit = code(cpu, mem);
+        let exit = {
+            let _clock =
+                kernel.native_timing.then(|| crate::native_timing::enter_dispatch(Some(kernel.native_dispatch_clock(before))));
+            code(cpu, mem)
+        };
         let spent = (before - cpu.budget) as u64;
         ran += spent;
         kernel.advance(spent);

@@ -33,6 +33,7 @@ impl BootImage {
         transfer!(
             started,
             virtual_clock,
+            native_timing,
             next_vblank,
             next_audio_frame,
             vblanks,
@@ -106,6 +107,7 @@ mod tests {
         let pad = Arc::new(AtomicU64::new(1));
         kernel.live_pad = Some(Arc::clone(&pad));
         kernel.virtual_clock = Some(5_000_000_000);
+        kernel.native_timing = true;
         kernel.vblanks = 299;
         kernel.save_dir = Some("/private/saves".into());
         let metadata_path = std::env::temp_dir().join(format!("usum-restart-exefs-{}", std::process::id()));
@@ -147,6 +149,7 @@ mod tests {
         assert!(kernel.object(old_handle).is_none());
         assert_eq!(kernel.threads.len(), 1);
         assert_eq!(kernel.virtual_clock, Some(5_000_000_000));
+        assert!(kernel.native_timing);
         assert_eq!(kernel.vblanks, 299);
         assert_eq!(kernel.restarts, 1);
         assert_eq!(kernel.save_dir.as_deref(), Some(std::path::Path::new("/private/saves")));

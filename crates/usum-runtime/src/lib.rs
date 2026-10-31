@@ -8,6 +8,7 @@
 pub mod audio;
 pub mod boot;
 pub mod kernel;
+pub mod native_timing;
 pub mod pica;
 #[cfg(feature = "window")]
 pub mod play;
