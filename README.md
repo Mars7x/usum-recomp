@@ -31,8 +31,8 @@ Latest measured state (2026-10-31):
   but they do not unlock the game's frame rate; the overlay counts framebuffer
   submissions, not unique rendered frames. Native dynamic FPS is in
   development: update deadlines, frame publication and elapsed chance checks
-  work in private diagnostics, while input sampling and an encounter policy
-  still assume 60 Hz ([R-176](docs/RESEARCH.md#r-176-2026-10-31--input-sampling-and-a-down-path-battle-at-variable-cadence)).
+  work in private diagnostics, but a variable-cadence replay still triggers a
+  wild battle the normal-speed replay avoids ([R-176](docs/RESEARCH.md#r-176-2026-10-31--input-sampling-and-a-down-path-battle-at-variable-cadence)).
 - **Not done:** native dynamic FPS, Flatpak packaging and a graphical launcher.
 
 Each run stops at the first operation that is not implemented and names it.

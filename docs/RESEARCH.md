@@ -6151,3 +6151,26 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
 - Next: sample input per native update when native timing is active, with
   edges relative to the previous update's sample so a press is reported once
   and never dropped; trace which encounter check admits the down-path battle.
+
+### R-177 2026-10-31 — The game derives pad edges from held state
+
+- Disassembled the executable (`usumctl extract-code`, `arm-none-eabi-objdump`)
+  to find the readers of the HID pad ring. The SDK reader at 0x282428 copies up
+  to seven entries written since the caller's last read, newest first, using
+  the entry-0 tick and the ring index to count new entries.
+- The game's input update at 0x34ec64 calls two wrappers of it. 0x179fe8 reads
+  the history since the previous update; 0x179eb8 reads only the newest entry,
+  with fresh tick/index state, and then recomputes pressed as
+  `held & !previous_held` and released as `previous_held & !held` from its own
+  stored previous held word. The HID entries' pressed/released words are
+  overwritten. The update then ORs the held word of every history entry into
+  the newest status, so a button held at any sample since the previous update
+  counts as held.
+- Consequences for variable cadence: two updates inside one VBlank see the
+  same held state and produce no second press; a long update still reports a
+  press that is held at its newest sample. R-176's duplicated or missing edge
+  words therefore do not reach this reader, and per-update HID sampling is not
+  needed for pad edges. A press and release between two updates is reported as
+  held, without a press, which is also true of the game at its normal 30 Hz.
+- The touch screen and other readers were not audited here. The down-path
+  battle from R-176 remains unexplained.

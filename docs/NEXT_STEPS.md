@@ -94,10 +94,10 @@ See [compatibility](COMPATIBILITY.md), [building and controls](BUILDING.md),
    diverge. General lifecycle/reset integration remains necessary; the private
    diagnostic is not a shipped unlock.
    Native update deadlines, dispatch-scoped frame publication and elapsed
-   chance checks with catch-up exist (R-170–R-175). R-176 shows input is still
-   sampled per VBlank, so variable updates duplicate or drop pad edges, and a
-   short-deadline down replay still enters a wild battle. Per-update input
-   sampling and the remaining encounter policy are next.
+   chance checks with catch-up exist (R-170–R-175). The game computes pad
+   presses from held state, so 60 Hz HID sampling is safe at variable cadence
+   (R-177). A short-deadline down replay still enters a wild battle (R-176);
+   attributing that encounter decision is next.
 2. **Profile-led optimization.** Revisit intro/movie helpers, checked memory,
    frequent guest helpers, vertex preparation and GPU synchronization using
    fresh profiles. Retain a reference path and frozen before/after executables.
