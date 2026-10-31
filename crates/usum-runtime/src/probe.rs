@@ -95,14 +95,21 @@ pub fn run_with(
         };
         cpu.depth = 0;
         let before = cpu.budget;
-        let exit = {
+        let (exit, present_frame) = {
             let _clock =
                 kernel.native_timing.then(|| crate::native_timing::enter_dispatch(Some(kernel.native_dispatch_clock(before))));
-            code(cpu, mem)
+            let exit = code(cpu, mem);
+            let requested = exit.is_ok() && crate::native_timing::take_frame_presentation_request();
+            (exit, requested)
         };
         let spent = (before - cpu.budget) as u64;
         ran += spent;
         kernel.advance(spent);
+        if present_frame {
+            if let Err(error) = kernel.present_native_frame(mem) {
+                return (Outcome::Unimplemented(format!("native frame publication: {error}")), ran);
+            }
+        }
         match exit {
             Ok(Exit::Jump) => {}
             Ok(Exit::Svc(n)) => match kernel.tick_then_svc(cpu, mem, n) {

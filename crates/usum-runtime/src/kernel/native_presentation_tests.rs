@@ -100,3 +100,41 @@ fn native_publication_delivers_pixels_once_without_incrementing_mailbox_vblanks(
     assert_eq!(frames.stamp.updates, [1, 0]);
     assert_eq!(notifications.load(Ordering::Relaxed), 2);
 }
+
+#[test]
+fn dispatch_publishes_only_enabled_successful_requests_once() {
+    use crate::probe::{self, Modules, Outcome};
+    use usum_guest::{Code, Cpu, Exit, Fault};
+    fn request(cpu: &mut Cpu, _: &mut Memory) -> Result<Exit, Fault> {
+        assert_eq!(crate::native_timing::request_frame_presentation(), cpu.r[4] != 0);
+        assert_eq!(crate::native_timing::request_frame_presentation(), cpu.r[4] != 0);
+        if cpu.r[4] == 2 {
+            return Err(Fault::NoTranslation { address: 0x2008, thumb: false });
+        }
+        cpu.r[15] = 0x2004;
+        Ok(Exit::Jump)
+    }
+    for mode in 0..3 {
+        let (mut kernel, mut mem) = fixture();
+        kernel.native_timing = mode != 0;
+        submit(&mut mem, 0, 0, 0x3000_0000);
+        let mut cpu = Cpu::default();
+        cpu.r[15] = 0x2000;
+        cpu.r[4] = mode;
+        let entries: [(u32, Code); 1] = [(0x2000, request)];
+        let (outcome, _) = probe::run_with(
+            &mut cpu,
+            &mut mem,
+            &mut kernel,
+            &entries,
+            &Modules { functions: &[], entries: &[], translated: &[] },
+            2,
+            &mut |_, _| true,
+        );
+        assert!(matches!(outcome, Outcome::Fault(Fault::NoTranslation { .. })));
+        assert_eq!(kernel.presented.len(), usize::from(mode == 1));
+        assert_eq!(mem.read_u8(BASE + 0x201).unwrap(), if mode == 1 { 0x80 } else { 0x81 });
+        assert_eq!(kernel.vblanks, 0);
+        assert!(!crate::native_timing::request_frame_presentation());
+    }
+}

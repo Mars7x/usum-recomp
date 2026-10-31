@@ -5964,3 +5964,42 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   differences remain unchanged. No throughput claim is made from these bounded,
   unoptimized-runtime tests. Dispatch integration and synchronization-preserving
   replacement of the game wait remain necessary.
+
+### R-172 2026-10-30 — Dispatch-scoped publication reaches the recorded game loop
+
+- Added `native_timing::request_frame_presentation` and dispatcher consumption
+  after charging guest work, before processing the dispatch exit. Requests are
+  accepted only in an enabled dispatch, coalesce, and are discarded on failure
+  or unwind. Nested/disabled sessions restore their enclosing request state;
+  another host thread cannot inherit a request. Publication errors stop with a
+  diagnostic instead of silently continuing. Other agents' GPU changes were
+  excluded from the validated runtime and preserved in the working tree.
+- Four presentation kernel tests, twelve clock/step/deadline/request tests, and
+  nine timing tests pass. The dispatcher test covers disabled, successful, and
+  failed requests, checking that only the successful enabled case consumes the
+  framebuffer submission and duplicate requests publish once.
+- Private `native-present-hook-build-v2` connects this API at the audited
+  0x548854 entry from 0x353598. It yields once to the dispatcher, then re-enters
+  the original wait with guest registers/stack intact. The original wait and its
+  caller's flag/IPC work still execute. This is a bounded fixture experiment,
+  not a production game-hook registration or a replacement for hardware pacing.
+- Normal and elapsed-policy controls match every existing capture exactly. With
+  publication enabled, 198 update boundaries acknowledge both screen submissions
+  (396 fresh submissions); each observed flag changes from one to zero while the
+  event state stays two. The actual framebuffer-info pointers are 0x10000200 and
+  0x10000240. Inputs, saves, source snapshots, libraries, and binaries were audited.
+- Enabled gameplay/audio/state traces and every previously captured image match
+  the elapsed-policy reference. Only `pose-trace.csv` differs: its original 21
+  rows are unchanged and one sample is appended (submission 778, VBlank/engine
+  frame 670), with an additional image. Earlier publication exposes that next
+  submission within the sampler's inclusive VBlank window. This is not an extra
+  engine update, interpolation, or a demonstrated increase in rendering FPS.
+- The first enabled diagnostic stopped before publication due to a mistyped
+  literal pointer address. Its failed artifacts were retained; v2 corrects the
+  lookup to 0x0027aa24 and supplies explicit outcome reporting. The corrected
+  three-case replay completes. Scripts/artifacts: `native-dispatch-bridge-build`,
+  `native-present-hook-v2`, and `audit-native-present-hook-v2`.
+- Next integration step is deadline-controlled pacing with nonblocking handling
+  of pending GSP notifications, retaining the fallback wait and caller side
+  effects. Existing diagnostic hardware-frame identities and the R-169 timing
+  qualifications still prevent claiming fully functional arbitrary native FPS.
