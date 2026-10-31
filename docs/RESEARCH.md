@@ -5844,3 +5844,67 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   half-step and frame-count assumptions with these shared intervals, validating
   animation/event/timer interactions. Update deadlines remain hardware-paced;
   observation alone does not implement freely varying native frame rates.
+
+### R-169 2026-10-30 — Direct elapsed-time consumers expose event-ordering regressions
+
+- The private `elapsed-consumers` experiment replaces fixed half steps in scoped
+  movement/animation consumers and quaternion smoothing with R-168's shared
+  elapsed interval. Per-state timers accumulate integer guest nanoseconds, reject
+  duplicate consumption, and invalidate their credit at audited reset sites.
+  The old path remains selectable. This is a diagnostic, not a production enable.
+- Nine identical-save/input replays completed: idle, turning, and straight walking,
+  each with normal, old high-cadence, and elapsed-time policies. All six normal/old
+  controls match every recorded CSV, WAV, PPM, and BIN artifact exactly. Input,
+  save, executable, harness, and manifest hashes were checked for all nine cases.
+- The elapsed candidate is **not behaviorally accepted**. Turning loses two action
+  transitions (seven becomes five), recorded RNG calls drop from 161 to 157, and
+  audio-state records change from 507 to 472 versus the old high-cadence path.
+  Straight walking moves an action from frame 686 to 688 and changes audio-state
+  records from 477 to 602. These counts describe instrumentation, not audible
+  event counts. All WAV files retain 523,520 stereo samples at 32,728 Hz; equal
+  duration does not establish equivalent sound or event timing.
+- A concrete boundary mismatch appears in turning: the old countdown is zero at
+  the action decision on frame 626, but the elapsed countdown reaches zero only
+  at frame 627. Meanwhile the animation's frame-626 interval ends at about
+  4.0001402 rather than exactly 4.0; the next interval starts beyond 4.0. The old
+  path selects a new action on frame 627 while the candidate does not. This
+  motivates isolating timer policy from continuous motion and inspecting event
+  results; it does not yet prove the complete causal chain or justify an epsilon
+  comparison, dropped elapsed time, or unconditional deferred events.
+- A separate demonstrated long-interval bug is fixed in the private
+  `elapsed-countdown` candidate: decrementing a remaining count of one by two
+  wrapped the guest's unsigned subtraction to 4,294,967,295. Bounding the emitted
+  decrement by the remaining count reaches zero while accumulating timers still
+  receive both ticks. The original helper fails this targeted guard; the corrected
+  helper passes it and the variable-interval/reset guard. All three gameplay
+  replays remain artifact-identical to the preceding elapsed candidate, including
+  its known regressions. This fixes countdown expiry, not event ordering.
+- Private scripts and artifacts use `elapsed-consumers`, `elapsed-countdown`, and
+  their corresponding `-build`/`-tests` directories under the native-FPS research
+  cache. Root dispatch remains unoptimized and runs are CPU/memory constrained;
+  no throughput gain or freely varying presentation rate is established here.
+  Hardware-paced scheduling and broader lifecycle validation remain outstanding.
+- Follow-up `elapsed-timer-isolation` keeps continuous consumers on elapsed time
+  while selecting the old timer policy. This recovers seven turning transitions
+  and 161 RNG calls, but audio-state records become 542 and some transition times
+  still differ. The all-elapsed control is artifact-identical. This isolates the
+  transition-count change to timer policy; keeping old fixed timers is not the
+  requested freely varying implementation.
+- Further tracing narrows the early difference more precisely than the countdown
+  correlation above: the turn qualification counter at component +0x3c must reach
+  four to retain +0x38. At frame 627 the elapsed counter remains three, while the
+  old policy reaches four. The selector at 0x6f04f718 reads +0x38 and changes its
+  selected state from four to five only in the latter case. The eight published
+  elapsed intervals at frames 620–627 total 133,705,988 ns, **3,452 ns short** of
+  four nominal ticks (133,709,440 ns). Thus the elapsed accumulator is rounding
+  correctly; forcing it to four would discard the real threshold distinction.
+  Qualification resets at frame 628. This is a boundary-sensitive behavioral
+  difference, not proof that the animation event query itself dropped an event.
+- `elapsed-event-return` records 356 query invocations in each isolated replay
+  without changing any pre-existing capture. Of these, 333 return directly to the
+  audited caller and 23 leave through another continuation; those 23 are not
+  completed return-value observations. Frame 627 directly returns four in both
+  policies. Next work must distinguish legitimate changed sampling at a strict
+  threshold from incorrect lifetime accounting and test sustained qualification
+  under variable cadence; do not add an epsilon or fabricate a timer tick merely
+  to recover a borderline replay's old transition count.
