@@ -6070,3 +6070,46 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   `native-update-credit-guards.rs`, `update-credits-tests`, and
   `audit-native-update-credits.py`. No generated guest source or game data is
   committed. No host FPS gain is claimed from this correctness experiment.
+
+### R-175 2026-10-30 — Elapsed chance checks with complete-cycle catch-up
+
+- Replaced the private chance-helper parity policy with per-state fractional
+  logical ticks from the shared update step, behind
+  `USUM_DIAGNOSTIC_ELAPSED_CHANCE`. Duplicate calls in one update do not consume
+  time twice. Insufficient entry budget leaves timer metadata and saved guest
+  return addresses untouched. Constructor/mode resets and changed callback
+  bindings clear the fraction and cancel queued old-state work; explicit resets
+  preserve one immediate first logical tick. The prior policy remains available.
+- Auditing the original caller showed why repeating only 0x4207a8 is insufficient:
+  0x420a68 dispatches animation notifications after each state change, including
+  tail calls. A private return continuation therefore lets the complete original
+  component cycle finish before re-entering 0x420a50 for another due tick. It
+  preserves the original caller and stack and does not silently cap due ticks.
+- Actual-helper guards pass for fractional accumulation, duplicate suppression,
+  budget retries, three-tick catch-up, cancellation on reset, and immediate-first
+  reset behavior. The ordinary paced and variable-deadline controls match all
+  previous captures exactly; only the new timing CSV is added.
+- In the 5/11/23/7 ms variable replay, player chance admissions over frame labels
+  603–650 fall from 32 to 24, matching the paced control's count. The RNG index at
+  the frame-650 sample changes from 438 to 332 (paced control: 336). This replay
+  now remains in the overworld instead of entering R-173's divergent wild battle,
+  confirmed in the final image and continuous player trajectory. Counts alone
+  are not equivalence: movement, event, image, RNG, and audio captures still
+  differ, and arbitrary-rate gameplay is not accepted as fully correct.
+- A second replay uses 5/11/83/7 ms deadlines to exercise catch-up in the game.
+  Its return trace verifies 279 multi-tick batches, 702 complete-cycle returns,
+  and all 423 additional due ticks. Every batch matches its recorded update
+  sequence and frame label; every return preserves SP; every final return goes
+  to the original 0x3a969c caller. No queued tick is missing in this capture.
+  The instrumented ordinary-interval control matches its previous outputs.
+- All five replays complete with `NoThread`. Source/dependency/binary hashes,
+  identical starting saves and replay inputs, manifests, comparison sets, and
+  each catch-up batch were audited. Builds and replays ran sequentially with
+  6 GiB memory, no swap, and one CPU. These virtual-clock, unoptimized-runtime
+  runs establish timing behavior, not host FPS gains.
+- Artifacts: `chance-elapsed-build/tests`, `chance-stress-build/tests`,
+  `native-chance-elapsed-helper.rs`, `native-chance-elapsed-guards.rs`, and the
+  corresponding `audit-native-chance-*` scripts. The continuation and hooks are
+  still private diagnostics, not registered in the normal launcher. Broader
+  lifetime/transition coverage, remaining movement and animation assumptions,
+  input timing, and production integration remain necessary.
