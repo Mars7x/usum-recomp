@@ -115,5 +115,5 @@ what you publish. See [the data policy](docs/adr/0004-game-data-policy.md).
 Research consulted public emulator and recompiler sources (3dsrecomp, Zakuro,
 Citra, 3dbrew); see [FEASIBILITY.md](docs/FEASIBILITY.md) for credits.
 
-Licensed under MIT. See [LICENSE](LICENSE). Dependency licenses remain with
-their respective authors.
+Licensed under GPL-3.0-or-later. See [LICENSE](LICENSE). Dependency licenses
+remain with their respective authors.

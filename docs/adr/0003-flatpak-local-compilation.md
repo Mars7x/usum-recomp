@@ -38,7 +38,8 @@ Prototype A first, with B as the fallback; choose with evidence. In
 either case:
 
 - The runtime's own Rust sources and their vendored dependencies are
-  shipped in `/app/share/usum-recomp/` (all MIT/Apache, no game content).
+  shipped in `/app/share/usum-recomp/` (project sources GPL-3.0-or-later,
+  dependencies under GPL-compatible permissive licenses; no game content).
   The local build compiles them together with the generated crates into
   one native **executable** under `$XDG_CACHE_HOME` (inside
   `~/.var/app/<id>/`). The launcher starts it as a child process.

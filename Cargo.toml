@@ -12,7 +12,7 @@ edition = "2021"
 # builds with the org.freedesktop.Sdk.Extension.rust-stable//26.08 compiler
 # (1.98.0 when checked, 2026-10-25); see docs/BUILDING.md.
 rust-version = "1.88"
-license = "MIT"
+license = "GPL-3.0-or-later"
 
 [workspace.dependencies]
 usum-import = { path = "crates/usum-import" }
