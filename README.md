@@ -10,11 +10,7 @@ services, PICA200 graphics, input and audio.
 > code, assets or keys, and it cannot run anything without a legally obtained
 > copy of the game that you dump and supply yourself.
 
-> **AI-generated content.** Much of this project's code and documentation was
-> written with AI coding assistants. It may contain mistakes that look
-> plausible. Treat claims as unverified unless the tests or the
-> [research log](docs/RESEARCH.md) back them, and review code before you rely
-> on it.
+> **Note:** AI tools were used in developing this project.
 
 ## Status
 
