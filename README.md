@@ -1,46 +1,64 @@
 # usum-recomp
 
-An experimental static recompilation project for **Pokémon Ultra Sun** and
-**Pokémon Ultra Moon** on Linux. It translates ARM/Thumb game code from your
-own decrypted dump into Rust, then compiles it against a Rust runtime for
-3DS services, graphics, input, and audio.
+An experimental static recompiler and Linux host runtime for the Nintendo 3DS
+games *Pokémon Ultra Sun* and *Pokémon Ultra Moon*. The games' ARM/Thumb code
+is translated ahead of time into Rust and compiled into a native x86-64 Linux
+program, which runs on a Rust reimplementation of the console's kernel, system
+services, PICA200 graphics, input and audio.
 
-## Status — 2026-10-29
+> **This is a development project, not a finished port.** It contains no game
+> code, assets or keys, and it cannot run anything without a legally obtained
+> copy of the game that you dump and supply yourself.
 
-**Ultra Sun boots and reaches early gameplay. This is a development project,
-not a finished port.** Recorded tests cover the opening, menus, bedroom and
-outdoor movement, and early battles. Full-game completion has not been verified.
-Ultra Moon is recognized and analyzed, but equivalent gameplay validation
-has not been completed.
+## Status
 
-- Software graphics are the reference renderer.
-- Vulkan is the default renderer for `play`, including hardware vertex shaders and GPU window
-  presentation, with guarded software fallback. True internal resolution scaling
-  supports 1×–8×; 6× renders the top screen at 2400×1440. Rendering correctness
-  and performance remain under active development.
-- Keyboard, mouse touch and mapped controllers work, including controllers
-  connected after launch. Audio, saves and deterministic input replays are
-  implemented; sound and compatibility remain incomplete.
-- Built-in presentation caps and an optional testing FPS overlay are available.
-  Native dynamic FPS is in development.
-  Presentation caps do not unlock the game's frame rate. The overlay currently
-  measures framebuffer submissions, which do not prove unique rendered frames.
-- Recent work fixes area/script callback discovery and reuses exited threads'
-  TLS storage while preserving old handles. Individual fixes do not establish
-  full-game compatibility. See the [research log](docs/RESEARCH.md#r-119--recycle-exited-thread-tls-without-reusing-thread-identity).
-- Flatpak packaging and a graphical launcher remain planned.
-- There are no bundled games, translated game executables, or ready-to-play
-  downloads. Performance measurements are scene- and hardware-specific.
+Latest measured state (2026-10-31):
 
-See [compatibility](docs/COMPATIBILITY.md), [building](docs/BUILDING.md), and
-[research evidence](docs/RESEARCH.md).
+- **Gameplay:** Ultra Sun boots and reaches early gameplay. Recorded replays
+  cover the opening, menus, bedroom and outdoor movement, and early battles.
+  Full-game completion has not been verified. Ultra Moon is recognized and
+  analyzed, but its gameplay has not been validated.
+- **Graphics:** Vulkan is the default renderer in `play`, with hardware vertex
+  shaders, GPU window presentation and a guarded software fallback. Internal
+  resolution scaling goes from 1× to 8× (6× renders the top screen at
+  2400×1440). The software renderer remains the reference.
+- **Input, audio, saves:** keyboard, mouse touch and mapped controllers
+  (including ones connected after launch), audio, saves and deterministic
+  input replays work. Sound and compatibility are incomplete.
+- **Frame rate:** host presentation caps and an optional FPS overlay exist,
+  but they do not unlock the game's frame rate; the overlay counts framebuffer
+  submissions, not unique rendered frames. Native dynamic FPS is in
+  development: update deadlines, frame publication and elapsed chance checks
+  work in private diagnostics, while input sampling and an encounter policy
+  still assume 60 Hz ([R-176](docs/RESEARCH.md#r-176-2026-10-31--input-sampling-and-a-down-path-battle-at-variable-cadence)).
+- **Not done:** native dynamic FPS, Flatpak packaging and a graphical launcher.
 
-## Build and inspect
+Each run stops at the first operation that is not implemented and names it.
+Implementing that operation and replaying the recording is the development
+loop. Performance measurements are scene- and hardware-specific.
 
-Use a current stable Rust toolchain, Python 3 for the repository data guard,
-and Git. Linux is the tested host. Building translated games can require
-substantial RAM and disk space. Start with one Cargo job and run build/test
-commands sequentially; increase concurrency only with measured memory headroom.
+## How it works
+
+1. **Translation.** The importer validates your decrypted dump and extracts
+   the executable and its CRO modules in memory. The recompiler discovers code
+   by recursive descent from entry points, calls, jump tables and pointer
+   seeds, then emits one Rust function per guest function into generated
+   crates in your private cache. The generated code contains no instruction
+   decoder.
+2. **Runtime.** The native program provides checked guest memory, threads and
+   kernel objects (a subset of the 3DS kernel's SVCs), the system services the
+   game reaches (file system, HID, GSP, DSP, Y2R, configuration and others),
+   module loading and saves.
+3. **Graphics and sound.** PICA200 command lists are executed by a Vulkan
+   renderer (via wgpu) or the software reference renderer. DSP audio is
+   emulated at a high level and played through PulseAudio.
+
+## Building and running
+
+You need current stable Rust, Python 3 (for the repository data guard), Git
+and your own decrypted dump. Linux is the tested host. Building translated
+games needs substantial RAM and disk space: start with one Cargo job and run
+build and test commands one at a time.
 
 ```bash
 git clone https://github.com/Mars7x/usum-recomp.git
@@ -49,19 +67,13 @@ tools/install-hooks.sh
 cargo build --release --locked -j 1
 cargo test --locked -j 1
 ./target/release/usumctl inspect /path/to/your/ultra-sun.3ds
-```
-
-To translate a supported dump locally:
-
-```bash
 ./target/release/usumctl translate /path/to/your/ultra-sun.3ds
 ```
 
-Follow [BUILDING.md](docs/BUILDING.md) for Debian/Fedora dependencies, building
-the generated `play` program and running the game. Generated files stay
-in your private cache and must not be committed or uploaded.
-
-After building `play` in that generated workspace, a 6× testing launch is:
+The tools, runtime and synthetic tests build and test without any game files.
+See [docs/BUILDING.md](docs/BUILDING.md) for Debian/Fedora dependencies,
+building the generated `play` program and running the game. A 6× testing
+launch from the generated workspace is:
 
 ```bash
 USUM_RESOLUTION_SCALE=6 USUM_TEST_FPS=1 \
@@ -69,43 +81,37 @@ USUM_RESOLUTION_SCALE=6 USUM_TEST_FPS=1 \
 ```
 
 F3/F4 change internal resolution, F5 toggles title statistics, F6 cycles the
-window presentation cap, and F7 toggles the testing overlay. The overlay is off
-by default. See [controls and measurement limits](docs/BUILDING.md#playing-in-a-window).
-Use `USUM_VULKAN_ACCELERATE=0` at 1× for the software reference.
+presentation cap and F7 toggles the testing overlay (off by default). See
+[controls and measurement limits](docs/BUILDING.md#playing-in-a-window). Use
+`USUM_VULKAN_ACCELERATE=0` at 1× for the software reference.
 
-## Game-data policy
+## Documentation
 
-This repository distributes project source and original synthetic tests,
-not game code, assets, keys, firmware, saves, or translated game output.
-Supply your own supported decrypted dump. The importer does not decrypt or
-download games. Do not attach dumps, saves, screenshots, capture payloads,
-or generated game code to issues or pull requests.
-
-The pre-commit hook and CI scan filenames, file contents, generated-code
-patterns, and common credential formats. These checks are a backstop, not
-a substitute for reviewing what you publish. See
-[the data policy](docs/adr/0004-game-data-policy.md).
-
-Pokémon is a trademark of Nintendo, Creatures Inc. and GAME FREAK inc.
-This project is not affiliated with or endorsed by them.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for checks, bug reports, and the
-restrictions on game-derived material. For vulnerabilities or leaked
-credentials, see [SECURITY.md](SECURITY.md).
-
-## Documents
-
+- [Building and playing](docs/BUILDING.md)
 - [Architecture](docs/ARCHITECTURE.md) and [decisions](docs/adr/)
 - [Supported inputs](docs/INPUT.md) and [compatibility](docs/COMPATIBILITY.md)
 - [Roadmap](docs/ROADMAP.md) and [next steps](docs/NEXT_STEPS.md)
 - [Research log](docs/RESEARCH.md) and [feasibility](docs/FEASIBILITY.md)
 - [Dependency audit](docs/DEPENDENCIES.md)
 - [Developer tests and profiling](docs/DEVELOPMENT.md)
+- [Contributing](CONTRIBUTING.md) and [security](SECURITY.md)
 
-## License
+## Legal
 
-Project code is licensed under [MIT](LICENSE). Dependency licenses remain
-with their respective authors. Prior art and reference implementations are
-credited in [FEASIBILITY.md](docs/FEASIBILITY.md).
+This is an independent project, not affiliated with or endorsed by Nintendo,
+Creatures Inc., GAME FREAK inc. or The Pokémon Company. Pokémon is a trademark
+of its respective owners. The repository contains only original source code,
+synthetic tests and documentation. Do not open issues or pull requests
+containing game files, keys, firmware, saves, screenshots, capture payloads or
+code generated from them; generated translations stay on your machine. The
+importer does not decrypt or download games.
+
+A pre-commit hook and CI scan filenames, contents, generated-code patterns and
+common credential formats. They are a backstop, not a substitute for reviewing
+what you publish. See [the data policy](docs/adr/0004-game-data-policy.md).
+
+Research consulted public emulator and recompiler sources (3dsrecomp, Zakuro,
+Citra, 3dbrew); see [FEASIBILITY.md](docs/FEASIBILITY.md) for credits.
+
+Licensed under MIT. See [LICENSE](LICENSE). Dependency licenses remain with
+their respective authors.

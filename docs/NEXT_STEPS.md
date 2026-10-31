@@ -1,6 +1,6 @@
 # Next steps
 
-Updated 2026-10-30. Ultra Sun boots, runs the opening and menus, reaches
+Updated 2026-10-31. Ultra Sun boots, runs the opening and menus, reaches
 indoor/outdoor movement and early battles, and supports recorded replay tests.
 Full-game completion and Ultra Moon gameplay parity remain unverified.
 See [compatibility](COMPATIBILITY.md), [building and controls](BUILDING.md),
@@ -93,6 +93,11 @@ See [compatibility](COMPATIBILITY.md), [building and controls](BUILDING.md),
    Straight travel is close, but transition positions and effect timing still
    diverge. General lifecycle/reset integration remains necessary; the private
    diagnostic is not a shipped unlock.
+   Native update deadlines, dispatch-scoped frame publication and elapsed
+   chance checks with catch-up exist (R-170–R-175). R-176 shows input is still
+   sampled per VBlank, so variable updates duplicate or drop pad edges, and a
+   short-deadline down replay still enters a wild battle. Per-update input
+   sampling and the remaining encounter policy are next.
 2. **Profile-led optimization.** Revisit intro/movie helpers, checked memory,
    frequent guest helpers, vertex preparation and GPU synchronization using
    fresh profiles. Retain a reference path and frozen before/after executables.

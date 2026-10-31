@@ -6113,3 +6113,41 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   still private diagnostics, not registered in the normal launcher. Broader
   lifetime/transition coverage, remaining movement and animation assumptions,
   input timing, and production integration remain necessary.
+
+### R-176 2026-10-31 — Input sampling and a down-path battle at variable cadence
+
+- The private `movement-input-build` reuses R-175's harness and libraries and
+  adds two read-only observations: the HID shared-memory pad entry at each
+  native update start (`native-input.csv`) and the nominal/effective rate seen
+  by the movement consumer (`movement-scale.csv`). Five replays from the same
+  save: turning with 5/11/23/7 ms and 5/11/83/7 ms deadlines, and the straight
+  "down" input paced, with 5/11/23/7 ms and with 5/11/83/7 ms. Both turning
+  replays match every R-175 capture exactly; only the two new CSVs are added.
+  The down replays have no earlier elapsed-chance reference to compare with.
+- The runtime samples HID only at hardware VBlank (`Kernel::hid_update`, 60 Hz),
+  and each entry's pressed/released words describe that sample alone. Updates
+  faster than VBlank read one entry repeatedly: with short deadlines, updates 25
+  and 26 both see pressed `0x80000002` in HID entry 4 (frame label 620). Slower
+  updates skip entries: with 83 ms deadlines the press sampled at 620 is
+  overwritten before the next update reads HID at 622, so only the release is
+  observed. Turning shows 13 edge observations with short deadlines and 5 with
+  long ones. The trace reads memory; it does not establish whether the game's
+  input code uses these edge words or derives its own edges from held buttons.
+- Long updates also see the stick two hardware frames later (622 instead of
+  620). That is the latency of an 83 ms update, not lost input.
+- Measured update intervals: paced 14.27–19.54 ms; short deadlines 5.13–50.14 ms
+  (late wakes, as in R-173); long deadlines 6.50–83.38 ms.
+- The down replay with short deadlines enters a wild battle: the final top
+  capture shows the battle intro, and the player position chain is unreadable
+  from engine frame 685. The paced control and the 83 ms replay stay in the
+  overworld, ending at (23335.26, −232.81, 16114.46) and (23127.77, −229.50,
+  16053.98). R-175's elapsed chance correction therefore does not cover this
+  path. The cause is not attributed: another hardware-frame-gated encounter
+  policy and the duplicated pad edges are both candidates.
+- All five replays complete with `NoThread` under the virtual clock. They are
+  timing diagnostics, not host FPS measurements. Artifacts:
+  `native-movement-input.py`, `movement-input-build` and `movement-input-tests`
+  in the private research workflow.
+- Next: sample input per native update when native timing is active, with
+  edges relative to the previous update's sample so a press is reported once
+  and never dropped; trace which encounter check admits the down-path battle.
