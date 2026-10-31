@@ -11,7 +11,9 @@ use std::num::NonZeroU64;
 use std::rc::Rc;
 use std::time::Instant;
 
+mod deadline;
 mod step;
+pub use deadline::UpdateDeadline;
 pub use step::{UpdateClock, UpdateStep};
 
 #[derive(Clone, Copy)]

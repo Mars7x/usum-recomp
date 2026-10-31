@@ -5908,3 +5908,32 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   threshold from incorrect lifetime accounting and test sustained qualification
   under variable cadence; do not add an epsilon or fabricate a timer tick merely
   to recover a borderline replay's old transition count.
+
+### R-170 2026-10-30 — Native update deadlines through the existing kernel
+
+- Added `native_timing::UpdateDeadline`: each update accepts its own nonzero
+  interval and actual start timestamp. Remaining wait subtracts work already
+  spent; an overrun is immediately ready. Polling neither consumes nor advances
+  a deadline. Subsequent updates rearm from their actual start, avoiding a burst
+  of updates for missed deadlines. Clear, overflow, and pre-origin observations
+  cannot expose a stale deadline as ready.
+- Built the runtime with the committed renderer, excluding unrelated GPU drafts.
+  An integration test uses actual `probe::run_with`, dispatch clock accounting,
+  `SleepThread`, and thread switching for intervals of 5,000,000, 11,111,111,
+  6,944,444, and 1,000 ns. Variable guest work is charged before waiting; the last
+  interval deliberately overruns. All four resume at the expected timestamp,
+  with 1,500 instructions charged and final virtual time 24,057,233 ns. The
+  existing dispatch-clock integration test also passes. Ten clock/step/deadline
+  unit tests pass, including lifecycle invalidation and overflow.
+- Private build: `update-deadline-build`; script `native-update-deadline.py`.
+  The first standalone unit-test command used the module as a crate root and
+  failed child-module lookup; using a normal parent module fixed the test harness.
+  The full runtime build and real-kernel integration had already passed.
+- This exposes a core pacing primitive, not an enabled game-loop replacement.
+  Source inspection confirms the hardware wait at 0x548854 invokes 0x279898,
+  which enters event synchronization (including mutex/state handling), and checks
+  status through 0x279a74. Its caller 0x353588 subsequently clears a flag and may
+  issue IPC. Replacing the whole caller or treating its wait as a pure delay is
+  not justified. Integration must preserve synchronization, keep hardware/audio
+  clocks independent, and address remaining hardware-frame identities in the
+  diagnostic consumers before freely varying cadence is considered functional.
