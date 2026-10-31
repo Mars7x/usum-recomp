@@ -15,16 +15,20 @@ use std::num::NonZeroU32;
 /// Callers retain responsibility for moving targets and discrete event timing.
 /// Unsupported values return `None` so the caller can retain guest behavior.
 pub fn blend_for_elapsed(blend: f64, elapsed_ticks: f64) -> Option<f64> {
-    if !blend.is_finite() || !(0.0..=1.0).contains(&blend)
-        || !elapsed_ticks.is_finite() || elapsed_ticks < 0.0
-    {
+    if !blend.is_finite() || !(0.0..=1.0).contains(&blend) || !elapsed_ticks.is_finite() || elapsed_ticks < 0.0 {
         return None;
     }
-    if elapsed_ticks == 0.0 || blend == 0.0 { return Some(0.0); }
-    if elapsed_ticks == 1.0 || blend == 1.0 { return Some(blend); }
+    if elapsed_ticks == 0.0 || blend == 0.0 {
+        return Some(0.0);
+    }
+    if elapsed_ticks == 1.0 || blend == 1.0 {
+        return Some(blend);
+    }
     // Preserve the previously audited half-tick calculation, including its
     // rounding, while avoiding cancellation for small nominal blends.
-    if elapsed_ticks == 0.5 { return Some(blend / (1.0 + (1.0 - blend).sqrt())); }
+    if elapsed_ticks == 0.5 {
+        return Some(blend / (1.0 + (1.0 - blend).sqrt()));
+    }
     Some(-((-blend).ln_1p() * elapsed_ticks).exp_m1())
 }
 
@@ -65,13 +69,17 @@ impl<K: Ord, V> FrameCredits<K, V> {
 
     /// Inspect a credit before checking the caller's live ownership guards.
     pub fn peek(&self, frame: u64, state: &K) -> Option<&V> {
-        if self.frame != Some(frame) { return None; }
+        if self.frame != Some(frame) {
+            return None;
+        }
         self.entries.get(state)
     }
 
     /// Consume only this state's credit, and only in its publication frame.
     pub fn take(&mut self, frame: u64, state: &K) -> Option<V> {
-        if self.frame != Some(frame) { return None; }
+        if self.frame != Some(frame) {
+            return None;
+        }
         self.entries.remove(state)
     }
 
@@ -135,9 +143,7 @@ mod tests {
         for blend in [1e-12, 0.01, 0.25, 0.75, 0.99] {
             // Changing cadence, including a zero-time update and a long step.
             let steps = [0.125, 0.5, 0.0, 0.3, 1.25, 0.025, 0.8];
-            let remaining = steps.into_iter().fold(1.0, |r, dt| {
-                r * (1.0 - blend_for_elapsed(blend, dt).unwrap())
-            });
+            let remaining = steps.into_iter().fold(1.0, |r, dt| r * (1.0 - blend_for_elapsed(blend, dt).unwrap()));
             let expected = 1.0 - blend_for_elapsed(blend, steps.into_iter().sum()).unwrap();
             assert!((remaining - expected).abs() < 2e-15);
         }

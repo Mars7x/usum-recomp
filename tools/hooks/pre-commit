@@ -1,4 +1,14 @@
 #!/usr/bin/env bash
-# Installed by tools/install-hooks.sh. Blocks commits containing game data.
+# Installed by tools/install-hooks.sh. Blocks commits containing game data
+# or unformatted Rust (CI runs `cargo fmt --all -- --check`).
 set -euo pipefail
-exec "$(git rev-parse --show-toplevel)/tools/check-no-game-data.sh" --staged
+top="$(git rev-parse --show-toplevel)"
+"$top/tools/check-no-game-data.sh" --staged
+mapfile -t rust < <(git diff --cached --name-only --diff-filter=ACMR -- '*.rs')
+if ((${#rust[@]})); then
+    cd "$top"
+    if ! rustfmt --edition 2021 --check "${rust[@]}" >/dev/null; then
+        echo "pre-commit: staged Rust files are not formatted; run cargo fmt --all" >&2
+        exit 1
+    fi
+fi
