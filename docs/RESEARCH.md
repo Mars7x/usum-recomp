@@ -5937,3 +5937,30 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   not justified. Integration must preserve synchronization, keep hardware/audio
   clocks independent, and address remaining hardware-frame identities in the
   diagnostic consumers before freely varying cadence is considered functional.
+
+### R-171 2026-10-30 — Publish native frames independently of hardware VBlank
+
+- Added `Kernel::present_native_frame`, which consumes fresh GSP framebuffer
+  submissions and publishes their pixels without advancing VBlank or audio,
+  sampling HID, or generating PDC interrupts. Empty submissions do not notify
+  the frontend. Existing VBlank still consumes submissions, advances its count,
+  publishes, samples HID, and generates display interrupts in the original order.
+- `FrameMailbox::publish_native` preserves hardware-VBlank telemetry while
+  advancing submitted-screen versions. Native publication must not inflate the
+  hardware count or relabel a repeated image as another newly submitted frame.
+- Three targeted kernel tests pass: independent screen acknowledgement preserving
+  unrelated flag bits and hardware clocks; normal VBlank's two display interrupts;
+  and real mapped pixel delivery with one notification, no duplicate submission,
+  and separate mailbox VBlank/update counts. Nine existing timing tests also pass.
+- Six identical-input/save compatibility replays (idle, turning, straight walking;
+  normal and elapsed diagnostic policies) match every recorded CSV, WAV, PPM,
+  and BIN artifact. Sources, dependency libraries, saves, inputs, executable,
+  harness, and manifests were verified. Private builds are
+  `native-presentation-build-v2` and `native-presentation-replay-build`, with
+  `native-presentation-replay-tests`; audit script `audit-native-presentation.py`.
+- This API is not yet called by the game's native update hook. The comparisons
+  establish preservation of the existing VBlank path, not arbitrary-rate gameplay
+  correctness. The elapsed diagnostic's previously documented timer/behavior
+  differences remain unchanged. No throughput claim is made from these bounded,
+  unoptimized-runtime tests. Dispatch integration and synchronization-preserving
+  replacement of the game wait remain necessary.

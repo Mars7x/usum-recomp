@@ -11,6 +11,8 @@
 mod error_applet;
 mod infrared;
 #[cfg(test)]
+mod native_presentation_tests;
+#[cfg(test)]
 mod network_menu_tests;
 mod restart;
 #[cfg(test)]
@@ -213,7 +215,7 @@ pub struct FrameOut {
     pub resolution_scale: std::sync::atomic::AtomicU32,
     /// Host-rendered system dialog, independent of the testing overlay.
     pub dialog: std::sync::Mutex<Option<String>>,
-    /// Called after each VBlank's frames are in place.
+    /// Called after a hardware or native frame publication.
     pub notify: Box<dyn Fn() + Send + Sync>,
 }
 
@@ -735,12 +737,20 @@ impl Kernel {
         signaled
     }
 
-    /// One VBlank: GSP takes new framebuffer settings the game left in
-    /// shared memory (3dbrew "GSP Shared Memory": header byte 0 the entry
-    /// index, byte 1 bit 0 "new data"; entries of 0x1C bytes from +4),
-    /// then queues PDC0 and PDC1 unless the game asked to skip them.
-    fn vblank(&mut self, mem: &mut Memory) -> Result<(), String> {
-        let Some(base) = self.gsp_memory() else { return Ok(()) };
+    /// Consume and publish fresh framebuffer submissions at a verified native
+    /// frame boundary. This does not advance VBlank, sample HID, or signal PDC
+    /// interrupts. The caller must preserve guest synchronization separately.
+    /// An empty submission does not notify the host or count another frame.
+    pub fn present_native_frame(&mut self, mem: &mut Memory) -> Result<[bool; 2], String> {
+        let Some(base) = self.gsp_memory() else { return Ok([false; 2]) };
+        let submitted = self.take_framebuffers(mem, base)?;
+        if submitted.iter().any(|&fresh| fresh) {
+            self.publish_framebuffers(mem, submitted, false)?;
+        }
+        Ok(submitted)
+    }
+
+    fn take_framebuffers(&mut self, mem: &mut Memory, base: u32) -> Result<[bool; 2], String> {
         let fault = |f: usum_guest::Fault| format!("GSP framebuffer info: {f}");
         let mut submitted = [false; 2];
         for screen in 0..2u32 {
@@ -754,7 +764,10 @@ impl Kernel {
                 mem.write_u8(info + 1, flags & !1).map_err(fault)?;
             }
         }
-        self.vblanks += 1;
+        Ok(submitted)
+    }
+
+    fn publish_framebuffers(&mut self, mem: &Memory, submitted: [bool; 2], hardware_vblank: bool) -> Result<(), String> {
         if let Some(out) = &self.frame_out {
             #[cfg(feature = "vulkan-compare")]
             self.pica.set_vulkan_resolution_scale(out.resolution_scale.load(std::sync::atomic::Ordering::Relaxed))?;
@@ -772,10 +785,26 @@ impl Kernel {
                 })
             });
             if let Ok(mut frames) = out.frames.lock() {
-                frames.publish(raw, submitted, self.virtual_clock.unwrap_or(0));
+                if hardware_vblank {
+                    frames.publish(raw, submitted, self.virtual_clock.unwrap_or(0));
+                } else {
+                    frames.publish_native(raw, submitted, self.virtual_clock.unwrap_or(0));
+                }
             }
             (out.notify)();
         }
+        Ok(())
+    }
+
+    /// One VBlank: GSP takes new framebuffer settings the game left in
+    /// shared memory (3dbrew "GSP Shared Memory": header byte 0 the entry
+    /// index, byte 1 bit 0 "new data"; entries of 0x1C bytes from +4),
+    /// then queues PDC0 and PDC1 unless the game asked to skip them.
+    fn vblank(&mut self, mem: &mut Memory) -> Result<(), String> {
+        let Some(base) = self.gsp_memory() else { return Ok(()) };
+        let submitted = self.take_framebuffers(mem, base)?;
+        self.vblanks += 1;
+        self.publish_framebuffers(mem, submitted, true)?;
         if let Err(e) = self.hid_update(mem) {
             self.hardware_error.get_or_insert(e);
         }

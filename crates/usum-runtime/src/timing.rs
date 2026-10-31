@@ -148,8 +148,13 @@ impl<T> Default for FrameMailbox<T> {
 
 impl<T> FrameMailbox<T> {
     pub fn publish(&mut self, frames: [Option<T>; 2], updates: [bool; 2], guest_ns: u64) {
-        self.stamp.guest_ns = guest_ns;
         self.stamp.vblanks += 1;
+        self.publish_native(frames, updates, guest_ns);
+    }
+
+    /// Publish submitted native frames without inventing a hardware VBlank.
+    pub fn publish_native(&mut self, frames: [Option<T>; 2], updates: [bool; 2], guest_ns: u64) {
+        self.stamp.guest_ns = guest_ns;
         for (screen, frame) in frames.into_iter().enumerate() {
             self.stamp.updates[screen] += u64::from(updates[screen]);
             if frame.is_some() {
