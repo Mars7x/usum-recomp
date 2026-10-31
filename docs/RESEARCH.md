@@ -6003,3 +6003,70 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   of pending GSP notifications, retaining the fallback wait and caller side
   effects. Existing diagnostic hardware-frame identities and the R-169 timing
   qualifications still prevent claiming fully functional arbitrary native FPS.
+
+### R-173 2026-10-30 — Variable deadlines expose remaining hardware-frame policies
+
+- The private `native-deadline-hook-build` experiment replaces the audited wait
+  with repeating 5, 11, 23, and 7 ms update deadlines. Guest work already spent is
+  deducted before SleepThread. After waking, pending framebuffer flags or an
+  unsuitable notification state retain the original wait; state two is consumed
+  through the original event helper. Caller flag/IPC work remains intact.
+- The recorded turning replay executes 152 deadline waits and event consumptions.
+  Fifty-eight deadlines are already late after guest work and require no sleep.
+  Real update intervals vary; for example, adjacent updates measure about 7.03,
+  11.14, 23.14, and 7.14 ms. Multiple updates share a hardware-frame label. These
+  are actual game updates, not interpolated frames, but this bounded virtual-clock
+  experiment is not a host throughput benchmark or a production FPS feature.
+- No recorded resume precedes its deadline. Eighteen resumes occur later than
+  the later of deadline or request time, by up to 7,494,818 ns. Deadlines therefore
+  do not imply exact wake times; consumers must use measured elapsed guest time.
+- The disabled-deadline control preserves all previous captures exactly. The
+  enabled replay completes but diverges into a wild battle, confirmed in its
+  final capture. It is not accepted as behaviorally correct. Audio retains
+  523,520 stereo samples at 32,728 Hz; equal duration does not prove equal events.
+- A remaining parity-based chance-helper policy admits the player's helper 32
+  times over frame labels 603–650, versus 24 in the control, including repeated
+  admissions under the same even frame label. This is direct evidence that its
+  hardware-frame gating is unsuitable for varying updates, not proof that this
+  policy alone caused the battle divergence. It needs elapsed-time scheduling
+  and lifecycle/catch-up validation, not another hardware-counter adjustment.
+- The replay comparator initially stopped on an absent RNG capture. The game
+  itself had completed. Sampling at dispatcher callbacks can miss a hardware
+  frame when a variable wait crosses it; missing samples must be recorded as
+  missing, never fabricated or silently treated as equivalent. The follow-up
+  audit compares intersections and records added/missing files separately.
+- Artifacts: `native-deadline-hook-tests`, `native-deadline-game-hook.rs`, and
+  `audit-native-deadline-hook.py` under the existing private research workflow.
+  Game data and generated guest source remain outside the public repository.
+
+### R-174 2026-10-30 — Bind diagnostic animation credits to engine updates
+
+- Reproduced an unused event credit leaking into a later engine update when both
+  updates have the same hardware-frame label. The actual prior event helper
+  fails this synthetic guest-object regression; the corrected helper passes.
+- Private `update-credits-build` adds a comparison switch that keys first-step
+  metadata and the state-owned event registry to the shared update sequence.
+  Original hardware-frame behavior remains available with the switch off.
+  Missing update context rejects a credit. State, phase, owner, rate, and explicit
+  lifecycle guards remain in place; parity-based first-step eligibility is not
+  generalized by this change.
+- The regression also verifies single consumption, replacement with a new
+  update's credit, preservation across a hardware VBlank within one update,
+  explicit invalidation, and rejection after clearing shared timing context.
+  It uses the actual private helper bodies, not a parallel test implementation.
+- Three identical-input/save replays pass: the existing paced control, variable
+  deadlines with the new credit policy disabled, and variable deadlines with it
+  enabled. Every CSV/WAV/PPM/BIN file matches its respective reference, with no
+  missing or additional captures. Dependencies, sources, executable, starting
+  save, input, and manifests were audited. Builds/replays ran sequentially under
+  the existing 6 GiB, zero-swap, one-CPU limit.
+- The variable replay produces no first-step/event credits, so its unchanged
+  outputs do not demonstrate an exercised in-game correction or resolve R-173's
+  battle divergence. The synthetic regression establishes the lifetime bug and
+  fix; broader in-game lifecycle coverage and production integration remain.
+  Next priority is replacing the measured parity-based chance-helper policy with
+  elapsed-time scheduling, preserving resets and handling multiple due ticks.
+- Private scripts/results: `native-update-credits.py`,
+  `native-update-credit-guards.rs`, `update-credits-tests`, and
+  `audit-native-update-credits.py`. No generated guest source or game data is
+  committed. No host FPS gain is claimed from this correctness experiment.
