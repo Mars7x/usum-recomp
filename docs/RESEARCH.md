@@ -5749,3 +5749,28 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   varying native gameplay cadence is available. Hardware VBlank/audio timing
   must remain independent of presentation and native update rates. No FPS
   throughput result or complete dynamic-FPS feature is claimed here.
+
+### R-166 2026-10-30 — Locate the hardware-frame wait that constrains native cadence
+
+- Trace the engine manager, frame-counter getter and sleep helper over engine
+  frames 600–630 using the established idle recording. Both normal and corrected
+  higher-cadence controls preserve every previous capture. The normal path has
+  16 manager entries, 176 pre-wait counter reads and 160 sleeps of 1,000,000 ns.
+  The higher-cadence path has 30 entries; its 11 pre-wait reads and 10 sleeps
+  occur at the initial transition rather than on every subsequent update.
+- Both paths still query the frame counter after their render preparation. The
+  getter selects shared counters rather than measuring elapsed update time.
+  Inspecting the following call chain identifies a separate counter-change wait
+  reached through the engine's graphics synchronization path.
+- Extend the read-only trace to that wait. It is called 16 times normally and
+  30 times at higher cadence, each with the same counter selector. Both extended
+  controls preserve all preceding captures. Independently verify starting saves,
+  input recordings, binaries, harness and build manifests for both trace pairs.
+- This establishes a remaining hardware-frame scheduling dependency even after
+  removing the normal path's extra sleep loop. Freely varying native updates
+  need their own deadlines and a shared elapsed-time step, while preserving
+  hardware interrupt/audio clocks and required graphics synchronization. Merely
+  changing half-step factors cannot overcome this dependency; blindly removing
+  the wait would also discard its synchronization behavior.
+- Preserve scheduler-trace and scheduler-wait evidence. These are read-only
+  scheduling observations, not a new native frame-rate mode or speed benchmark.
