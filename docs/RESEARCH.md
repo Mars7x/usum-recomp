@@ -5810,3 +5810,37 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   half-step/counter policies, and separating update deadlines from the hardware
   frame wait remain required for freely varying native FPS. These controls do
   not establish throughput or arbitrary-rate gameplay correctness.
+
+### R-168 2026-10-30 — Publish one immutable elapsed interval per engine update
+
+- Add core `UpdateClock` and `UpdateStep` types. Sample guest time once at an
+  update boundary, then share the same sequence, interval and logical-tick ratio
+  among consumers. The first sample establishes an origin without inventing
+  elapsed time. Zero-time, rewind and exhausted-sequence cases clear the current
+  step instead of reusing an earlier interval. Explicit clear excludes a paused
+  gap while retaining monotonically increasing sequence IDs within the clock's
+  lifetime; callers still own per-state credit invalidation.
+- All eight clock/step module tests pass. New coverage checks changing intervals,
+  immutable repeated reads, elapsed-time conservation, reset gaps, rewind,
+  sequence lifetime and large timestamps. These tests establish interval
+  arithmetic and ownership rather than arbitrary-rate game behavior.
+- In a private harness, publish at the engine update entry preceding its process
+  update callbacks. Use the runtime guest clock from R-167 and an identical
+  snapshot of the public step source. Record each observed domain's step without
+  changing the simulation's existing timing calculations.
+- All six normal/higher-cadence idle, turning and straight-movement comparisons
+  preserve previous captures exactly. Independently verify inputs, saves,
+  binaries, harness, manifests and public/source snapshot identity. Between
+  engine frames 600–800, each normal case publishes 99 intervals and each higher
+  case 198. Observed consumers share the exact published interval, with only one
+  sequence per engine frame. Frames 600 and 602 precede a usable anchor and
+  explicitly have no step; boot/transition initialization remains to be handled.
+- Initial steady samples are nominally 33,427,360 ns normally and approximately
+  half that at higher cadence. Longer recordings show dispatch-boundary jitter:
+  turning ranges about 30.50–36.36 ms normally and 15.58–20.15 ms at higher
+  cadence. Means remain approximately 33.428 ms and 16.714 ms. These are guest
+  update intervals, not host FPS or a newly unlocked scheduling mode.
+- Preserve update-step evidence. The next behavioral change must replace fixed
+  half-step and frame-count assumptions with these shared intervals, validating
+  animation/event/timer interactions. Update deadlines remain hardware-paced;
+  observation alone does not implement freely varying native frame rates.

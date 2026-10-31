@@ -11,6 +11,9 @@ use std::num::NonZeroU64;
 use std::rc::Rc;
 use std::time::Instant;
 
+mod step;
+pub use step::{UpdateClock, UpdateStep};
+
 #[derive(Clone, Copy)]
 pub(crate) enum DispatchClock {
     Virtual { ns: u64, budget: i64, cycles_per_second: NonZeroU64 },
