@@ -6241,3 +6241,18 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   measurements and the switch is not in `play`. Artifacts:
   `native-elapsed-cap.py`, `native-elapsed-cap-v2.py` and the matching
   build/test directories in the private research workflow.
+
+### R-180 2026-11-01 — Sound starts still depend on update intervals
+
+- Compared DSP source starts (from frame 1400, before walking begins) in the
+  R-179 replays with the elapsed cap/rate switch on. Footstep sources 2 and 3
+  keep roughly their rhythm, but individual starts move by up to 32 DSP frames
+  (about 160 ms) against the steady doubled-rate run.
+- Sources 4–8, which start only after the player reaches tall grass, are far
+  off: 11 starts in the steady down replay against 3 (short deadlines) and 2
+  (long deadlines), and 4 in the steady turning replay against 18 with short
+  deadlines. Total non-music starts: down 37/26/24, turning 32/47/35.
+- Movement and encounter checks now agree (R-179), so these sounds are driven
+  by something else that still counts updates, most likely animation events
+  consumed outside the player-only event credits of R-160–R-174. Next: trace
+  which code requests the grass sounds and what clock gates it.
