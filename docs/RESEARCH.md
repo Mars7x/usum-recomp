@@ -6174,3 +6174,31 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   held, without a press, which is also true of the game at its normal 30 Hz.
 - The touch screen and other readers were not audited here. The down-path
   battle from R-176 remains unexplained.
+
+### R-178 2026-11-01 — Variable updates change walking distance, and with it encounters
+
+- The private `encounter-rng-build` widens R-176's read-only RNG entry trace
+  from frames 600–650 to 600–956 (game unit, root crate and harness only).
+  The three down replays (paced, 5/11/23/7 ms, 5/11/83/7 ms) reproduce every
+  earlier capture exactly; only `rng-calls.csv` grows.
+- Disassembly of the FieldRo module (from an earlier relocated dump) shows the
+  wild encounter check at 0x752230: it computes the encounter rate, applying
+  the lead Pokémon's ability through the executable's 0x3a6bd8 (itself a
+  `rand(100)` at 0x3a6c3c switching on ability IDs such as 71, 1, 8 and 35), and
+  starts a battle when `rate > rand(100)` at 0x752254. The engine update at
+  0x401514 reaches it through the field update in FieldRo.
+- Each check is therefore an independent per-check chance. Paced: five checks
+  (frames 686, 691, 696, 705, 709), no battle. Short deadlines: one check at
+  670, which succeeds and draws the species and level (0x3a6e98, 0x3a7224,
+  0x3a7238). Long deadlines: no checks.
+- The checks run only once the player is in tall grass; the per-update
+  animation parameter changes from 1 to 38 at frame 683 (paced) and 668
+  (short), and never in the long replay. With identical input (down held from
+  frame 620 to 700) the player's position at frame 668 is 23111.5 paced,
+  23221.6 with short deadlines and 22992.5 with long ones; the paced and long
+  replays stop at 23335.3 and 23127.8. Short updates walk about 40% too far and
+  long updates about 40% too short over this stretch.
+- So the battle in R-176 follows from movement, not from the encounter policy:
+  the private movement corrections hold at a steady doubled rate (R-136) but not
+  at varying update intervals. Next: make walking distance depend only on
+  elapsed time, then recheck the encounter count per distance walked in grass.

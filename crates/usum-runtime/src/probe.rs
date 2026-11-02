@@ -74,7 +74,7 @@ pub fn run_with(
     entries: &[(u32, Code)],
     modules: &Modules,
     max_refills: u64,
-    hook: &mut dyn FnMut(&mut Kernel, &Memory) -> bool,
+    hook: &mut dyn FnMut(&mut Kernel, &mut Memory) -> bool,
 ) -> (Outcome, u64) {
     let _timing_session = crate::native_timing::enter_dispatch(None);
     let boot = kernel::BootImage::capture(cpu, mem, kernel);

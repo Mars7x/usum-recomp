@@ -69,6 +69,26 @@ fn pad_bit(key: KeyCode) -> Option<u32> {
 
 /// Where saves go: $XDG_DATA_HOME (or ~/.local/share)/usum-recomp/saves/
 /// <program ID>.
+/// Ultra Sun (USA) engine update entry and its first word, checked before
+/// the manager pointer below is trusted (R-125, R-177 follow-up).
+const ENGINE_UPDATE: (u32, u32) = (0x0040_1438, 0xe92d_4070);
+/// Global holding the engine manager: +8 pending update rate (2 = none),
+/// +9 current rate (1 = normal, 0 = higher).
+const ENGINE_MANAGER: u32 = 0x006a_3984;
+
+/// USUM_TEST_ENGINE_RATE=1: keep requesting the engine's own higher update
+/// rate. A testing aid, not native FPS: movement, animation, encounters and
+/// sound timing run too fast at that rate (R-125). Ultra Sun (USA) only.
+fn request_engine_rate(mem: &mut usum_guest::Memory) {
+    if mem.read_u32(ENGINE_UPDATE.0).ok() != Some(ENGINE_UPDATE.1) {
+        return;
+    }
+    let Ok(manager) = mem.read_u32(ENGINE_MANAGER) else { return };
+    if manager != 0 && mem.read_u8(manager + 9).ok() == Some(1) && mem.read_u8(manager + 8).ok() == Some(2) {
+        let _ = mem.write_u8(manager + 8, 0);
+    }
+}
+
 fn save_dir(program_id: u64) -> Option<std::path::PathBuf> {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(std::path::PathBuf::from)
@@ -454,9 +474,16 @@ fn run_game(
     kernel.audio.sink = Some((sound.clone(), crate::sound::MAX_QUEUED));
     // USUM_PLAY_SECONDS=n: quit after n seconds (for checks)
     let stop_after = std::env::var("USUM_PLAY_SECONDS").ok().and_then(|v| v.parse().ok()).map(Duration::from_secs);
-    let (outcome, ran) = probe::run_with(&mut cpu, &mut mem, &mut kernel, entries, &modules, u64::MAX, &mut |kernel, _mem| {
+    let engine_rate = program_id == 0x0004_0000_001B_5000 && std::env::var("USUM_TEST_ENGINE_RATE").as_deref() == Ok("1");
+    if engine_rate {
+        eprintln!("testing: requesting the engine's higher update rate; movement and timing are not corrected");
+    }
+    let (outcome, ran) = probe::run_with(&mut cpu, &mut mem, &mut kernel, entries, &modules, u64::MAX, &mut |kernel, mem| {
         // USUM_SPEED=n, as in the probe
         probe::speed_report(kernel);
+        if engine_rate {
+            request_engine_rate(mem);
+        }
         if quit.load(Ordering::Relaxed) || stop_after.is_some_and(|d| start.elapsed() >= d) {
             quit.store(true, Ordering::Relaxed);
             let _ = proxy.send_event(());

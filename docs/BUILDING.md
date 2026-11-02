@@ -226,6 +226,11 @@ presents without unlocking the game. Native dynamic FPS remains in development.
 The optional overlay (`USUM_TEST_FPS=1`, or F7) reports GSP framebuffer submissions
 as `FPS` and window presents as `WIN`; neither proves unique engine frames.
 
+`USUM_TEST_ENGINE_RATE=1` (Ultra Sun USA only) asks the engine for its own
+higher update rate, for testing. It renders more frames, but walking runs about
+twice as fast and animation, sound and encounter timing are wrong (R-125); it
+is not native dynamic FPS.
+
 ## Saves and generated files
 
 | Data | Default location |
