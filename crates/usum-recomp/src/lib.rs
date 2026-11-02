@@ -1,12 +1,14 @@
 //! Static recompilation of ARM code to Rust.
 //!
 //! [`discover`] finds functions and labels by recursive descent; [`emit`]
-//! writes them as Rust source against `usum_guest`. The output is plain
+//! writes them as Rust source against `usum_guest`; [`patch`] lists the
+//! native cadence patch points the emitter adds. The output is plain
 //! text: compiling it is the caller's job (a build script in tests, the
 //! local build in the product).
 
 pub mod discover;
 pub mod emit;
+pub mod patch;
 
 pub use discover::{analyze, analyze_with, Analysis, Function, Image, Origin};
 

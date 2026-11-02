@@ -58,6 +58,9 @@ pub fn run(cpu: &mut Cpu, mem: &mut Memory, kernel: &mut Kernel, entries: &[(u32
     // instructions) before calling it a hang, for long replays
     let max_refills = std::env::var("USUM_MAX_REFILLS").ok().and_then(|v| v.parse().ok()).unwrap_or(MAX_REFILLS);
     run_with(cpu, mem, kernel, entries, modules, max_refills, &mut |kernel, mem| {
+        if crate::native_cadence::active() {
+            crate::native_cadence::request_rate(mem);
+        }
         snapshot(kernel, mem);
         profile_window(kernel);
         speed_report(kernel);
@@ -213,13 +216,23 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
         eprintln!("usage: probe <dump>");
         return ExitCode::FAILURE;
     };
-    let (mut cpu, mut mem, mut kernel, _) = match setup(std::path::Path::new(&dump), functions, &modules) {
+    let native = crate::native_cadence::requested();
+    let (functions, entries) = if native { crate::native_cadence::install(functions, entries) } else { (functions, entries) };
+    let (mut cpu, mut mem, mut kernel, program_id) = match setup(std::path::Path::new(&dump), functions, &modules) {
         Ok(state) => state,
         Err(e) => {
             eprintln!("{e}");
             return ExitCode::FAILURE;
         }
     };
+    if native {
+        if crate::native_cadence::activate(program_id) {
+            kernel.native_timing = true;
+            eprintln!("experimental native dynamic FPS: higher engine rate with elapsed-time corrections");
+        } else {
+            eprintln!("native dynamic FPS is not supported for this program");
+        }
+    }
     let start = std::time::Instant::now();
     #[cfg(feature = "vulkan-compare")]
     if let Some(draws) = std::env::var("USUM_VULKAN_CAPTURE").ok().and_then(|value| value.parse::<usize>().ok()) {

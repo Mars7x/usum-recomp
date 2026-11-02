@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use usum_import::cro::{self, ImportRef, SegmentOffset};
 use usum_import::profile::Match;
 use usum_import::Inspection;
-use usum_recomp::{analyze, analyze_with, emit, Analysis, Image};
+use usum_recomp::{analyze, analyze_with, emit, patch, Analysis, Image};
 
 use crate::paths;
 
@@ -172,9 +172,16 @@ pub fn translate(
     let mut entries = vec![base];
     entries.extend(modules.executable_seeds());
     let analysis = analyze(&image, &entries);
-    let split = emit::split(&analysis, unit, &unit_name);
+    let split = emit::split_patched(&analysis, unit, &unit_name, 0, false, &patch::executable(profile.id));
     let (module_analysis, module_rows) = analyze_modules(&modules)?;
-    let module_split = emit::split_with(&module_analysis, unit, &module_unit_name, analysis.functions.len(), true);
+    let module_split = emit::split_patched(
+        &module_analysis,
+        unit,
+        &module_unit_name,
+        analysis.functions.len(),
+        true,
+        &patch::modules(profile.id),
+    );
 
     let header = "#![forbid(unsafe_code)]\n#![allow(unused, unreachable_code, clippy::all)]\n";
     let mut members = Vec::new();

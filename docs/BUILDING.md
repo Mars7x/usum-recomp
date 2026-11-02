@@ -226,10 +226,17 @@ presents without unlocking the game. Native dynamic FPS remains in development.
 The optional overlay (`USUM_TEST_FPS=1`, or F7) reports GSP framebuffer submissions
 as `FPS` and window presents as `WIN`; neither proves unique engine frames.
 
-`USUM_TEST_ENGINE_RATE=1` (Ultra Sun USA only) asks the engine for its own
-higher update rate, for testing. It renders more frames, but walking runs about
-twice as fast and animation, sound and encounter timing are wrong (R-125); it
-is not native dynamic FPS.
+`USUM_NATIVE_FPS=1` (Ultra Sun USA only, experimental) runs the engine at its
+own higher update rate, about 60 updates per second, and scales the per-update
+quantities the translator's patch points cover by elapsed time (ADR-0008):
+walking distance, root motion, animation phase and rotation smoothing (R-182).
+It needs a translation made with this version's `usumctl translate`. Idle and
+action timers, and scenes outside overworld walking (battles, menus,
+cutscenes), are not corrected yet and may run too fast.
+
+`USUM_TEST_ENGINE_RATE=1` requests the same higher rate without corrections:
+walking runs about twice as fast and animation, sound and encounter timing are
+wrong (R-125).
 
 ## Saves and generated files
 

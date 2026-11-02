@@ -39,6 +39,14 @@ fn relocatable() -> bool {
     RELOCATABLE.with(|r| r.get())
 }
 
+thread_local! {
+    /// Native cadence patch points for the code being emitted (ADR-0008),
+    /// by instruction address in this translation.
+    static PATCHES: std::cell::RefCell<crate::patch::Patches> = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+    /// Function keys that are always called through the function table.
+    static HOOKED: std::cell::RefCell<std::collections::BTreeSet<u32>> = const { std::cell::RefCell::new(std::collections::BTreeSet::new()) };
+}
+
 /// A code address as the guest sees it.
 fn a(v: u32) -> String {
     if relocatable() {
@@ -586,6 +594,10 @@ fn media(out: &mut Out, op: &Op) {
 
 fn instruction(out: &mut Out, analysis: &Analysis, callee: &dyn Fn(u32) -> String, address: u32, instr: &Instr) {
     let next = address.wrapping_add(u32::from(instr.size));
+    let [before, inside, after] = PATCHES.with(|p| p.borrow().get(&address).map(|patch| patch.code(address))).unwrap_or_default();
+    if let Some(code) = &before {
+        line!(out, "{code}");
+    }
     let conditional = instr.cond != AL;
     if conditional {
         line!(out, "if cond(cpu, {}) {{", instr.cond);
@@ -734,7 +746,13 @@ fn instruction(out: &mut Out, analysis: &Analysis, callee: &dyn Fn(u32) -> Strin
             )
         }
     }
+    if let Some(code) = &inside {
+        line!(out, "{code}");
+    }
     line!(out, "}}");
+    if let Some(code) = &after {
+        line!(out, "{code}");
+    }
 }
 
 fn function(out: &mut Out, analysis: &Analysis, callee: &dyn Fn(u32) -> String, f: &Function) {
@@ -841,8 +859,25 @@ pub fn split_with(
     index_base: usize,
     relocatable: bool,
 ) -> Split {
+    split_patched(analysis, max_instructions, unit_path, index_base, relocatable, &crate::patch::Table::default())
+}
+
+/// `split_with`, adding the native cadence patch points of `table`
+/// (ADR-0008) and calling its hooked functions through the function table.
+pub fn split_patched(
+    analysis: &Analysis,
+    max_instructions: usize,
+    unit_path: &dyn Fn(usize) -> String,
+    index_base: usize,
+    relocatable: bool,
+    table: &crate::patch::Table,
+) -> Split {
     RELOCATABLE.with(|r| r.set(relocatable));
+    PATCHES.with(|p| p.replace(table.points.clone()));
+    HOOKED.with(|h| h.replace(table.hooked.clone()));
     let split = split_inner(analysis, max_instructions, unit_path, index_base);
+    PATCHES.with(|p| p.borrow_mut().clear());
+    HOOKED.with(|h| h.borrow_mut().clear());
     RELOCATABLE.with(|r| r.set(false));
     split
 }
@@ -863,7 +898,13 @@ fn split_inner(analysis: &Analysis, max_instructions: usize, unit_path: &dyn Fn(
     let mut units: Vec<Unit> = (0..=unit).map(|_| Unit { source: PRELUDE.to_owned(), functions: 0, instructions: 0 }).collect();
     for f in analysis.functions.values() {
         let here = unit_of[&f.key()];
-        let callee = |k: u32| if unit_of[&k] == here { name(k) } else { format!("function({})", index[&k]) };
+        let callee = |k: u32| {
+            if unit_of[&k] == here && !HOOKED.with(|h| h.borrow().contains(&k)) {
+                name(k)
+            } else {
+                format!("function({})", index[&k])
+            }
+        };
         let mut out = Out(std::mem::take(&mut units[here].source));
         function(&mut out, analysis, &callee, f);
         units[here].source = out.0;

@@ -69,26 +69,6 @@ fn pad_bit(key: KeyCode) -> Option<u32> {
 
 /// Where saves go: $XDG_DATA_HOME (or ~/.local/share)/usum-recomp/saves/
 /// <program ID>.
-/// Ultra Sun (USA) engine update entry and its first word, checked before
-/// the manager pointer below is trusted (R-125, R-177 follow-up).
-const ENGINE_UPDATE: (u32, u32) = (0x0040_1438, 0xe92d_4070);
-/// Global holding the engine manager: +8 pending update rate (2 = none),
-/// +9 current rate (1 = normal, 0 = higher).
-const ENGINE_MANAGER: u32 = 0x006a_3984;
-
-/// USUM_TEST_ENGINE_RATE=1: keep requesting the engine's own higher update
-/// rate. A testing aid, not native FPS: movement, animation, encounters and
-/// sound timing run too fast at that rate (R-125). Ultra Sun (USA) only.
-fn request_engine_rate(mem: &mut usum_guest::Memory) {
-    if mem.read_u32(ENGINE_UPDATE.0).ok() != Some(ENGINE_UPDATE.1) {
-        return;
-    }
-    let Ok(manager) = mem.read_u32(ENGINE_MANAGER) else { return };
-    if manager != 0 && mem.read_u8(manager + 9).ok() == Some(1) && mem.read_u8(manager + 8).ok() == Some(2) {
-        let _ = mem.write_u8(manager + 8, 0);
-    }
-}
-
 fn save_dir(program_id: u64) -> Option<std::path::PathBuf> {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(std::path::PathBuf::from)
@@ -385,10 +365,20 @@ fn run_game(
         }
         let _ = proxy.send_event(());
     };
+    let native = crate::native_cadence::requested();
+    let (functions, entries) = if native { crate::native_cadence::install(functions, entries) } else { (functions, entries) };
     let (mut cpu, mut mem, mut kernel, program_id) = match probe::setup(dump, functions, &modules) {
         Ok(state) => state,
         Err(e) => return stop(e),
     };
+    if native {
+        if crate::native_cadence::activate(program_id) {
+            kernel.native_timing = true;
+            eprintln!("experimental native dynamic FPS: higher engine rate with elapsed-time corrections");
+        } else {
+            eprintln!("native dynamic FPS is not supported for this program");
+        }
+    }
     #[cfg(feature = "vulkan-compare")]
     if let Some(draws) = std::env::var("USUM_VULKAN_CAPTURE").ok().and_then(|value| value.parse::<usize>().ok()) {
         let draws = draws.min(64);
@@ -474,15 +464,18 @@ fn run_game(
     kernel.audio.sink = Some((sound.clone(), crate::sound::MAX_QUEUED));
     // USUM_PLAY_SECONDS=n: quit after n seconds (for checks)
     let stop_after = std::env::var("USUM_PLAY_SECONDS").ok().and_then(|v| v.parse().ok()).map(Duration::from_secs);
-    let engine_rate = program_id == 0x0004_0000_001B_5000 && std::env::var("USUM_TEST_ENGINE_RATE").as_deref() == Ok("1");
-    if engine_rate {
+    // USUM_TEST_ENGINE_RATE=1: the engine's higher rate without corrections
+    // (R-125); USUM_NATIVE_FPS=1: with them (ADR-0008)
+    let engine_rate = crate::native_cadence::active()
+        || (program_id == 0x0004_0000_001B_5000 && std::env::var("USUM_TEST_ENGINE_RATE").as_deref() == Ok("1"));
+    if engine_rate && !crate::native_cadence::active() {
         eprintln!("testing: requesting the engine's higher update rate; movement and timing are not corrected");
     }
     let (outcome, ran) = probe::run_with(&mut cpu, &mut mem, &mut kernel, entries, &modules, u64::MAX, &mut |kernel, mem| {
         // USUM_SPEED=n, as in the probe
         probe::speed_report(kernel);
         if engine_rate {
-            request_engine_rate(mem);
+            crate::native_cadence::request_rate(mem);
         }
         if quit.load(Ordering::Relaxed) || stop_after.is_some_and(|d| start.elapsed() >= d) {
             quit.store(true, Ordering::Relaxed);

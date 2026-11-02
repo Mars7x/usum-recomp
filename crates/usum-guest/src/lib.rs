@@ -4,11 +4,13 @@
 //! and flags), [`Memory`] (the 32-bit guest address space), the helpers in
 //! [`ops`] (instruction semantics shared by all generated code, so each is
 //! written and tested once), [`timing`] (elapsed-time arithmetic and per-state
-//! event credits for cadence adaptations), and the [`Exit`]/[`Fault`] protocol. Guest
+//! event credits for cadence adaptations), [`native`] (native cadence patch
+//! points), and the [`Exit`]/[`Fault`] protocol. Guest
 //! addresses are plain `u32` values, never host pointers, and every guest
 //! integer operation is explicitly wrapping or checked.
 
 pub mod memory;
+pub mod native;
 pub mod ops;
 pub mod timing;
 pub mod vfp;

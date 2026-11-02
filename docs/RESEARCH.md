@@ -6278,3 +6278,32 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   difference was sampling noise.
 - Footsteps already agree (R-180). Sound starts per scene therefore need
   statistics over long replays, not single 16 s comparisons.
+
+### R-182 2026-11-01 — First native cadence corrections as translator patch points
+
+- Implemented ADR-0008's first slice. `usum_recomp::patch` lists patch points
+  for the Ultra Sun profile, and the emitter inserts `usum_guest::native`
+  calls at them in every generated copy: scale `s2` after the movement cap at
+  0x3a9988, `s1` after the root-motion rate loads at 0x4b80dc and 0x4b81a8 and
+  the animation rate load at 0x36a880, the phase increment operand `s3` around
+  0x36e160, the rate getter's result at the dispatcher's return label
+  0x5ada88 only for callee 0x4b7f94 and caller 0x3a975c, and the rotation
+  smoothing factor `s16` before FieldRo's call at virtual 0x6f051338 with
+  `blend_for_elapsed`. They land in exactly the units the private edits
+  changed (u031, u034, u035, u049, plus u061 and FieldRo's u077/u080). Calls
+  to the update start 0x401438 always go through the function table.
+- `usum_runtime::native_cadence` (`USUM_NATIVE_FPS=1`) requests the engine's
+  higher rate through the manager global 0x6a3984, hooks the update start and
+  publishes each update's elapsed guest time while the engine is in that
+  mode. Without the switch no step is published and every patch point is a
+  no-op, so normal cadence is unchanged.
+- Down-walk probe replay, 16 s from the same save and input: normal cadence
+  ends at x = 23342.5 with 498 top-screen updates (31.1 updates/s of game
+  time); native cadence ends at x = 23353.9 with 936 (58.5 updates/s). The
+  uncorrected higher rate walks about twice as far (R-125). This is the first
+  build in which `play` renders the engine's higher rate with corrected
+  walking, without the private harness.
+- Not yet ported: idle/action counters (R-149–R-152), first-step and event
+  credits (R-159–R-164, R-174), and the variable-interval pieces (deadlines,
+  elapsed chance checks). Battles, menus and cutscenes are unexamined.
+  Guest 51, translator 14 and runtime 146 tests pass.
