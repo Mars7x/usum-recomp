@@ -6225,9 +6225,18 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   (steady doubled rate), 23335.14 (short deadlines) and 23308.12 (long
   deadlines). Encounter checks follow the accumulator's 50-unit steps in tall
   grass: five checks at the steady rate and with short deadlines, no battle in
-  either. The long replay misses the step finished after the stick is released
-  at frame 700, 27 units, and makes three checks; the stop/settle path still
-  assumes fixed steps.
+  either. The long replay ends 27 units short and makes three checks. Its last
+  83 ms update before the stop reads input at frame 700, after the release, so
+  it spends that whole interval slowing down although the stick was held for
+  most of it. This is input quantization at long update intervals, bounded by
+  one update's movement, not a remaining fixed-step policy.
+- Turning replays with the switch on: the largest deviation from the steady
+  doubled-rate run is 19.0 units with short deadlines (final positions within
+  3.4 units; previously 241.7) and 70.0 with long deadlines (previously
+  290.5). Path lengths are 902.5, 899.1 and 874.7 units, against 1207.6 and
+  539.2 before. Encounter checks: 5, 5 and 4; no battles. The switch changes
+  the steady doubled-rate run by at most 2.2 units, from logical steps of
+  0.4985–0.5016 where the old policy used exactly 0.5.
 - These are virtual-clock replays of one save and one input; they are not FPS
   measurements and the switch is not in `play`. Artifacts:
   `native-elapsed-cap.py`, `native-elapsed-cap-v2.py` and the matching
