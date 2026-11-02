@@ -6202,3 +6202,33 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   the private movement corrections hold at a steady doubled rate (R-136) but not
   at varying update intervals. Next: make walking distance depend only on
   elapsed time, then recheck the encounter count per distance walked in grass.
+
+### R-179 2026-11-01 — Scale the movement cap and root-motion rate by elapsed time
+
+- R-178's distance error comes from fixed half steps. The walking accumulator
+  advances 9.5 units every update in all three down replays, whether the update
+  covers 7, 16.7 or 83 ms, so distance follows the update count: about 435
+  units/s at the steady doubled rate, 590 with 5/11/23/7 ms deadlines and 260
+  with 5/11/83/7 ms. The movement consumer's rate input is already elapsed-
+  proportional (`elapsed / 33.4 ms`), but two private corrections from R-136
+  multiply by a constant 0.5: the per-update movement cap (block 0x3a9988,
+  two generated copies) and the stored root-motion rate (blocks 0x4b80cc and
+  0x4b8198, each in two overlapping generated functions).
+- The private `elapsed-cap-build` (cap only) and `elapsed-cap-v2-build` (cap
+  and rate) replace those constants with the shared update's logical step
+  (`elapsed / 33,427,360 ns`) behind `USUM_DIAGNOSTIC_ELAPSED_CAP=1`. With the
+  switch off, the short-deadline replay matches every earlier capture exactly.
+- Cap only: short updates walk 4.15 units in 7.3 ms and stay out of the R-176
+  battle, but any update longer than about 20 ms is held at the 11.78-unit
+  root-motion step, so long updates slow to about 185 units/s.
+- Cap and rate: 83 ms updates move 47.2 units. Final positions are 23335.21
+  (steady doubled rate), 23335.14 (short deadlines) and 23308.12 (long
+  deadlines). Encounter checks follow the accumulator's 50-unit steps in tall
+  grass: five checks at the steady rate and with short deadlines, no battle in
+  either. The long replay misses the step finished after the stick is released
+  at frame 700, 27 units, and makes three checks; the stop/settle path still
+  assumes fixed steps.
+- These are virtual-clock replays of one save and one input; they are not FPS
+  measurements and the switch is not in `play`. Artifacts:
+  `native-elapsed-cap.py`, `native-elapsed-cap-v2.py` and the matching
+  build/test directories in the private research workflow.
