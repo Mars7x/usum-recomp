@@ -160,8 +160,7 @@ mod tests {
 
     #[test]
     fn short_vector_mode_is_left_alone() {
-        let mut cpu = Cpu::default();
-        cpu.fpscr = 1 << 16; // LEN = 2
+        let mut cpu = Cpu { fpscr: 1 << 16, ..Cpu::default() }; // LEN = 2
         cpu.s[1] = 1.0f32.to_bits();
         with_step(Some(Step { sequence: 1, elapsed_ns: 16_713_680 }), || scale_single(&mut cpu, 1));
         assert_eq!(f32::from_bits(cpu.s[1]), 1.0);
