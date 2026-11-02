@@ -6256,3 +6256,25 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   by something else that still counts updates, most likely animation events
   consumed outside the player-only event credits of R-160–R-174. Next: trace
   which code requests the grass sounds and what clock gates it.
+
+### R-181 2026-11-01 — Grass rustle rates do not depend on update intervals
+
+- R-180's remaining sound difference is three samples (10825, 12696 and
+  13155 samples long) that play while the player stands in tall grass. A
+  read-only hook on the start-sound method at 0x2b11d8 shows they are notes
+  of one short sound sequence, three notes about 210 ms apart at falling
+  volume and random pitch, played by the sound thread (entry 0x25c358) on the
+  sequence's own tempo. Note timing therefore does not follow game updates.
+- Standing still away from grass, none play at any cadence. A 60 s walk then
+  stand in grass gave 21, 18 and 13 sequences at the steady doubled rate,
+  short and long deadlines; too few events to separate a rate change from
+  chance.
+- Repeated with 300 s replays (walk into grass, then stand), including a
+  normal-cadence control: 73 sequences in 287 s at normal cadence (15.2 per
+  minute), 64 in 285 s at the steady doubled rate (13.5), 67 in 285 s with
+  short deadlines (14.1) and 63 in 283 s with long deadlines (13.4). The
+  spread is about one standard deviation of a count this size. The rustle
+  scheduler shows no measurable dependence on update intervals, and the R-180
+  difference was sampling noise.
+- Footsteps already agree (R-180). Sound starts per scene therefore need
+  statistics over long replays, not single 16 s comparisons.
