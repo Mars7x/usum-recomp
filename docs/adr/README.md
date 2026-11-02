@@ -9,6 +9,7 @@
 | [0005](0005-split-output-function-table.md) | Generated code in many crates, calls across crates through a function table | accepted |
 | [0006](0006-guest-threads.md) | Guest threads as saved contexts on one host thread | accepted |
 | [0007](0007-cro-modules.md) | CRO modules translated position-independently, ahead of time | accepted |
+| [0008](0008-native-cadence-integration.md) | Native dynamic FPS as translator patch points and a runtime cadence module | proposed |
 
 New ADRs copy the shape (Context, Decision, Consequences), are numbered
 in sequence, and cite the evidence they rest on. Superseded ADRs stay,
