@@ -26,6 +26,9 @@ pub enum Patch {
     /// Before the instruction: convert per-update blend factor `reg` to the
     /// elapsed step.
     Blend { reg: u8 },
+    /// After an integer counter's `±1` in `reg` (counter at `base_reg` +
+    /// `offset`): move by elapsed normal-rate updates instead.
+    Counter { reg: u8, base_reg: u8, offset: u32, down: bool, first_immediate: bool },
 }
 
 impl Patch {
@@ -48,6 +51,11 @@ impl Patch {
                 None,
             ],
             Patch::Blend { reg } => [Some(format!("usum_guest::native::blend_single(cpu, {reg});")), None, None],
+            Patch::Counter { reg, base_reg, offset, down, first_immediate } => [
+                None,
+                Some(format!("usum_guest::native::counter(cpu, {reg}, {base_reg}, {offset:#x}, {down}, {first_immediate});")),
+                None,
+            ],
         }
     }
 }
@@ -107,6 +115,14 @@ pub fn modules(profile: &str) -> Table {
                 // FieldRo (virtual base 0x6f000000): the rotation smoothing
                 // factor in s16, before the call that follows its choice (R-165).
                 (0x6f05_1338, Patch::Blend { reg: 16 }),
+                // Field actor state counters in r4's state object, which
+                // count updates (R-149–R-152, R-156, R-169): a count-up at
+                // +0x3c, the two-count action flag at +0x55, the idle counter
+                // at +0x48 (`addcs`) and a countdown at +0x34.
+                (0x6f05_0f44, Patch::Counter { reg: 0, base_reg: 4, offset: 0x3c, down: false, first_immediate: false }),
+                (0x6f05_0fc0, Patch::Counter { reg: 0, base_reg: 4, offset: 0x55, down: false, first_immediate: false }),
+                (0x6f05_1128, Patch::Counter { reg: 0, base_reg: 4, offset: 0x48, down: false, first_immediate: false }),
+                (0x6f05_1168, Patch::Counter { reg: 0, base_reg: 4, offset: 0x34, down: true, first_immediate: true }),
             ]),
             ..Table::default()
         },
@@ -144,7 +160,7 @@ mod tests {
     #[test]
     fn only_recorded_profiles_have_patch_points() {
         assert_eq!(executable("ultra-sun-usa-cart").points.len(), 6);
-        assert_eq!(modules("ultra-sun-usa-cart").points.len(), 1);
+        assert_eq!(modules("ultra-sun-usa-cart").points.len(), 5);
         assert_eq!(executable("ultra-moon-usa-cart"), Table::default());
     }
 

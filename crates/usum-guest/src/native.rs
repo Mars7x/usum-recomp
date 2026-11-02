@@ -83,6 +83,52 @@ pub fn blend_single(cpu: &mut Cpu, reg: usize) {
     }
 }
 
+struct CounterClock {
+    sequence: u64,
+    /// The value this clock last left in the counter; anything else means
+    /// the game reset or replaced the counter.
+    expected: u32,
+    fraction: crate::timing::TickAccumulator,
+}
+
+thread_local! {
+    static COUNTERS: std::cell::RefCell<std::collections::HashMap<u32, CounterClock>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Patch point after an integer counter's `±1` (register `reg`, counter at
+/// `cpu.r[base_reg] + offset`): the counter instead moves by the number of
+/// whole normal-rate updates elapsed, carrying the remainder per counter.
+/// A second call in one update moves it by nothing. A counter whose value
+/// differs from what this clock left starts a new clock: its first tick is
+/// immediate if `first_immediate`, else accumulated. Down-counters stop at
+/// zero (R-149–R-152, R-156, R-169).
+pub fn counter(cpu: &mut Cpu, reg: usize, base_reg: usize, offset: u32, down: bool, first_immediate: bool) {
+    let Some(step) = current() else { return };
+    let before = if down { cpu.r[reg].wrapping_add(1) } else { cpu.r[reg].wrapping_sub(1) };
+    let key = cpu.r[base_reg].wrapping_add(offset);
+    let unit = std::num::NonZeroU32::new(NORMAL_UPDATE_NS as u32).expect("nonzero update");
+    let ticks = COUNTERS.with(|clocks| {
+        let mut clocks = clocks.borrow_mut();
+        let mut fraction = crate::timing::TickAccumulator::new(unit);
+        let ticks = match clocks.get(&key) {
+            Some(clock) if clock.expected == before && clock.sequence == step.sequence => 0,
+            Some(clock) if clock.expected == before && clock.sequence.checked_add(1) == Some(step.sequence) => {
+                fraction = clock.fraction;
+                fraction.advance(step.elapsed_ns)
+            }
+            _ if first_immediate => 1,
+            _ => fraction.advance(step.elapsed_ns),
+        };
+        let ticks = u32::try_from(ticks).unwrap_or(u32::MAX);
+        let ticks = if down { ticks.min(before) } else { ticks };
+        let after = if down { before - ticks } else { before.wrapping_add(ticks) };
+        clocks.insert(key, CounterClock { sequence: step.sequence, expected: after, fraction });
+        ticks
+    });
+    cpu.r[reg] = if down { before - ticks } else { before.wrapping_add(ticks) };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,5 +196,50 @@ mod tests {
             with_step(Some(Step { sequence: 1, elapsed_ns: 1 }), || blend_single(&mut cpu, 16));
             assert_eq!(cpu.s[16], value.to_bits());
         }
+    }
+
+    fn run_counter(steps: &[u64], down: bool, first_immediate: bool, start: u32) -> Vec<u32> {
+        let mut value = start;
+        let mut out = Vec::new();
+        for (index, &elapsed) in steps.iter().enumerate() {
+            let mut cpu = Cpu::default();
+            cpu.r[4] = 0x5000;
+            cpu.r[0] = if down { value - 1 } else { value + 1 };
+            with_step(Some(Step { sequence: index as u64 + 1, elapsed_ns: elapsed }), || {
+                counter(&mut cpu, 0, 4, 0x48, down, first_immediate)
+            });
+            value = cpu.r[0];
+            out.push(value);
+        }
+        COUNTERS.with(|c| c.borrow_mut().clear());
+        out
+    }
+
+    #[test]
+    fn counters_advance_once_per_normal_update_of_elapsed_time() {
+        let half = NORMAL_UPDATE_NS / 2;
+        assert_eq!(run_counter(&[half; 6], false, false, 0), [0, 1, 1, 2, 2, 3]);
+        assert_eq!(run_counter(&[NORMAL_UPDATE_NS * 3, half, half], false, false, 10), [13, 13, 14]);
+        assert_eq!(run_counter(&[half; 4], true, true, 3), [2, 2, 1, 1]);
+        assert_eq!(run_counter(&[NORMAL_UPDATE_NS * 5], true, false, 2), [0]);
+    }
+
+    #[test]
+    fn resets_and_repeated_calls_are_respected() {
+        let mut cpu = Cpu::default();
+        cpu.r[4] = 0x6000;
+        let call = |cpu: &mut Cpu, value: u32, sequence: u64| {
+            cpu.r[0] = value + 1;
+            with_step(Some(Step { sequence, elapsed_ns: NORMAL_UPDATE_NS }), || counter(cpu, 0, 4, 0, false, false));
+            cpu.r[0]
+        };
+        assert_eq!(call(&mut cpu, 5, 1), 6);
+        assert_eq!(call(&mut cpu, 6, 1), 6); // same update: no second tick
+        assert_eq!(call(&mut cpu, 6, 2), 7);
+        assert_eq!(call(&mut cpu, 0, 3), 1); // reset by the game: a new clock
+        COUNTERS.with(|c| c.borrow_mut().clear());
+        cpu.r[0] = 8;
+        counter(&mut cpu, 0, 4, 0, false, false); // no step: unchanged
+        assert_eq!(cpu.r[0], 8);
     }
 }

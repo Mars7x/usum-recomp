@@ -6307,3 +6307,25 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   credits (R-159–R-164, R-174), and the variable-interval pieces (deadlines,
   elapsed chance checks). Battles, menus and cutscenes are unexamined.
   Guest 51, translator 14 and runtime 146 tests pass.
+
+### R-183 2026-11-01 — Field actor counters as elapsed-tick patch points
+
+- Ported the private idle/action counter clocks (R-149–R-152, R-156, R-169)
+  to the translator without the player-address guard. Four FieldRo
+  instructions in the field actor state update (`r4` = state object) now call
+  `usum_guest::native::counter` after their `±1`: the count-up `add` at
+  virtual 0x6f050f44 (+0x3c), the action flag byte `add` at 0x6f050fc0
+  (+0x55), the idle counter `addcs` at 0x6f051128 (+0x48) and the countdown
+  `sub` at 0x6f051168 (+0x34, first tick immediate). Each counter keeps its
+  own elapsed-tick accumulator keyed by address; a second call in one update
+  adds nothing, and a value the clock did not leave starts a new clock, which
+  covers the game's explicit clears without hooking them. Every generated copy
+  is patched (8 call sites in each of FieldRo's u077 and u080).
+- Idle replay from the same save: at normal cadence the idle counter rises
+  from 56 to 176 between 26 s and 30 s (30 per second). With
+  `USUM_NATIVE_FPS=1` (59 updates/s) it reaches its threshold 382 at about
+  26 s, the idle animation starts and the counter restarts, reading 102 at
+  30 s: again 30 per second, where the uncorrected higher rate counts 60.
+  Thresholds differ between runs because they are random draws.
+- The down walk still matches: native cadence ends at x = 23330.2 against
+  23342.5 at normal cadence. Guest 53 and translator 14 tests pass.
