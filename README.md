@@ -39,22 +39,6 @@ Each run stops at the first operation that is not implemented and names it.
 Implementing that operation and replaying the recording is the development
 loop. Performance measurements are scene- and hardware-specific.
 
-## How it works
-
-1. **Translation.** The importer validates your decrypted dump and extracts
-   the executable and its CRO modules in memory. The recompiler discovers code
-   by recursive descent from entry points, calls, jump tables and pointer
-   seeds, then emits one Rust function per guest function into generated
-   crates in your private cache. The generated code contains no instruction
-   decoder.
-2. **Runtime.** The native program provides checked guest memory, threads and
-   kernel objects (a subset of the 3DS kernel's SVCs), the system services the
-   game reaches (file system, HID, GSP, DSP, Y2R, configuration and others),
-   module loading and saves.
-3. **Graphics and sound.** PICA200 command lists are executed by a Vulkan
-   renderer (via wgpu) or the software reference renderer. DSP audio is
-   emulated at a high level and played through PulseAudio.
-
 ## Building and running
 
 You need current stable Rust, Python 3 (for the repository data guard), Git
@@ -90,6 +74,7 @@ presentation cap and F7 toggles the testing overlay (off by default). See
 ## Documentation
 
 - [Building and playing](docs/BUILDING.md)
+- [Single-screen play (planned)](docs/SINGLE_SCREEN.md)
 - [Architecture](docs/ARCHITECTURE.md) and [decisions](docs/adr/)
 - [Supported inputs](docs/INPUT.md) and [compatibility](docs/COMPATIBILITY.md)
 - [Roadmap](docs/ROADMAP.md) and [next steps](docs/NEXT_STEPS.md)

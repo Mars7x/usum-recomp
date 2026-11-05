@@ -19,6 +19,9 @@ Native dynamic FPS and packaging are unfinished. See
 3. Optimize bottlenecks demonstrated by fresh profiles, retaining comparison
    paths and rejecting changes without a measured benefit.
 4. Expand compatibility and complete the launcher/Flatpak workflow.
+5. Single-screen play: layouts with the top screen filling the display, the
+   bottom screen on demand, and touch by controller pointer
+   ([SINGLE_SCREEN.md](SINGLE_SCREEN.md)).
 
 The milestones below retain their original evidence and exit criteria. Their
 historical benchmark times are not estimates for the current renderer or host.
