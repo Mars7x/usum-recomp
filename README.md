@@ -14,7 +14,7 @@ services, PICA200 graphics, input and audio.
 
 ## Status
 
-Latest measured state (2026-10-31):
+Latest measured state (2026-11-01):
 
 - **Gameplay:** Ultra Sun boots and reaches early gameplay. Recorded replays
   cover the opening, menus, bedroom and outdoor movement, and early battles.
@@ -27,13 +27,19 @@ Latest measured state (2026-10-31):
 - **Input, audio, saves:** keyboard, mouse touch and mapped controllers
   (including ones connected after launch), audio, saves and deterministic
   input replays work. Sound and compatibility are incomplete.
-- **Frame rate:** host presentation caps and an optional FPS overlay exist,
-  but they do not unlock the game's frame rate; the overlay counts framebuffer
-  submissions, not unique rendered frames. Native dynamic FPS is in
-  development: update deadlines, frame publication and elapsed chance checks
-  work in private diagnostics, but a variable-cadence replay still triggers a
-  wild battle the normal-speed replay avoids ([R-176](docs/RESEARCH.md#r-176-2026-10-31--input-sampling-and-a-down-path-battle-at-variable-cadence)).
-- **Not done:** native dynamic FPS, Flatpak packaging and a graphical launcher.
+- **Frame rate:** `USUM_NATIVE_FPS=1` (experimental, Ultra Sun USA) runs the
+  engine at its own higher rate, about 60 updates per second instead of 30,
+  with elapsed-time corrections for overworld walking, animation, turning and
+  idle/action timers. In replays the overworld renders about twice as many
+  frames with walking distance within about 2% of normal speed
+  ([R-182](docs/RESEARCH.md#r-182-2026-11-01--first-native-cadence-corrections-as-translator-patch-points),
+  [R-183](docs/RESEARCH.md#r-183-2026-11-01--field-actor-counters-as-elapsed-tick-patch-points)).
+  Battles are not corrected and currently run too fast in this mode; menus and
+  cutscenes are unexamined. Rates other than 60 work only in private
+  diagnostics so far. Host presentation caps and the optional FPS overlay do
+  not change the game's own rate.
+- **Not done:** native dynamic FPS beyond the overworld and above 60 Hz,
+  single-screen layouts, Flatpak packaging and a graphical launcher.
 
 Each run stops at the first operation that is not implemented and names it.
 Implementing that operation and replaying the recording is the development
