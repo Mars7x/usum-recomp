@@ -37,6 +37,32 @@ Picture-in-picture size (for example ⅓ or ½ of the window height), corner
 and opacity are settings. A held button can show the bottom screen at full
 size and return to the previous layout on release.
 
+## Resolution and aspect ratio
+
+Resolution is named and set as real pixels, never as a multiplier: the
+setting reads "Auto" or a size such as 2400×1440, and the title and overlay
+show the size each screen is rendered at.
+
+- **Auto (default):** each screen renders at exactly the pixel size it
+  occupies in the window under the current layout. Resizing the window or
+  changing layout changes the render size. A 3440×1440 window in top focus
+  draws the 5:3 top screen at 2400×1440, pillarboxed, rendered at 2400×1440;
+  stacked or side-by-side layouts draw each screen smaller and render it
+  smaller.
+- **Manual:** a fixed size, chosen from a list of sizes or typed, for hosts
+  that cannot keep up at the window's size.
+- **Any size, not only multiples.** The renderer currently supports whole
+  multiples of 400×240 (1×–8×). It has to accept arbitrary target sizes with
+  separate horizontal and vertical factors, for every render target the game
+  draws (including render-to-texture and display transfers), before Auto can
+  match a window exactly.
+- **Widescreen (later).** Filling a wider window, such as 3440×1440 at 21:9,
+  with game image needs the game to draw a wider view: a patch to its 3D
+  projection and culling and handling for 2D elements that assume 400 pixels
+  of width, added as translator patch points like those of ADR-0008. The
+  renderer can already draw into targets larger than the 3DS framebuffer.
+  Until then wider windows are pillarboxed.
+
 ## Touch without a pointer
 
 - **Controller pointer:** a button shows the bottom screen (if hidden) and a
@@ -75,14 +101,19 @@ Manual control (hotkey, held button) stays available whatever the rule does.
 2. **Presentation.** Draw each screen as its own quad in GPU presentation
    (and the software fallback), so picture-in-picture costs no extra copies
    and the bottom screen scales with internal resolution too.
-3. **Controls.** Layout cycling, the held full-size button and the controller
+3. **Arbitrary resolution.** Replace the integer internal scale with a target
+   size per screen, report it in pixels, and make Auto follow the layout's
+   screen rectangles. Replay captures at 1× stay byte-identical; other sizes
+   are compared against the software reference downscaled.
+4. **Controls.** Layout cycling, the held full-size button and the controller
    pointer, configurable through environment variables first
    (`USUM_LAYOUT`, `USUM_PIP`), later through the launcher.
-4. **Touch audit** as above, recorded in COMPATIBILITY.md.
-5. **Optional automatic switching**, only for screens the audit shows need
+5. **Touch audit** as above, recorded in COMPATIBILITY.md.
+6. **Optional automatic switching**, only for screens the audit shows need
    it.
-6. **Launcher integration** with saved per-user settings and a handheld
+7. **Launcher integration** with saved per-user settings and a handheld
    preset (for example 1280×800, top focus, controller pointer).
+8. **Widescreen** projection patch points, after the above.
 
 ## Validation
 
