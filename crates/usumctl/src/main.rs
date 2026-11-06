@@ -42,7 +42,8 @@ romfs         list the RomFS files by their offset in the RomFS image (the
               offsets the game reads at); with hex offsets, only the files
               holding them
 make-fixture  write a synthetic test image (no game data) for trying the tools
-paths         print where generated files, saves and settings will be kept
+paths         print the one folder everything is kept in (data/ in the
+              checkout, or $USUM_HOME), and its parts
 doctor        check for the tools later milestones need
 
 Exit status: 0 for a recorded profile (inspect) or success, 1 otherwise.";
@@ -252,10 +253,10 @@ fn make_fixture(args: &[String]) -> Result<(), String> {
 }
 
 fn print_paths() -> Result<(), String> {
-    let show = |p: Option<PathBuf>| p.map_or("(unset: neither XDG nor HOME is set)".to_owned(), |p| p.display().to_string());
-    println!("generated  {}", show(paths::cache_dir()));
-    println!("saves      {}", show(paths::data_dir()));
-    println!("settings   {}", show(paths::config_dir()));
+    println!("home       {}", usum_import::home::root().display());
+    println!("generated  {}", usum_import::home::translations().display());
+    println!("recordings {}", usum_import::home::recordings().display());
+    println!("saves      {}", usum_import::home::saves().display());
     Ok(())
 }
 

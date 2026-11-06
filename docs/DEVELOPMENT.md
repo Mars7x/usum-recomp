@@ -121,15 +121,15 @@ decompressed executable (outside any git work tree) and disassemble it
 with GNU binutils:
 
 ```bash
-./target/release/usumctl extract-code ~/Games/ultra-sun.3ds ~/.cache/usum-recomp/code.bin
+./target/release/usumctl extract-code ~/Games/ultra-sun.3ds data/code.bin
 ```
 
 ```bash
-arm-none-eabi-objdump -D -b binary -marm --adjust-vma=0x100000 --start-address=0x105bf4 --stop-address=0x105c30 ~/.cache/usum-recomp/code.bin
+arm-none-eabi-objdump -D -b binary -marm --adjust-vma=0x100000 --start-address=0x105bf4 --stop-address=0x105c30 data/code.bin
 ```
 
 `play` records your input as you play. When it exits it writes an input
-script to `~/.cache/usum-recomp/recordings/play-<time>.txt`, beside a
+script to `data/recordings/play-<time>.txt`, beside a
 copy of the saves it started from (`.save/`). Analog stick positions are recorded
 as `C<x>:<y>` tokens (each axis -156..156); old digital recordings remain valid.
 The probe can replay the
@@ -275,7 +275,7 @@ set both to `0` to compare the previous display path.
 `USUM_PLAY_REPLAY=1` runs a bounded window replay from `USUM_INPUT` /
 `USUM_INPUT_FILE` and exits at `USUM_SECONDS`, with normal virtual-clock pacing
 retained. It uses the normal play save directory: automated comparisons set
-`XDG_DATA_HOME` to an isolated directory containing the starting save fixture.
+`USUM_HOME` to an isolated directory containing the starting save fixture.
 Window redraws and distinct resident buffers are diagnostic counts, not proof of
 unique game frames or uncapped normal-speed FPS.
 

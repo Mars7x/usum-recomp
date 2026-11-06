@@ -67,26 +67,17 @@ fn pad_bit(key: KeyCode) -> Option<u32> {
     })
 }
 
-/// Where saves go: $XDG_DATA_HOME (or ~/.local/share)/usum-recomp/saves/
-/// <program ID>.
+/// Where saves go: <home>/saves/<program ID> (`usum_import::home`).
 fn save_dir(program_id: u64) -> Option<std::path::PathBuf> {
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(std::path::PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/share")))?;
-    Some(base.join("usum-recomp/saves").join(format!("{program_id:016x}")))
+    Some(usum_import::home::saves().join(format!("{program_id:016x}")))
 }
 
-/// Where a session's recording goes: $XDG_CACHE_HOME/usum-recomp/
-/// recordings/play-<seconds since 1970> (.txt for the input, .save/ for
-/// the saves as they were when the session started).
+/// Where a session's recording goes: <home>/recordings/play-<seconds since
+/// 1970> (.txt for the input, .save/ for the saves as they were when the
+/// session started).
 fn recording_base() -> Option<std::path::PathBuf> {
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(std::path::PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))?;
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    Some(base.join("usum-recomp/recordings").join(format!("play-{stamp}")))
+    Some(usum_import::home::recordings().join(format!("play-{stamp}")))
 }
 
 /// Copies directory `from` (the saves) to `to`, recursively.

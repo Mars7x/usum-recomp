@@ -8,6 +8,9 @@
 # --- Game data: NEVER commit anything derived from a dump. ---
 # tools/check-no-game-data.sh (run by the pre-commit hook and CI) also checks
 # file contents, since a renamed file would slip past these patterns.
+# Everything the tools write (translations, recordings, saves): see
+# usum_import::home.
+/data/
 /dump/
 /dumps/
 /extracted/

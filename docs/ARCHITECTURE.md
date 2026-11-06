@@ -11,14 +11,14 @@ user's dump ──(portal, read-only)──▶ usum-import   validate, hash-chec
                                          ▼
                                      usum-arm       decode ARM/Thumb/VFP → IR
                                      usum-recomp    discovery, CRO handling, IR → Rust source
-                                         │  generated crates in $XDG_CACHE_HOME (never in git)
+                                         │  generated crates in data/ (git-ignored; usum_import::home)
                                          ▼
                 rustc/cargo (Flatpak SDK extension, --offline) builds
                 generated crates + usum-runtime sources ──▶ native game executable
                                          │
 launcher ──spawns──▶ game executable:  usum-runtime   GuestMemory, kernel/SVCs, HLE services
                                        usum-render    PICA200 → wgpu
-                     reads RomFS from the dump at run time; saves in $XDG_DATA_HOME
+                     reads RomFS from the dump at run time; saves in data/saves
 ```
 
 ## Workspace today

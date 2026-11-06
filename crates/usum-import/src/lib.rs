@@ -5,7 +5,8 @@
 //! checks every SHA-256 the format stores for the parts it reads, extracts
 //! the executable code and the list of CRO modules, and matches the result
 //! against explicitly recorded version profiles. It never writes anything
-//! and never decides from a file name.
+//! and never decides from a file name. [`home`] names the one folder the
+//! other tools write to.
 //!
 //! The input contract is documented in docs/INPUT.md.
 
@@ -15,6 +16,7 @@ mod error;
 pub mod exefs;
 pub mod exheader;
 pub mod fixture;
+pub mod home;
 pub mod ncch;
 pub mod profile;
 pub mod romfs;

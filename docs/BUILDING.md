@@ -137,11 +137,11 @@ usum_rom="$HOME/Games/Pokemon Ultra Sun.3ds"
 ./target/release/usumctl translate "$usum_rom"
 ```
 
-The translator prints its output directory. With the default cache location,
-the supported Ultra Sun profile is:
+The translator prints its output directory. By default it is inside the
+checkout's `data/` folder; for the supported Ultra Sun profile:
 
 ```bash
-cd "${XDG_CACHE_HOME:-$HOME/.cache}/usum-recomp/translations/ultra-sun-usa-cart"
+cd data/translations/ultra-sun-usa-cart
 ```
 
 Use the printed directory if you selected another output/profile. Generated
@@ -240,15 +240,19 @@ wrong (R-125).
 
 ## Saves and generated files
 
+Everything the tools write goes in one folder: `data/` in the checkout, which
+git ignores. `USUM_HOME` (an absolute path) moves it elsewhere, and
+`usumctl paths` prints where it is.
+
 | Data | Default location |
 |---|---|
-| Generated workspace/build | `~/.cache/usum-recomp/translations/<profile>/` |
-| Game saves | `~/.local/share/usum-recomp/saves/<program ID>/` |
-| Recorded input and starting-save copies | `~/.cache/usum-recomp/recordings/` |
+| Generated workspace/build | `data/translations/<profile>/` |
+| Game saves | `data/saves/<program ID>/` |
+| Recorded input and starting-save copies | `data/recordings/` |
 
-`XDG_CACHE_HOME` and `XDG_DATA_HOME` override the corresponding base directories.
-The original dump is read in place. Back up game saves separately from generated
-code and build files. Recordings, saves and captures are private game data too.
+The original dump is read in place. Back up `data/saves/` separately: the rest
+of `data/` can be regenerated from the dump. Recordings, saves and captures are
+private game data too; never commit or upload them.
 
 ## Updating an existing build
 
@@ -259,7 +263,7 @@ cd /path/to/usum-recomp
 git pull --ff-only
 cargo +stable build --release --locked -j 1 -p usumctl
 ./target/release/usumctl translate "$usum_rom"
-cd "${XDG_CACHE_HOME:-$HOME/.cache}/usum-recomp/translations/ultra-sun-usa-cart"
+cd data/translations/ultra-sun-usa-cart
 cargo +stable build --release -j 1 -p play
 ```
 

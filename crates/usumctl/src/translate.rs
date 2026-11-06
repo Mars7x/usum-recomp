@@ -146,7 +146,7 @@ pub fn translate(
     };
     let out = match out {
         Some(dir) => dir,
-        None => paths::cache_dir().ok_or("no cache directory: set XDG_CACHE_HOME or HOME")?.join("translations").join(profile.id),
+        None => usum_import::home::translations().join(profile.id),
     };
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     let out = out.canonicalize().map_err(|e| format!("{}: {e}", out.display()))?;
