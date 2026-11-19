@@ -454,16 +454,17 @@ fn run_game(
     let stop_after = std::env::var("USUM_PLAY_SECONDS").ok().and_then(|v| v.parse().ok()).map(Duration::from_secs);
     // USUM_TEST_ENGINE_RATE=1: the engine's higher rate without corrections
     // (R-125); USUM_NATIVE_FPS=1: with them (ADR-0008)
-    let engine_rate = crate::native_cadence::active()
-        || (program_id == 0x0004_0000_001B_5000 && std::env::var("USUM_TEST_ENGINE_RATE").as_deref() == Ok("1"));
-    if engine_rate && !crate::native_cadence::active() {
+    let test_engine_rate = !crate::native_cadence::active()
+        && program_id == 0x0004_0000_001B_5000
+        && std::env::var("USUM_TEST_ENGINE_RATE").as_deref() == Ok("1");
+    if test_engine_rate {
         eprintln!("testing: requesting the engine's higher update rate; movement and timing are not corrected");
     }
     let (outcome, ran) = probe::run_with(&mut cpu, &mut mem, &mut kernel, entries, &modules, u64::MAX, &mut |kernel, mem| {
         // USUM_SPEED=n, as in the probe
         probe::speed_report(kernel);
-        if engine_rate {
-            crate::native_cadence::request_rate(mem);
+        if test_engine_rate {
+            crate::native_cadence::request_test_rate(mem);
         }
         if quit.load(Ordering::Relaxed) || stop_after.is_some_and(|d| start.elapsed() >= d) {
             quit.store(true, Ordering::Relaxed);

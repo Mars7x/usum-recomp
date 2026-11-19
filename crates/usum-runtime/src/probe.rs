@@ -58,9 +58,6 @@ pub fn run(cpu: &mut Cpu, mem: &mut Memory, kernel: &mut Kernel, entries: &[(u32
     // instructions) before calling it a hang, for long replays
     let max_refills = std::env::var("USUM_MAX_REFILLS").ok().and_then(|v| v.parse().ok()).unwrap_or(MAX_REFILLS);
     run_with(cpu, mem, kernel, entries, modules, max_refills, &mut |kernel, mem| {
-        if crate::native_cadence::active() {
-            crate::native_cadence::request_rate(mem);
-        }
         snapshot(kernel, mem);
         profile_window(kernel);
         speed_report(kernel);
@@ -81,6 +78,10 @@ pub fn run_with(
 ) -> (Outcome, u64) {
     let _timing_session = crate::native_timing::enter_dispatch(None);
     let boot = kernel::BootImage::capture(cpu, mem, kernel);
+    let mut scene_rate = crate::native_cadence::active().then(crate::native_cadence::SceneRate::default);
+    if let Some(scene) = &mut scene_rate {
+        scene.refresh(kernel, mem, true);
+    }
     let mut refills = 0u64;
     let mut ran = 0u64;
     let mut dispatch = dispatch::CodeCache::new(std::env::var("USUM_DISPATCH_CACHE").as_deref() != Ok("0"));
@@ -115,26 +116,35 @@ pub fn run_with(
         }
         match exit {
             Ok(Exit::Jump) => {}
-            Ok(Exit::Svc(n)) => match kernel.tick_then_svc(cpu, mem, n) {
-                kernel::Outcome::Continue => {}
-                kernel::Outcome::Restart(args) => {
-                    let Some(boot) = &boot else {
-                        return (Outcome::Unimplemented("application restart without a boot image".into()), ran);
-                    };
-                    boot.restart(cpu, mem, kernel, args);
-                    cpu.budget = BUDGET;
-                    // Loaded CROs and all translated dispatch ownership belong to
-                    // the terminated process, even if their addresses recur.
-                    dispatch = dispatch::CodeCache::new(std::env::var("USUM_DISPATCH_CACHE").as_deref() != Ok("0"));
-                    eprintln!("application restarted: {} at VBlank {}", kernel.restarts, kernel.vblanks);
+            Ok(Exit::Svc(n)) => {
+                let outcome = kernel.tick_then_svc(cpu, mem, n);
+                if let Some(scene) = &mut scene_rate {
+                    scene.refresh(kernel, mem, false);
                 }
-                kernel::Outcome::Switch => {
-                    if !kernel.switch(cpu, mem) {
-                        return (Outcome::NoThread, ran);
+                match outcome {
+                    kernel::Outcome::Continue => {}
+                    kernel::Outcome::Restart(args) => {
+                        let Some(boot) = &boot else {
+                            return (Outcome::Unimplemented("application restart without a boot image".into()), ran);
+                        };
+                        boot.restart(cpu, mem, kernel, args);
+                        if let Some(scene) = &mut scene_rate {
+                            scene.reset();
+                        }
+                        cpu.budget = BUDGET;
+                        // Loaded CROs and all translated dispatch ownership belong to
+                        // the terminated process, even if their addresses recur.
+                        dispatch = dispatch::CodeCache::new(std::env::var("USUM_DISPATCH_CACHE").as_deref() != Ok("0"));
+                        eprintln!("application restarted: {} at VBlank {}", kernel.restarts, kernel.vblanks);
                     }
+                    kernel::Outcome::Switch => {
+                        if !kernel.switch(cpu, mem) {
+                            return (Outcome::NoThread, ran);
+                        }
+                    }
+                    kernel::Outcome::Unimplemented(what) => return (Outcome::Unimplemented(what), ran),
                 }
-                kernel::Outcome::Unimplemented(what) => return (Outcome::Unimplemented(what), ran),
-            },
+            }
             Ok(Exit::Budget) => {
                 refills += 1;
                 if refills >= max_refills {
@@ -145,6 +155,9 @@ pub fn run_with(
                     if u128::from(now) >= limit.as_nanos() {
                         return (Outcome::TimeLimit, ran);
                     }
+                }
+                if let Some(scene) = &mut scene_rate {
+                    scene.refresh(kernel, mem, true);
                 }
                 if !hook(kernel, mem) {
                     return (Outcome::Stopped, ran);

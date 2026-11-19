@@ -79,11 +79,31 @@ impl UpdateClock {
         self.previous_ns = None;
         self.current = None;
     }
+
+    /// Start a new scene. A gap in the sequence prevents a consumer at a
+    /// reused guest address from carrying the previous scene's timer state.
+    pub(crate) fn invalidate_scene(&mut self) {
+        self.clear();
+        self.sequence = self.sequence.saturating_add(1);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scene_change_skips_a_sequence_and_excludes_time_outside_the_scene() {
+        let mut clock = UpdateClock::new();
+        clock.begin_update(100);
+        let old = clock.begin_update(110).unwrap();
+        clock.invalidate_scene();
+        assert!(clock.current().is_none());
+        assert!(clock.begin_update(1_000).is_none());
+        let new = clock.begin_update(1_013).unwrap();
+        assert_eq!(new.elapsed_ns(), 13);
+        assert_eq!(new.sequence(), old.sequence() + 2);
+    }
 
     #[test]
     fn varying_intervals_share_one_step_and_preserve_all_elapsed_time() {

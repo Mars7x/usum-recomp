@@ -34,10 +34,10 @@ Latest measured state (2026-11-01):
   frames with walking distance within about 2% of normal speed
   ([R-182](docs/RESEARCH.md#r-182-2026-11-01--first-native-cadence-corrections-as-translator-patch-points),
   [R-183](docs/RESEARCH.md#r-183-2026-11-01--field-actor-counters-as-elapsed-tick-patch-points)).
-  Battles are not corrected and currently run too fast in this mode; menus and
-  cutscenes are unexamined. Rates other than 60 work only in private
-  diagnostics so far. Host presentation caps and the optional FPS overlay do
-  not change the game's own rate.
+  The higher rate is requested in the overworld. Movies, battles and scenes
+  outside the overworld keep their engine timing. Rates other than 60 are
+  still experimental diagnostics. Host presentation caps and the optional
+  FPS overlay operate independently of the game's own rate.
 - **Not done:** native dynamic FPS beyond the overworld and above 60 Hz,
   single-screen layouts, Flatpak packaging and a graphical launcher.
 

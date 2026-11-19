@@ -1,13 +1,15 @@
 //! Native dynamic FPS (ADR-0008), experimental and off by default.
 //!
 //! With `USUM_NATIVE_FPS=1` the engine is asked for its own higher update
-//! rate, and each engine update publishes its elapsed guest time to the
+//! rate in the covered overworld, and each engine update publishes its elapsed guest time to the
 //! translator's patch points (`usum_guest::native`), which scale the
-//! per-update quantities that would otherwise run too fast. Only the
-//! corrections that have replay evidence are in the patch table; scenes
-//! they do not cover still run at the wrong speed.
+//! per-update quantities that would otherwise run too fast. Movies, battles
+//! and other uncovered scenes use their own timing.
 
-use std::cell::RefCell;
+mod scene;
+pub(crate) use scene::SceneRate;
+
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
@@ -41,6 +43,14 @@ static UPDATE_ORIGINAL: OnceLock<Code> = OnceLock::new();
 
 thread_local! {
     static CLOCK: RefCell<UpdateClock> = const { RefCell::new(UpdateClock::new()) };
+    static SCENE_COVERED: Cell<bool> = const { Cell::new(false) };
+}
+
+fn set_scene_covered(covered: bool) {
+    if SCENE_COVERED.replace(covered) != covered {
+        CLOCK.with(|clock| clock.borrow_mut().invalidate_scene());
+        usum_guest::native::publish(None);
+    }
 }
 
 /// Whether `USUM_NATIVE_FPS=1` asks for native cadence.
@@ -76,27 +86,33 @@ pub fn active() -> bool {
     ACTIVE.load(Ordering::Relaxed)
 }
 
-/// Keeps requesting the engine's higher update rate (call between
-/// dispatches). The update-start code is checked before the manager
-/// pointer is trusted.
-pub fn request_rate(mem: &mut Memory) {
+fn engine_manager(mem: &Memory) -> Option<u32> {
     if mem.read_u32(ULTRA_SUN.update_start.0).ok() != Some(ULTRA_SUN.update_start.1) {
-        return;
+        return None;
     }
-    let Ok(manager) = mem.read_u32(ULTRA_SUN.manager) else { return };
-    if manager != 0 && mem.read_u8(manager + 9).ok() == Some(1) && mem.read_u8(manager + 8).ok() == Some(2) {
-        let _ = mem.write_u8(manager + 8, 0);
+    mem.read_u32(ULTRA_SUN.manager).ok().filter(|&manager| manager != 0 && manager.checked_add(9).is_some())
+}
+
+/// Test-only higher engine rate without the scene or timing corrections.
+#[cfg(feature = "window")]
+pub(crate) fn request_test_rate(mem: &mut Memory) {
+    if let Some(manager) = engine_manager(mem) {
+        scene::request_higher(mem, manager);
     }
 }
 
 fn update_start(cpu: &mut Cpu, mem: &mut Memory) -> Result<Exit, Fault> {
     let original = *UPDATE_ORIGINAL.get().expect("installed with its original");
-    if active() && cpu.r[15] == ULTRA_SUN.update_start.0 && cpu.budget >= ULTRA_SUN.update_cost {
+    if SCENE_COVERED.get() && cpu.r[15] == ULTRA_SUN.update_start.0 && cpu.budget >= ULTRA_SUN.update_cost {
         let higher = mem.read_u8(cpu.r[0].wrapping_add(9)).ok() == Some(0);
         let step = CLOCK.with(|clock| {
             let mut clock = clock.borrow_mut();
             if !higher {
-                clock.clear();
+                if usum_guest::native::current().is_some() {
+                    clock.invalidate_scene();
+                } else {
+                    clock.clear();
+                }
                 return None;
             }
             crate::native_timing::guest_time_ns(cpu.budget).and_then(|now| clock.begin_update(now))
