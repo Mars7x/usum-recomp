@@ -4,10 +4,10 @@ Policy: project code is Rust. Dependencies must be Rust crates. Any crate
 that compiles or links C/C++ (a `-sys` crate, `cc`/`cmake` in a build
 script, a `links` key) must be listed here with the reason and the
 conflict explained. Interfaces to the OS and the graphics driver
-(libc via std, the Vulkan loader, ALSA/PipeWire, udev) are acceptable
+(libc via std, the Vulkan loader, and desktop client libraries) are acceptable
 but still listed.
 
-## Dependency inventory (updated 2026-10-29)
+## Dependency inventory (updated 2026-11-19)
 
 The original CLI audit used `cargo tree -e normal,build` on 2026-10-25.
 The table and platform exceptions below also include the subsequently added
@@ -24,7 +24,7 @@ window, Vulkan and controller features; this is not a security advisory scan.
 | wgpu 30.0.1 (`default-features = false`, features `std vulkan wgsl`) + naga 30.0.1 | The isolated `usum-render` host-GPU backend; WGSL validation/translation and Vulkan command submission | No compiled C. `ash` loads the OS Vulkan driver at run time; the selected Linux backend is Vulkan only |
 | pollster 1.0.1 | Blocks on wgpu's adapter/device and validation futures during native bring-up | No |
 | bytemuck 1.25.2 | Safe borrowed byte views of padding-free vertex input arrays; preserves float bit patterns | No |
-| gilrs 0.11.2 + gilrs-core 0.6.8 (window feature) | Standard controller mappings, analog sticks and hot plugging | Linux links the OS libudev through libudev-sys; pkg-config/libudev development files are required at build time. OS interface exception; no bundled C/C++ gamepad implementation. Windows uses the OS Windows Gaming Input interface |
+| gilrs 0.11.2 + vendored gilrs-core 0.6.8 (window feature) | Standard controller mappings, analog sticks and hot plugging | Linux uses evdev and inotify through Rust. Windows uses the OS Windows Gaming Input interface. See [vendor notes](../vendor/gilrs-core/USUM.md) |
 
 For the original CLI-only dependency set audited at that checkpoint, no
 crate had a `links` key or a `-sys` suffix. The optional window and Vulkan
@@ -52,8 +52,7 @@ wayland-sys and tiny-xlib) but do nothing in this configuration:
 - With the `dlopen` features, wayland-sys and tiny-xlib do not use
   pkg-config to link anything.
 For these window-system dependencies, `wayland-sys` and `x11-dl` only declare
-symbols looked up at run time. The controller backend additionally links the
-OS libudev through `libudev-sys`, as disclosed above.
+symbols looked up at run time.
 
 | pulseaudio 0.3 (+ mio, futures, byteorder, num-traits, enum-primitive-derive, thiserror) | Sound: the PulseAudio native protocol implemented in Rust, over the session's socket (PipeWire's pulse server speaks it too) | No. No client library is linked or opened: it talks the protocol on the Unix socket itself. In a Flatpak this needs `--socket=pulseaudio` |
 
@@ -61,8 +60,10 @@ cpal was the expected choice. It was not taken: its Linux backend links
 libasound through alsa-sys, which needs ALSA's development files at build
 time, and the native protocol needs no C at all (R-039).
 
-Gamepads are implemented with gilrs/libudev, including hot plugging. SDL2 and
-SDL3 are not dependencies of the current input/window stack.
+On Linux, the controller backend discovers attached devices through evdev and
+watches the input directory through inotify. Both the source and generated
+workspace use the vendored backend to build `play` without controller-specific
+native development packages.
 
 ## Test-only tools (M3)
 

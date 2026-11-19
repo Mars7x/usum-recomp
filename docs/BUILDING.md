@@ -19,7 +19,7 @@ they do not install a desktop environment.
 
 ```bash
 sudo apt update
-sudo apt install build-essential git curl ca-certificates python3 pkg-config libudev-dev \
+sudo apt install build-essential git curl ca-certificates python3 \
   libwayland-client0 libwayland-cursor0 libxkbcommon0 libxkbcommon-x11-0 \
   libx11-6 libx11-xcb1 libxcb1 libxcursor1 libxrandr2 libxi6 libxext6 libxfixes3
 ```
@@ -39,7 +39,7 @@ sudo apt install mesa-vulkan-drivers
 ### Fedora Workstation
 
 ```bash
-sudo dnf install gcc glibc-devel git curl ca-certificates python3 pkgconf-pkg-config systemd-devel \
+sudo dnf install gcc glibc-devel git curl ca-certificates python3 \
   libwayland-client libwayland-cursor libxkbcommon libxkbcommon-x11 libX11 libX11-xcb libxcb \
   libXcursor libXrandr libXi libXext libXfixes
 ```
@@ -84,12 +84,10 @@ its PulseAudio compatibility service (`pipewire-pulse` on Debian,
 `pipewire-pulseaudio` on Fedora). Use the server already configured by your
 desktop. No ALSA or libpulse development package is needed by this build.
 
-Controllers use gilrs/libudev; the required headers are `libudev-dev` on Debian
-and `systemd-devel` on Fedora. SDL2 and SDL3 are not required. Vulkan is loaded
-at runtime, so Vulkan SDK/header development packages are not required either.
-The package names above follow the official [Debian libudev](https://packages.debian.org/trixie/libudev-dev),
-[Fedora systemd](https://packages.fedoraproject.org/pkgs/systemd/systemd-devel/),
-[Debian Vulkan](https://packages.debian.org/trixie/libvulkan1) and
+Controllers use GilRs with the in-tree Rust evdev/inotify backend. The
+desktop session must allow access to the controller's `/dev/input/event*`
+node. Vulkan uses the system loader and driver at runtime. The package names
+above follow the official [Debian Vulkan](https://packages.debian.org/trixie/libvulkan1) and
 [Fedora Vulkan](https://packages.fedoraproject.org/pkgs/vulkan-loader/vulkan-loader/)
 and [Fedora Wayland](https://packages.fedoraproject.org/pkgs/wayland/)
 package inventories. These are dependency instructions, not a claim of clean-OS
@@ -276,7 +274,7 @@ the separate game-save directory.
 
 | Symptom | Check |
 |---|---|
-| `pkg-config` or `libudev` build error | Install the distribution's build dependencies in the same host/container where Cargo runs. `pkg-config --modversion libudev` should succeed. |
+| An older generated play build requests `libudev` | Regenerate the translation with the current `usumctl` to pick up the vendored controller backend. |
 | `linker cc not found` | Install `build-essential` (Debian) or `gcc`/`glibc-devel` (Fedora). |
 | Compiler killed / out of memory | Use `-j 1` and wait for other builds to finish before retrying; separate Cargo commands do not share a job limit. |
 | No Vulkan adapter / driver error | Check `vulkaninfo --summary` in the same environment; verify the hardware driver and required features. Software rendering is available at 1×. |

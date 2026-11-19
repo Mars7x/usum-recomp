@@ -3,26 +3,6 @@ use crate::services::hid;
 use gilrs::{Axis, Button, EventType, GamepadId, Gilrs};
 use std::time::{Duration, Instant};
 
-/// udev enumeration works inside toolbox containers, but host hotplug events
-/// need not cross their namespace. Gilrs' inotify backend observes the mounted
-/// device directory, including permission changes. Re-exec with a command-specific
-/// environment rather than mutating process-global environment around threads.
-pub(super) fn configure_discovery() -> std::io::Result<()> {
-    #[cfg(target_os = "linux")]
-    if std::env::var_os("GILRS_DISABLE_UDEV").is_none()
-        && ["/run/.containerenv", "/.dockerenv"].iter().any(|p| std::path::Path::new(p).exists())
-    {
-        use std::os::unix::process::CommandExt;
-        eprintln!("controller discovery: watching input-device changes in the container");
-        let error = std::process::Command::new(std::env::current_exe()?)
-            .args(std::env::args_os().skip(1))
-            .env("GILRS_DISABLE_UDEV", "1")
-            .exec();
-        return Err(error);
-    }
-    Ok(())
-}
-
 struct Selection<T> {
     active: Option<T>,
 }

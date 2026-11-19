@@ -1,0 +1,3 @@
+# Preserve upstream formatting when updating the vendored source.
+max_width = 100
+use_small_heuristics = "Default"

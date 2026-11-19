@@ -647,13 +647,10 @@ dependencies = [
 [[package]]
 name = "gilrs-core"
 version = "0.6.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc7f0ce6237abcc0523f2a5502b1e3fe5802daaae47ac14e166fe49551301ea9"
 dependencies = [
  "inotify",
  "js-sys",
  "libc",
- "libudev-sys",
  "log",
  "nix",
  "objc2-core-foundation",
@@ -863,16 +860,6 @@ dependencies = [
  "libc",
  "plain",
  "redox_syscall 0.9.5",
-]
-
-[[package]]
-name = "libudev-sys"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c8469b4a23b962c1396b9b451dda50ef5b283e8dd309d69033475fa9b334324"
-dependencies = [
- "libc",
- "pkg-config",
 ]
 
 [[package]]
@@ -2057,6 +2044,7 @@ name = "usum-runtime"
 version = "0.0.1"
 dependencies = [
  "gilrs",
+ "gilrs-core",
  "pulseaudio",
  "rayon",
  "sha2",

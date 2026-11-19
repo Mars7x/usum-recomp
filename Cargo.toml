@@ -2,7 +2,7 @@
 resolver = "2"
 members = ["crates/usum-import", "crates/usumctl", "crates/usum-guest", "crates/usum-arm", "crates/usum-recomp", "crates/usum-runtime", "crates/usum-render", "crates/usum-difftest"]
 # the data folder holds generated workspaces with their own [workspace]
-exclude = ["data"]
+exclude = ["data", "vendor/gilrs-core"]
 # The differential tests need external ARM tools (docs/DEVELOPMENT.md); run
 # them with `cargo test -p usum-difftest`.
 default-members = ["crates/usum-import", "crates/usumctl", "crates/usum-guest", "crates/usum-arm", "crates/usum-recomp", "crates/usum-runtime", "crates/usum-render"]
@@ -23,7 +23,7 @@ usum-arm = { path = "crates/usum-arm" }
 usum-recomp = { path = "crates/usum-recomp" }
 usum-runtime = { path = "crates/usum-runtime" }
 usum-render = { path = "crates/usum-render" }
-# Every dependency is pure Rust; docs/DEPENDENCIES.md records the audit.
+# See docs/DEPENDENCIES.md for the Rust dependencies and OS interfaces.
 sha2 = { version = "0.10", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -48,3 +48,6 @@ unsafe_code = "forbid"
 
 [profile.release]
 debug = 1
+
+[patch.crates-io]
+gilrs-core = { path = "vendor/gilrs-core" }

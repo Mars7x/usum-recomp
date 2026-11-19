@@ -20,9 +20,10 @@ jobs:
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
           rustup default stable
           sudo apt-get update
-          sudo apt-get install -y python3 qemu-user binutils-arm-none-eabi pkg-config libudev-dev
+          sudo apt-get install -y python3 qemu-user binutils-arm-none-eabi
       - name: No private data in the repository
         run: tools/check-no-game-data.sh --tracked && tools/test-check-no-game-data.sh
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --all-targets --features usum-runtime/window,usum-runtime/vulkan-compare -- -D warnings
       - run: cargo test --locked --workspace --features usum-runtime/window,usum-runtime/vulkan-compare
+      - run: cargo test --locked -p usum-runtime -p gilrs-core --features usum-runtime/window,usum-runtime/vulkan-compare inotify_wakes_epoll_and_reports_late_device_changes

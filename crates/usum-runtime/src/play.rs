@@ -189,9 +189,6 @@ pub fn main(functions: &'static [Code], entries: &'static [(u32, Code)], modules
     eprintln!(
         "presentation cap: {presentation_rate}; guest clock remains at normal speed (F6 cap, F5 title statistics, F7 testing FPS counter)"
     );
-    if let Err(error) = controller::configure_discovery() {
-        eprintln!("cannot select container controller discovery: {error}; using default discovery");
-    }
     let resolution_scale = match crate::pica::resolution_scale_env() {
         Ok(scale) if scale == 1 || vulkan_enabled() => scale,
         Ok(_) => {
