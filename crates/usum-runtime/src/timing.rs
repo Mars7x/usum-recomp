@@ -6,6 +6,24 @@
 
 use std::{collections::VecDeque, fmt, num::NonZeroU32, str::FromStr, time::Duration};
 
+/// Keep short scheduling jitter, but discard a large wall-time deficit so
+/// a slow movie or scene load cannot make the next scene run in fast-forward.
+/// Only the host pacing origin moves. Guest time and timers continue normally.
+#[cfg(any(feature = "window", test))]
+pub(crate) fn rebase_guest_pace(
+    origin: std::time::Instant,
+    wall_now: std::time::Instant,
+    guest_elapsed: Duration,
+) -> std::time::Instant {
+    const MAX_LAG: Duration = Duration::from_nanos(2 * crate::kernel::VBLANK_NS);
+    let host_elapsed = wall_now.saturating_duration_since(origin);
+    if host_elapsed.saturating_sub(guest_elapsed) > MAX_LAG {
+        wall_now - guest_elapsed
+    } else {
+        origin
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PresentationRate {
     /// Present when notified, without an additional host cap.
@@ -277,6 +295,24 @@ impl FrameTelemetry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn game_pacing_discards_movie_debt_without_resetting_guest_time() {
+        let start = std::time::Instant::now();
+        let game_time = Duration::from_secs(3);
+        let within_jitter = start + game_time + Duration::from_millis(20);
+        assert_eq!(rebase_guest_pace(start, within_jitter, game_time), start);
+        assert_eq!(rebase_guest_pace(start, start, game_time), start);
+
+        let after_movie = start + Duration::from_secs(8);
+        let rebased = rebase_guest_pace(start, after_movie, game_time);
+        assert_eq!(rebased, start + Duration::from_secs(5));
+        assert_eq!(rebased + game_time, after_movie);
+
+        let next_frame = game_time + Duration::from_millis(16);
+        assert_eq!(rebase_guest_pace(rebased, after_movie, next_frame), rebased);
+        assert_eq!(rebased + next_frame, after_movie + Duration::from_millis(16));
+    }
 
     #[test]
     fn caps_coalesce_without_catch_up_and_switch_without_a_guest_clock() {

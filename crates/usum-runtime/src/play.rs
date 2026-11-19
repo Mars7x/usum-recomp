@@ -471,9 +471,13 @@ fn run_game(
             return false;
         }
 
-        // never ahead of real time
-        if let Some(now) = kernel.virtual_clock {
-            let ahead = Duration::from_nanos(now).saturating_sub(start.elapsed());
+        if let (Some(now), Some(origin)) = (kernel.virtual_clock, kernel.pace) {
+            let guest_elapsed = Duration::from_nanos(now);
+            let wall_now = Instant::now();
+            let origin = crate::timing::rebase_guest_pace(origin, wall_now, guest_elapsed);
+            // Kernel idle waits and busy dispatches use the same host origin.
+            kernel.pace = Some(origin);
+            let ahead = guest_elapsed.saturating_sub(wall_now.saturating_duration_since(origin));
             if !ahead.is_zero() {
                 std::thread::sleep(ahead.min(Duration::from_millis(50)));
             }
