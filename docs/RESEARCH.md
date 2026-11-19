@@ -6329,3 +6329,52 @@ Still byte-identical on all 14 snapshots of the 70 s intro.
   Thresholds differ between runs because they are random draws.
 - The down walk still matches: native cadence ends at x = 23330.2 against
   23342.5 at normal cadence. Guest 53 and translator 14 tests pass.
+
+### R-186 2026-11-19 — Preserve the movie clock and avoid fast-forward after a stall
+
+- The experimental 120 Hz launcher applied its higher instruction-clock
+  multiplier even during intro playback, before any native frame waits ran.
+  In balanced three-second replays from the same save, the stock path ran
+  776,990,284 guest instructions. The global multiplier raised this to
+  3,171,931,162 and changed the movie output. The same session log showed
+  later periods above twice real time as the launcher tried to recover
+  the movie's accumulated wall-time deficit.
+- The launcher now rebases its host pacing origin when a deficit exceeds
+  two hardware frames. The busy dispatcher and kernel idle paths share
+  that origin. Guest timers continue from their current elapsed time.
+  The regression test covers short jitter, an extended delay, and the
+  next frame's deadline after recovery.
+- A private scene-scoped build keeps the ordinary instruction clock during
+  movies and leaves the movie's own update mode intact. Its three-second
+  intro replay matches stock instruction counts, 164 video conversions,
+  167 top-screen updates, captured images, and audio samples byte for
+  byte. The private-display launcher replay took 3.194 s with the scoped
+  clock against 8.427 s with the global clock. The stock run took 3.193 s.
+- Fresh intro cycle sampling identifies MovieLib routines at virtual
+  0x990021c4, 0x99002548 and 0x99002ea8 (7.82%, 5.14%, and 4.08% self),
+  the guest call wrapper (6.18%), and the dispatcher (6.11%). Y2R accounts
+  for about 2.5%. The scene guard fixes the multiplier regression and
+  returns playback to stock timing. Further movie work should start with
+  the high-cost guest paths.
+
+### R-187 2026-11-19 — Adjust native cadence when the host falls behind
+
+- The recorded walking segment traveled about 0.9% less distance under
+  the scoped 120 Hz test at equal guest time. In the replay's launcher
+  control the median guest clock speed over the walking segment was
+  0.396× real time. This explains much of the perceived slow walking.
+- A private adaptive controller lowers the requested rate when sustained
+  host lag appears and samples for spare capacity after recovery. In a
+  17-second launcher replay with the same save, input and Vulkan settings,
+  fixed pacing took 33.135 s. Adaptive pacing took 17.788 s and raised the
+  walking segment's median clock speed to 0.985×. It rendered fewer frames
+  while delivering the intended game speed. These scoped tests used a
+  private display and one CPU. Gameplay and timing at rates chosen by the
+  controller still need broader validation.
+- Two replays of the reported walking input used CPU and GPU vertex
+  shading at the same scoped 120 Hz setting. The sampled player state
+  and audio match exactly across both. Of 136 paired images, eight
+  differ by a single pixel each, with at most two levels of channel
+  difference. This narrows the search for the reported right-arm jitter.
+  The animation requires sampling at each game update because hardware
+  VBlank samples can miss poses at higher rates.
